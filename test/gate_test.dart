@@ -16,13 +16,15 @@ void main() {
       ),
     );
 
-    await tester.enterText(find.byKey(const Key('invite-code-field')), 'wrong-code');
+    // Pinput renders a single hidden EditableText; typing into it fills
+    // the boxes (auto-advance, paste, backspace are pinput-native).
+    await tester.enterText(find.byType(EditableText), '000000');
     await tester.tap(find.byKey(const Key('invite-submit')));
     await tester.pump();
     expect(passed, isFalse);
     expect(find.text('كود الدعوة مش صحيح'), findsOneWidget);
 
-    await tester.enterText(find.byKey(const Key('invite-code-field')), kInviteCode);
+    await tester.enterText(find.byType(EditableText), kInviteCode);
     await tester.tap(find.byKey(const Key('invite-submit')));
     await tester.pump();
     expect(passed, isTrue);

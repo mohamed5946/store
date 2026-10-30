@@ -96,7 +96,10 @@ jobs:
         # as a release asset, so
         # https://github.com/mohamed5946/store/releases/download/latest/version.json
         # always describes the published APK. The manifest is never
-        # hand-edited. The step also proves the URL resolves.
+        # hand-edited. The step also proves the asset is on the release
+        # with an AUTHENTICATED check: the repo is PRIVATE, so an
+        # anonymous curl 404s even when the asset exists (that false
+        # failure is why the v1.1.2 run concluded "failure").
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -123,5 +126,5 @@ jobs:
           print(json.dumps(manifest, indent=2, ensure_ascii=False))
           PYEOF
           gh release upload latest version.json --clobber
-          curl -sfL --retry 5 --retry-delay 10 --retry-all-errors \
-            https://github.com/mohamed5946/store/releases/download/latest/version.json
+          gh release view latest --json assets \
+            --jq '.assets[].name' | grep -qx 'version.json'
