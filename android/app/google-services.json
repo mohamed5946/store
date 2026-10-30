@@ -12,7 +12,28 @@
           "package_name": "com.valor.storeadmin"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "766975771796-eoi7l1ih31hmnqefrk31fi8lt5luqkma.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.valor.storeadmin",
+            "certificate_hash": "7b34f61205c2efd75296400ed46aa3b9ff0a2807"
+          }
+        },
+        {
+          "client_id": "766975771796-mpgvl4r7iia2r0mgtq9abeq0cckcfgk0.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.valor.storeadmin",
+            "certificate_hash": "ab42135e49cff77c57d9a0d64fbf8a31e9142ae5"
+          }
+        },
+        {
+          "client_id": "766975771796-39v8r85uvq9clcmp362ts0a1k7cpvugf.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyCzESXbev23RMeNRRrJ-iXWGRLokLILLsE"
@@ -20,7 +41,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "766975771796-39v8r85uvq9clcmp362ts0a1k7cpvugf.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }

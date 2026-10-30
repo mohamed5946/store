@@ -1,13 +1,15 @@
-// ST splash — modeled on DeliveryFlow's draw-then-fill splash rhythm:
-// the monogram DRAWS itself (~1000ms), then FILLS with a diagonal
+// Blob-ST splash — modeled on DeliveryFlow's draw-then-fill splash rhythm:
+// the mark DRAWS itself (~1000ms), then FILLS with a diagonal
 // sweep (~1000ms), then the app name fades in (~500ms). Total ~2500ms.
 // Weighted, smooth motion, nothing popping in suddenly. Under OS
 // reduce-motion the static filled mark shows and entry is immediate.
 //
-// The mark: a capital T as the outer frame (top bar + center stem)
-// with a capital S nested inside it, centered on the stem below the
-// bar — the "ST" monogram. White/gray theme: light-gray background,
-// gray strokes, dark-gray fill.
+// The mark: a glossy blue liquid blob on a dark navy tile, with the
+// letters S and T side by side carved into it as dark cut-outs — the
+// approved blob-ST design (user pick 2026-10-30). The launcher icon
+// carries the exact artwork; this painter is the animated schematic
+// of the same mark: blob outline, then S + T outlines, then the
+// diagonal sweep reveals the filled blob with its carved letters.
 import 'package:flutter/material.dart';
 
 /// Splash stages in order. Pure function of animation progress so
@@ -23,46 +25,57 @@ StSplashStage stSplashStageFor(double t) {
   return StSplashStage.exiting;
 }
 
-/// The monogram's own coordinate space (160 x 160).
+/// The mark's own coordinate space (160 x 160).
 const Size _kMarkSpace = Size(160, 160);
 
-/// The T frame as one closed outline path: top bar + center stem.
-/// Stroking it draws the T outline; filling its two rects paints the
-/// solid T.
-Path stTOutlinePath() {
+/// The liquid blob: one closed wobbly outline, centered in the box.
+Path blobOutlinePath() {
   final p = Path();
-  p.moveTo(28, 24);
-  p.lineTo(132, 24);
-  p.lineTo(132, 44);
-  p.lineTo(92, 44);
-  p.lineTo(92, 136);
-  p.lineTo(68, 136);
-  p.lineTo(68, 44);
-  p.lineTo(28, 44);
+  p.moveTo(80, 20);
+  p.cubicTo(104, 20, 126, 32, 136, 54);
+  p.cubicTo(146, 76, 140, 100, 126, 116);
+  p.cubicTo(112, 132, 96, 144, 80, 144);
+  p.cubicTo(64, 144, 48, 132, 34, 116);
+  p.cubicTo(20, 100, 14, 76, 24, 54);
+  p.cubicTo(34, 32, 56, 20, 80, 20);
+  p.close();
+  return p;
+}
+
+/// The S carved on the left of the blob: a centerline curve, stroked
+/// thick (bold) for the carved letter.
+Path blobSPath() {
+  final p = Path();
+  p.moveTo(68, 70);
+  p.cubicTo(68, 58, 56, 52, 46, 55);
+  p.cubicTo(36, 58, 33, 68, 39, 76);
+  p.cubicTo(45, 84, 57, 86, 62, 92);
+  p.cubicTo(68, 99, 66, 110, 56, 115);
+  p.cubicTo(46, 120, 35, 116, 33, 106);
+  return p;
+}
+
+/// The T carved on the right of the blob, as one closed outline:
+/// top bar + center stem.
+Path blobTOutlinePath() {
+  final p = Path();
+  p.moveTo(86, 50);
+  p.lineTo(134, 50);
+  p.lineTo(134, 66);
+  p.lineTo(117, 66);
+  p.lineTo(117, 122);
+  p.lineTo(103, 122);
+  p.lineTo(103, 66);
+  p.lineTo(86, 66);
   p.close();
   return p;
 }
 
 /// The solid T: bar rect + stem rect.
-Path stTFillPath() {
+Path blobTFillPath() {
   final p = Path();
-  p.addRect(const Rect.fromLTWH(28, 24, 104, 20));
-  p.addRect(const Rect.fromLTWH(68, 44, 24, 92));
-  return p;
-}
-
-/// The S nested inside the T: a centerline curve centered on the stem
-/// below the bar. Stroked thin during the draw phase, stroked thick
-/// (bold) for the filled mark.
-Path stSPath() {
-  final p = Path();
-  p.moveTo(104, 66);
-  p.cubicTo(104, 52, 90, 46, 78, 48);
-  p.cubicTo(64, 50, 56, 60, 60, 72);
-  p.cubicTo(64, 84, 78, 86, 88, 90);
-  p.cubicTo(100, 94, 106, 104, 102, 114);
-  p.cubicTo(98, 126, 82, 130, 70, 126);
-  p.cubicTo(58, 122, 54, 112, 58, 104);
+  p.addRect(const Rect.fromLTWH(86, 50, 48, 16));
+  p.addRect(const Rect.fromLTWH(103, 66, 14, 56));
   return p;
 }
 
@@ -124,8 +137,8 @@ List<Offset> _clipBox(double front) {
   return poly;
 }
 
-class _StMonogramPainter extends CustomPainter {
-  _StMonogramPainter({
+class _BlobStPainter extends CustomPainter {
+  _BlobStPainter({
     required this.drawProgress,
     required this.sweepProgress,
   });
@@ -133,9 +146,10 @@ class _StMonogramPainter extends CustomPainter {
   final double drawProgress;
   final double sweepProgress;
 
-  static const _strokeGray = Color(0xFF9E9E9E);
-  static const _fillDark = Color(0xFF212121);
-  static const _fillMid = Color(0xFF616161);
+  static const _outlineLight = Color(0xFF8FC7FF);
+  static const _carveDark = Color(0xFF0A1730);
+  static const _blobTop = Color(0xFF3D9BFF);
+  static const _blobBottom = Color(0xFF1B5FC4);
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -144,19 +158,17 @@ class _StMonogramPainter extends CustomPainter {
     canvas.scale(scale, scale);
 
     final thin = Paint()
-      ..color = _strokeGray
+      ..color = _outlineLight
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.5
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
-    final fill = Paint()
-      ..color = _fillDark
-      ..style = PaintingStyle.fill;
 
     // Ahead of the sweep: thin outlines (during draw, partial).
     final outline = Path()
-      ..addPath(stTOutlinePath(), Offset.zero)
-      ..addPath(stSPath(), Offset.zero);
+      ..addPath(blobOutlinePath(), Offset.zero)
+      ..addPath(blobSPath(), Offset.zero)
+      ..addPath(blobTOutlinePath(), Offset.zero);
     final drawn = _extractPartial(outline, drawProgress);
     canvas.drawPath(drawn, thin);
 
@@ -175,7 +187,7 @@ class _StMonogramPainter extends CustomPainter {
             canvas.drawCircle(
               pos,
               4,
-              Paint()..color = _fillMid,
+              Paint()..color = _outlineLight,
             );
           }
           break;
@@ -184,27 +196,57 @@ class _StMonogramPainter extends CustomPainter {
       }
     }
 
-    // Behind the sweep: solid fills, clipped to the swept half-plane.
+    // Behind the sweep: the filled blob + carved letters, clipped to
+    // the swept half-plane.
     if (sweepProgress > 0) {
       final front = -160 + sweepProgress.clamp(0.0, 1.0) * 320;
       final clip = _clipBox(front);
       if (clip.length >= 3) {
         canvas.save();
         canvas.clipPath(Path()..addPolygon(clip, true));
-        canvas.drawPath(stTFillPath(), fill);
-        // S in mid gray so it reads nested inside the dark T.
-        final sPaint = Paint()
-          ..color = _fillMid
+        // Blob fill, clipped to the blob outline.
+        canvas.save();
+        canvas.clipPath(blobOutlinePath());
+        canvas.drawRect(
+          const Rect.fromLTWH(0, 0, 160, 160),
+          Paint()
+            ..shader = const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [_blobTop, _blobBottom],
+            ).createShader(const Rect.fromLTWH(0, 0, 160, 160)),
+        );
+        canvas.restore();
+        // Carved letters: a light under-edge first (light catching
+        // the cut), then the dark cut-out on top.
+        final carveLight = Paint()
+          ..color = _outlineLight.withValues(alpha: 0.35)
           ..style = PaintingStyle.stroke
           ..strokeWidth = 11
           ..strokeCap = StrokeCap.round
           ..strokeJoin = StrokeJoin.round;
-        canvas.drawPath(stSPath(), sPaint);
+        canvas.save();
+        canvas.translate(0, 1.5);
+        canvas.drawPath(blobSPath(), carveLight);
+        canvas.restore();
+        final carveDark = Paint()
+          ..color = _carveDark
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 11
+          ..strokeCap = StrokeCap.round
+          ..strokeJoin = StrokeJoin.round;
+        canvas.drawPath(blobSPath(), carveDark);
+        canvas.drawPath(
+          blobTFillPath(),
+          Paint()
+            ..color = _carveDark
+            ..style = PaintingStyle.fill,
+        );
         canvas.restore();
         // Sweep edge line: the diagonal x - y == front, clipped to
         // the box (endpoints depend on the sign of front).
         final edge = Paint()
-          ..color = _strokeGray.withValues(alpha: 0.5)
+          ..color = _outlineLight.withValues(alpha: 0.5)
           ..strokeWidth = 1.5;
         final Offset edgeA;
         final Offset edgeB;
@@ -222,13 +264,13 @@ class _StMonogramPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_StMonogramPainter old) =>
+  bool shouldRepaint(_BlobStPainter old) =>
       old.drawProgress != drawProgress ||
       old.sweepProgress != sweepProgress;
 }
 
-/// ST splash screen: draw (~1000ms) + sweep (~1000ms) + name fade
-/// (~500ms) = exactly 2500ms, then [onDone].
+/// Blob-ST splash screen: draw (~1000ms) + sweep (~1000ms) + name
+/// fade (~500ms) = exactly 2500ms, then [onDone].
 class StSplashScreen extends StatefulWidget {
   const StSplashScreen({super.key, required this.onDone});
   final VoidCallback onDone;
@@ -292,7 +334,7 @@ class _StSplashScreenState extends State<StSplashScreen>
   Widget build(BuildContext context) {
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
     return Scaffold(
-      backgroundColor: const Color(0xFFF2F2F7),
+      backgroundColor: const Color(0xFF0B1730),
       body: AnimatedBuilder(
         animation: _controller,
         builder: (context, _) {
@@ -307,7 +349,7 @@ class _StSplashScreenState extends State<StSplashScreen>
                   CustomPaint(
                     key: const Key('stMonogram'),
                     size: const Size(160, 160),
-                    painter: _StMonogramPainter(
+                    painter: _BlobStPainter(
                       drawProgress: draw,
                       sweepProgress: sweep,
                     ),
@@ -321,7 +363,7 @@ class _StSplashScreenState extends State<StSplashScreen>
                       style: TextStyle(
                         fontSize: 26,
                         fontWeight: FontWeight.w800,
-                        color: Color(0xFF212121),
+                        color: Color(0xFFFFFFFF),
                         letterSpacing: -0.5,
                       ),
                     ),

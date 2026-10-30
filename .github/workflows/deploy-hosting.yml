@@ -1,0 +1,38 @@
+name: Deploy Storefront to Firebase Hosting
+
+# Deploys the public storefront (storefront/ + firebase.json) to the
+# live Hosting channel. Auth is Workload Identity Federation — no
+# service-account key files and no secrets are involved. The pool
+# (github-pool) and provider (github-provider) only trust this
+# repository, and the service account only holds Firebase Hosting
+# Admin on project store-3384c.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'storefront/**'
+      - 'firebase.json'
+      - '.github/workflows/deploy-hosting.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/766975771796/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: hosting-deploy@store-3384c.iam.gserviceaccount.com
+
+      - name: Deploy to Firebase Hosting
+        run: |
+          npm install -g firebase-tools
+          firebase deploy --only hosting --project store-3384c --non-interactive

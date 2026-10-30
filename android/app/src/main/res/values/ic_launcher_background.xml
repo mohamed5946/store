@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Adaptive icon background: solid dark navy, full-bleed.
+         Sampled from the blob artwork's own tile so the background
+         layer and the foreground artwork meet with no seam and no
+         white edge anywhere. -->
+    <color name="ic_launcher_background">#071938</color>
+</resources>

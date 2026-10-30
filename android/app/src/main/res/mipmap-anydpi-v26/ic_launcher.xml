@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive launcher icon (API 26+): solid dark-navy background
+     layer, full-bleed to all four edges, with the glossy blue blob
+     (S and T carved side by side) centered as the foreground layer.
+     No white corners, no white border: the foreground artwork's own
+     corners are the same dark navy as the background layer. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>
