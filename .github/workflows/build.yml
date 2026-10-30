@@ -88,3 +88,40 @@ jobs:
         run: |
           gh release view latest >/dev/null 2>&1 || gh release create latest --title "Latest" --notes "Latest store admin build"
           gh release upload latest build/app/outputs/flutter-apk/app-release.apk --clobber
+
+      - name: Publish version manifest
+        # v1.1.2: in-app updates. CI generates version.json from the
+        # REAL build (versionCode/versionName from pubspec, changelog
+        # from the commit subject, APK size + SHA-256) and uploads it
+        # as a release asset, so
+        # https://github.com/mohamed5946/store/releases/download/latest/version.json
+        # always describes the published APK. The manifest is never
+        # hand-edited. The step also proves the URL resolves.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYEOF'
+          import hashlib, json, os, re, subprocess
+          apk = 'build/app/outputs/flutter-apk/app-release.apk'
+          pub = open('pubspec.yaml').read()
+          version = re.search(r'^version:\s*(.+)\s*$', pub, re.M).group(1)
+          name, code = version.split('+')
+          sha = hashlib.sha256(open(apk, 'rb').read()).hexdigest()
+          size = os.path.getsize(apk)
+          subject = subprocess.check_output(
+              ['git', 'log', '-1', '--format=%s']).decode().strip()
+          manifest = {
+              'versionCode': int(code),
+              'versionName': name,
+              'changelog': subject,
+              'apkUrl': 'https://github.com/mohamed5946/store/releases/download/latest/app-release.apk',
+              'apkSha256': sha,
+              'apkSizeBytes': size,
+          }
+          open('version.json', 'w').write(
+              json.dumps(manifest, indent=2, ensure_ascii=False))
+          print(json.dumps(manifest, indent=2, ensure_ascii=False))
+          PYEOF
+          gh release upload latest version.json --clobber
+          curl -sfL --retry 5 --retry-delay 10 --retry-all-errors \
+            https://github.com/mohamed5946/store/releases/download/latest/version.json

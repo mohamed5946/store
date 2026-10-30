@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.1.2: FileProvider paths for in-app updates. Only the updates/
+     directory under cache is shared, and only with the system
+     installer via a one-time granted URI. -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

@@ -220,15 +220,22 @@ class _StaggeredItemState extends State<StaggeredItem>
 /// exactly once. Nothing is deleted before the animation completes;
 /// taps are ignored while animating; under OS reduce-motion the
 /// animation is skipped and [onConfirmed] fires directly.
+///
+/// v1.1.2: [autoplay] starts the animation on the first frame with
+/// no tap — used after a delete CONFIRMATION dialog, so the flow is
+/// confirm first, animation second, actual delete last. The button
+/// itself never deletes anything; the caller deletes in [onConfirmed].
 class BinEatingDeleteButton extends StatefulWidget {
   const BinEatingDeleteButton({
     super.key,
     required this.label,
     required this.onConfirmed,
+    this.autoplay = false,
   });
 
   final String label;
   final VoidCallback onConfirmed;
+  final bool autoplay;
 
   @override
   State<BinEatingDeleteButton> createState() =>
@@ -255,6 +262,11 @@ class _BinEatingDeleteButtonState extends State<BinEatingDeleteButton>
       ..addStatusListener((status) {
         if (status == AnimationStatus.completed) _finish();
       });
+    if (widget.autoplay) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _start();
+      });
+    }
   }
 
   void _onTick() {

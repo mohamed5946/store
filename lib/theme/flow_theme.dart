@@ -665,8 +665,14 @@ Future<T?> showFlowDialog<T>({
   );
 }
 
-/// Floating glass pill nav bar — DeliveryFlow's GlassNavBar shape in
-/// Flow dark: frosted pill, gradient selected indicator.
+/// Floating liquid-glass pill nav bar — the app's liquid visual
+/// language, theme-aware (v1.1.2):
+/// - Liquid Gloss: glossy liquid — a blue gradient surface that is
+///   light at the top and deep at the bottom (wet highlight), a
+///   light border, and a cyan glow shadow beneath the pill.
+/// - Gloss Morphism: frosted glass — a translucent card over the
+///   gradient backdrop, blur + light border, calmer glow.
+/// The selected destination keeps its gradient pill in both themes.
 class FlowNavPill extends StatelessWidget {
   final int selectedIndex;
   final ValueChanged<int> onDestinationSelected;
@@ -683,23 +689,49 @@ class FlowNavPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final variant = FlowThemeControllerScope.maybeOf(context)?.variant ??
+        FlowThemeVariant.liquidGloss;
+    final isGloss = variant == FlowThemeVariant.liquidGloss;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(30),
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
             decoration: BoxDecoration(
-              color: FlowPalette.card.withValues(alpha: 0.85),
+              gradient: isGloss
+                  ? LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        const Color(0xFF2A3F7D).withValues(alpha: 0.92),
+                        const Color(0xFF0D1530).withValues(alpha: 0.92),
+                      ],
+                    )
+                  : LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.white.withValues(alpha: 0.16),
+                        Colors.white.withValues(alpha: 0.05),
+                      ],
+                    ),
               borderRadius: BorderRadius.circular(30),
               border: Border.all(color: FlowPalette.borderLight, width: 1),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.4),
+                  color: isGloss
+                      ? FlowPalette.cyan.withValues(alpha: 0.22)
+                      : Colors.black.withValues(alpha: 0.4),
                   blurRadius: 28,
                   offset: const Offset(0, 10),
+                ),
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.35),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
                 ),
               ],
             ),

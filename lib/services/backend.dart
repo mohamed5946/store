@@ -300,6 +300,22 @@ class Backend {
     );
   }
 
+  /// v1.1.2 scope #8: the homepage editor's document. The website
+  /// builder reads storeSettings/homepage with an exact field shape
+  /// (see lib/core/homepage.dart) — this writes the FULL doc with
+  /// set() (no merge) so the stored shape is always exactly what
+  /// the editor produced. Called ONLY from the editor's Save button;
+  /// previews and Cancel never touch Firestore.
+  Stream<DocumentSnapshot<Map<String, dynamic>>> homepageStream() =>
+      db.collection('storeSettings').doc('homepage').snapshots();
+
+  Future<void> setHomepage(Map<String, dynamic> doc) async {
+    _requireInit();
+    // Exactly the four contract fields — no extra keys, so the
+    // website builder always reads the shape it expects.
+    await db.collection('storeSettings').doc('homepage').set(doc);
+  }
+
   Stream<QuerySnapshot<Map<String, dynamic>>> categoriesStream() =>
       db.collection('categories').orderBy('createdAt').snapshots();
 
@@ -365,6 +381,33 @@ class Backend {
 
   Stream<QuerySnapshot<Map<String, dynamic>>> teamStream() =>
       db.collection('admins').snapshots();
+
+  /// Removes a team member from the team list (v1.1.2). Deletes the
+  /// member's admins doc and, best-effort, their phone lookup. NEVER
+  /// removes the signed-in admin themself. Honest limit, same as
+  /// DeliveryFlow: the Firebase Auth login itself cannot be deleted
+  /// from the app (client SDK limit) — a removed member's Auth login
+  /// must be deleted from the Firebase console if sign-in must be
+  /// fully revoked; removing the admins doc already hides them from
+  /// the team and from Google sign-in's admin gate.
+  Future<void> removeTeamMember(String uid) async {
+    _requireInit();
+    if (auth.currentUser?.uid == uid) {
+      throw BackendException('مينفعش تشيل حسابك انت من الفريق');
+    }
+    final doc = await db.collection('admins').doc(uid).get();
+    final phone = (doc.data()?['phone'] ?? '') as String;
+    final normalized = normalizeEgyptPhone(phone);
+    if (normalized != null) {
+      try {
+        await db.collection('phones').doc(phoneLookupKey(normalized)).delete();
+      } catch (e) {
+        Diagnostics.instance.log('Team removal: phone lookup kept: $e');
+      }
+    }
+    await db.collection('admins').doc(uid).delete();
+    Diagnostics.instance.log('Team member removed: $uid');
+  }
 
   Stream<QuerySnapshot<Map<String, dynamic>>> sessionsStream() => db
       .collection('analytics')

@@ -176,9 +176,13 @@ void main() {
   });
 
   test('no Material blue or v1.0 blue seed left in lib', () {
+    // Exception, documented: storefront_preview.dart intentionally
+    // mirrors the WEBSITE's own CSS blue (#0a84ff) so the preview
+    // matches the live site — it is not app-theme Material blue.
     final offenders = <String>[];
     for (final entity in Directory('lib').listSync(recursive: true)) {
       if (entity is! File || !entity.path.endsWith('.dart')) continue;
+      if (entity.path.endsWith('storefront_preview.dart')) continue;
       final src = entity.readAsStringSync();
       if (src.contains('Colors.blue') || src.contains('0xFF0A84FF')) {
         offenders.add(entity.path);
