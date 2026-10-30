@@ -68,13 +68,13 @@ jobs:
           sha256sum "$APK"
           unzip -l "$APK" | grep 'lib/.*/libapp.so'
 
-      - name: Enforce release cert fingerprint        # Tripwire: the release MUST be signed with the v1.1 key
-        # (AB:42...). A silent keystore change broke v1.0.0 -> v1.1
+      - name: Enforce release cert fingerprint        # Tripwire: the release MUST be signed with the accepted stable key
+        # (3E:37...). A silent keystore change broke v1.0.0 -> v1.1
         # updates; this step fails the build instead of shipping an
         # APK Android would refuse as an update. The fingerprint is
         # a public certificate identifier, safe to hard-code.
         run: |
-          python3 tools/check_release_cert.py build/app/outputs/flutter-apk/app-release.apk AB:42:13:5E:49:CF:F7:7C:57:D9:A0:D6:4F:BF:8A:31:E9:14:2A:E5
+          python3 tools/check_release_cert.py build/app/outputs/flutter-apk/app-release.apk 3E:37:6B:43:D8:3F:05:56:F9:03:59:19:01:9E:68:F8:6F:14:1F:3A
 
       - name: Verify launcher icon has no white edges
         # The icon is a full-bleed dark-navy adaptive icon; any white

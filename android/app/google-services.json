@@ -14,6 +14,14 @@
       },
       "oauth_client": [
         {
+          "client_id": "766975771796-89u1bb2hlrg3rigq83eh0p954crmrhe1.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.valor.storeadmin",
+            "certificate_hash": "3e376b43d83f0556f9035919019e68f86f141f3a"
+          }
+        },
+        {
           "client_id": "766975771796-eoi7l1ih31hmnqefrk31fi8lt5luqkma.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
