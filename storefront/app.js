@@ -47,10 +47,16 @@ let attemptId = null;
 const $ = (id) => document.getElementById(id);
 const money = (n) => Number(n || 0).toFixed(0);
 
+// Cloudinary auto-optimization: every Cloudinary image is served with
+// f_auto,q_auto so the storefront loads fast. Pasted links pass through.
+function deliveryUrl(u) {
+  if (!u || !u.includes('res.cloudinary.com') || u.includes('f_auto')) return u;
+  return u.replace('/upload/', '/upload/f_auto,q_auto/');
+}
+
 function productImage(p) {
   const imgs = p.images || [];
-  if (imgs.length > 0 && imgs[0].url) return `<img src="${imgs[0].url}" alt="">`;
-  if (p.imageBase64) return `<img src="data:image/jpeg;base64,${p.imageBase64}" alt="">`;
+  if (imgs.length > 0 && imgs[0].url) return `<img src="${deliveryUrl(imgs[0].url)}" alt="">`;
   if (p.imageUrl) return `<img src="${p.imageUrl}" alt="" onerror="this.remove()">`;
   const initial = (p.name || '?').trim().charAt(0);
   return initial;
@@ -58,15 +64,12 @@ function productImage(p) {
 
 function galleryHtml(p) {
   const imgs = (p.images || []).filter((i) => i && i.url);
-  if (imgs.length === 0) {
-    if (p.imageBase64) imgs.push({ url: `data:image/jpeg;base64,${p.imageBase64}` });
-    else if (p.imageUrl) imgs.push({ url: p.imageUrl });
-  }
+  if (imgs.length === 0 && p.imageUrl) imgs.push({ url: p.imageUrl });
   if (imgs.length === 0) return '';
-  const main = `<div id="galMain" style="aspect-ratio:1;border-radius:14px;overflow:hidden;background:linear-gradient(135deg,#0a84ff,#64d2ff)"><img src="${imgs[0].url}" style="width:100%;height:100%;object-fit:cover"></div>`;
+  const main = `<div id="galMain" style="aspect-ratio:1;border-radius:14px;overflow:hidden;background:linear-gradient(135deg,#0a84ff,#64d2ff)"><img src="${deliveryUrl(imgs[0].url)}" style="width:100%;height:100%;object-fit:cover"></div>`;
   if (imgs.length === 1) return main;
   const thumbs = imgs.map((im, i) =>
-    `<img src="${im.url}" data-gal="${i}" style="width:64px;height:64px;object-fit:cover;border-radius:10px;cursor:pointer;border:2px solid ${i === 0 ? '#0a84ff' : '#eee'}">`).join('');
+    `<img src="${deliveryUrl(im.url)}" data-gal="${i}" style="width:64px;height:64px;object-fit:cover;border-radius:10px;cursor:pointer;border:2px solid ${i === 0 ? '#0a84ff' : '#eee'}">`).join('');
   return main + `<div style="display:flex;gap:8px;margin-top:10px">${thumbs}</div>`;
 }
 
@@ -130,7 +133,7 @@ function openProduct(id) {
   document.querySelectorAll('[data-gal]').forEach((t) => t.addEventListener('click', () => {
     const imgs = (p.images || []).filter((i) => i && i.url);
     const main = $('galMain');
-    if (main && imgs[t.dataset.gal]) main.innerHTML = `<img src="${imgs[t.dataset.gal].url}" style="width:100%;height:100%;object-fit:cover">`;
+    if (main && imgs[t.dataset.gal]) main.innerHTML = `<img src="${deliveryUrl(imgs[t.dataset.gal].url)}" style="width:100%;height:100%;object-fit:cover">`;
     document.querySelectorAll('[data-gal]').forEach((x) => x.style.borderColor = '#eee');
     t.style.borderColor = '#0a84ff';
   }));

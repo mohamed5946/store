@@ -1,10 +1,15 @@
 // Admin shell: dashboard (analytics), products, categories, orders,
 // team, settings + diagnostics. Apple-level feel: weighted motion is kept
 // simple and calm — animated switching, no popping, loading states first.
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../core/analytics_steps.dart';
 import '../core/diagnostics.dart';
@@ -281,6 +286,7 @@ class _ProductsTab extends StatelessWidget {
     var categoryId = existing?.categoryId ?? '';
     var busy = false;
     var uploading = false;
+    var uploadProgress = 0.0;
     var errorText = '';
     await showDialog<void>(
       context: context,
@@ -320,7 +326,7 @@ class _ProductsTab extends StatelessWidget {
                         children: [
                           ClipRRect(
                             borderRadius: BorderRadius.circular(8),
-                            child: Image.network(img.url, width: 72, height: 72,
+                            child: Image.network(deliveryUrl(img.url), width: 72, height: 72,
                                 fit: BoxFit.cover,
                                 errorBuilder: (c, e, st) => const SizedBox(
                                     width: 72, height: 72, child: Icon(Icons.broken_image_outlined))),
@@ -363,11 +369,15 @@ class _ProductsTab extends StatelessWidget {
                             if (picked == null) return;
                             setState(() {
                               uploading = true;
+                              uploadProgress = 0.0;
                               errorText = '';
                             });
                             try {
                               final bytes = await picked.readAsBytes();
-                              final uploaded = await uploadImageToCloudinary(bytes);
+                              final uploaded = await uploadImageToCloudinary(
+                                bytes,
+                                onProgress: (p) => setState(() => uploadProgress = p),
+                              );
                               setState(() => images.add(uploaded));
                             } catch (e) {
                               setState(() => errorText = e.toString());
@@ -400,6 +410,17 @@ class _ProductsTab extends StatelessWidget {
                       ),
                     ],
                   ),
+                  if (uploading)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Column(
+                        children: [
+                          LinearProgressIndicator(value: uploadProgress),
+                          const SizedBox(height: 4),
+                          Text('جارٍ الرفع… ${(uploadProgress * 100).toInt()}٪'),
+                        ],
+                      ),
+                    ),
                   if (errorText.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
@@ -481,7 +502,7 @@ class _ProductThumb extends StatelessWidget {
     if (product.images.isNotEmpty) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(8),
-        child: Image.network(product.images.first.url, width: 48, height: 48,
+        child: Image.network(deliveryUrl(product.images.first.url), width: 48, height: 48,
             fit: BoxFit.cover, errorBuilder: (c, e, st) => _fallback()),
       );
     }
@@ -881,6 +902,38 @@ class _SettingsTabState extends State<_SettingsTab> {
             }
           },
           child: const Text('إضافة المنتجات التجريبية (لو الكتالوج فاضي)'),
+        ),
+        const SizedBox(height: 12),
+        FilledButton.tonalIcon(
+          icon: const Icon(Icons.download_outlined),
+          label: const Text('تصدير نسخة احتياطية (JSON)'),
+          onPressed: () async {
+            try {
+              final data = await Backend.instance.exportAll();
+              final dir = await getTemporaryDirectory();
+              final stamp = DateTime.now().toIso8601String().replaceAll(':', '-');
+              final file = File('${dir.path}/store-backup-$stamp.json');
+              await file.writeAsString(
+                const JsonEncoder.withIndent('  ').convert(data),
+              );
+              final products = (data['products'] as List).length;
+              final orders = (data['orders'] as List).length;
+              final customers = (data['customers'] as List).length;
+              await SharePlus.instance.share(ShareParams(
+                files: [XFile(file.path)],
+                text: 'نسخة احتياطية للمتجر: $products منتج، $orders طلب، $customers عميل',
+              ));
+              if (context.mounted) {
+                _snack(context, 'تم تجهيز النسخة: $products منتج، $orders طلب، $customers عميل');
+              }
+            } catch (e) {
+              if (context.mounted) _snack(context, e.toString(), error: true);
+            }
+          },
+        ),
+        const Text(
+          'التصدير بيشتغل من التطبيق مباشرة (ملف JSON) — تصدير Firestore المُدار لسلة تخزين محتاج Blaze ومش طريق v1.',
+          style: TextStyle(color: Colors.grey, fontSize: 13),
         ),
         const Divider(height: 32),
         Row(

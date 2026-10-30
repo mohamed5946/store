@@ -25,4 +25,16 @@ void main() {
     expect(back.url, img.url);
     expect(back.publicId, img.publicId);
   });
+
+  test('delivery url injects f_auto,q_auto only for cloudinary urls', () {
+    expect(
+      deliveryUrl('https://res.cloudinary.com/demo/image/upload/v1/store-products/x.jpg'),
+      'https://res.cloudinary.com/demo/image/upload/f_auto,q_auto/v1/store-products/x.jpg',
+    );
+    expect(
+      deliveryUrl('https://res.cloudinary.com/demo/image/upload/f_auto,q_auto/v1/x.jpg'),
+      'https://res.cloudinary.com/demo/image/upload/f_auto,q_auto/v1/x.jpg',
+    );
+    expect(deliveryUrl('https://example.com/x.jpg'), 'https://example.com/x.jpg');
+  });
 }

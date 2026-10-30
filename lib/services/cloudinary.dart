@@ -17,6 +17,10 @@
 //   - unsigned: yes (no secret in the app, ever)
 // The app also compresses on-device (max 1200px, quality 80) before upload.
 //
+// AUTO-OPTIMIZATION: every displayed Cloudinary URL goes through
+// deliveryUrl(), which injects f_auto,q_auto so the storefront and the app
+// always load the auto-format, auto-quality variant (fast loading).
+//
 // Removal policy: removing an image deletes its entry from the product
 // doc only — the image disappears from the store immediately. The app
 // NEVER calls Cloudinary's destroy API (it needs the api_secret, which
@@ -24,9 +28,8 @@
 // are orphans: unreferenced, unserved, cleaned later from the Cloudinary
 // dashboard (or a small signed backend, later).
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
-
-import 'package:http/http.dart' as http;
 
 import '../core/diagnostics.dart';
 
@@ -52,6 +55,14 @@ class CloudinaryImage {
       );
 }
 
+/// Delivery URL with auto format + auto quality. Non-Cloudinary URLs
+/// (pasted links) pass through unchanged.
+String deliveryUrl(String url) {
+  if (!url.contains('res.cloudinary.com')) return url;
+  if (url.contains('f_auto')) return url;
+  return url.replaceFirst('/upload/', '/upload/f_auto,q_auto/');
+}
+
 class CloudinaryUploadException implements Exception {
   CloudinaryUploadException(this.message);
   final String message;
@@ -59,10 +70,12 @@ class CloudinaryUploadException implements Exception {
   String toString() => message;
 }
 
-/// Uploads image bytes to Cloudinary via the unsigned preset.
+/// Uploads image bytes to Cloudinary via the unsigned preset, reporting
+/// real upload progress (0.0–1.0) as bytes are flushed to the socket.
 /// Returns the stored image (secure_url + public_id).
 Future<CloudinaryImage> uploadImageToCloudinary(
   Uint8List bytes, {
+  void Function(double progress)? onProgress,
   String filename = 'product.jpg',
 }) async {
   if (!CloudinaryConfig.isConfigured) {
@@ -73,15 +86,47 @@ Future<CloudinaryImage> uploadImageToCloudinary(
   final uri = Uri.parse(
     'https://api.cloudinary.com/v1_1/${CloudinaryConfig.cloudName}/image/upload',
   );
-  final request = http.MultipartRequest('POST', uri)
-    ..fields['upload_preset'] = CloudinaryConfig.uploadPreset
-    ..files.add(http.MultipartFile.fromBytes('file', bytes, filename: filename));
+  final boundary = '----storeadmin${DateTime.now().millisecondsSinceEpoch}';
+  final header = utf8.encode(
+    '--$boundary\r\n'
+    'Content-Disposition: form-data; name="upload_preset"\r\n\r\n'
+    '${CloudinaryConfig.uploadPreset}\r\n'
+    '--$boundary\r\n'
+    'Content-Disposition: form-data; name="file"; filename="$filename"\r\n'
+    'Content-Type: application/octet-stream\r\n\r\n',
+  );
+  final footer = utf8.encode('\r\n--$boundary--\r\n');
+  final total = header.length + bytes.length + footer.length;
+  var sent = 0;
+  void report(int n) {
+    sent += n;
+    onProgress?.call((sent / total).clamp(0.0, 1.0));
+  }
+
+  final client = HttpClient();
   try {
-    final streamed = await request.send();
-    final body = await streamed.stream.bytesToString();
-    if (streamed.statusCode != 200) {
-      Diagnostics.instance.log('Cloudinary upload failed: ${streamed.statusCode}');
-      throw CloudinaryUploadException('فشل رفع الصورة (خطأ ${streamed.statusCode})');
+    final request = await client.postUrl(uri);
+    request.headers.set(
+      HttpHeaders.contentTypeHeader,
+      'multipart/form-data; boundary=$boundary',
+    );
+    request.contentLength = total;
+    request.add(header);
+    report(header.length);
+    const chunk = 65536;
+    for (var offset = 0; offset < bytes.length; offset += chunk) {
+      final end = (offset + chunk).clamp(0, bytes.length);
+      request.add(bytes.sublist(offset, end));
+      await request.flush();
+      report(end - offset);
+    }
+    request.add(footer);
+    report(footer.length);
+    final response = await request.close();
+    final body = await response.transform(utf8.decoder).join();
+    if (response.statusCode != 200) {
+      Diagnostics.instance.log('Cloudinary upload failed: ${response.statusCode}');
+      throw CloudinaryUploadException('فشل رفع الصورة (خطأ ${response.statusCode})');
     }
     final json = jsonDecode(body) as Map<String, dynamic>;
     final url = (json['secure_url'] ?? '') as String;
@@ -94,5 +139,7 @@ Future<CloudinaryImage> uploadImageToCloudinary(
     if (e is CloudinaryUploadException) rethrow;
     Diagnostics.instance.log('Cloudinary upload error: $e');
     throw CloudinaryUploadException('تعذر رفع الصورة — اتأكد من الإنترنت وحاول تاني');
+  } finally {
+    client.close();
   }
 }

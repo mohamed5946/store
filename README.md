@@ -10,12 +10,19 @@
   `api.cloudinary.com`, fields `file` + `upload_preset`); the app holds only
   cloudName + uploadPreset (placeholders until Mo supplies them). The
   product doc stores `images: [{url, publicId}]`, cover = images[0].
-  Removing an image deletes its doc entry only — the file stays on
-  Cloudinary as an orphan until cleaned from the dashboard (the destroy API
-  needs the api_secret and is never called from the app). Preset
-  restrictions to apply at creation: folder `store-products`, allowed
-  formats jpg/png/webp, unsigned. Firebase Storage is NOT used (it needs
-  Blaze billing, which is forbidden).
+  Display URLs always use auto format + auto quality (`f_auto,q_auto`) for
+  fast loading. Removing an image deletes its doc entry only — the file
+  stays on Cloudinary as an orphan until cleaned from the dashboard (the
+  destroy API needs the api_secret and is never called from the app).
+  Preset restrictions to apply at creation: folder `store-products`,
+  allowed formats jpg/png/webp, unsigned. Firebase Storage is NOT used
+  (it needs Blaze billing, which is forbidden). Image storage lives
+  behind the narrow `services/cloudinary.dart` interface, so swapping the
+  provider later does not require rebuilding the store.
+- **Export/backup**: Settings has a one-tap JSON export (products +
+  orders + derived customers + store settings) shared as a file — the v1
+  backup path. Firestore's managed export to a storage bucket is
+  Blaze-gated and is NOT the v1 path.
 - **Storefront** (`storefront/`): static mobile-first website, Firebase
   Hosting-ready (`firebase.json`). Cart + cash-on-delivery checkout.
   Analytics boundary: a visitor's contact info is saved to a checkout

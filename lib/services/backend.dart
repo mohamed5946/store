@@ -5,6 +5,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 
+import '../core/customers.dart';
 import '../core/diagnostics.dart';
 import '../core/identifier.dart';
 import '../firebase_options.dart';
@@ -311,8 +312,40 @@ class Backend {
       .limit(100)
       .snapshots();
 
-  /// Seeds the sample catalog (only when the admin asks, and only when the
-  /// catalog is empty — never overwrites real data).
+  /// Exports products + orders + derived customers + store settings as
+  /// plain JSON-ready data — the v1 backup path. This runs entirely in
+  /// the app (no bucket, no billing). Firestore's managed export to a
+  /// storage bucket is Blaze-gated and is NOT the v1 path.
+  Future<Map<String, dynamic>> exportAll() async {
+    _requireInit();
+    final productsSnap = await db.collection('products').get();
+    final ordersSnap = await db.collection('orders').get();
+    final settingsSnap = await db.collection('storeSettings').doc('settings').get();
+    final products = productsSnap.docs.map((d) => _jsonDoc(d.id, d.data())).toList();
+    final orders = ordersSnap.docs.map((d) => _jsonDoc(d.id, d.data())).toList();
+    return {
+      'exportedAt': DateTime.now().toIso8601String(),
+      'storeSettings': settingsSnap.data() == null
+          ? {}
+          : _jsonDoc('settings', settingsSnap.data()!),
+      'products': products,
+      'orders': orders,
+      'customers': deriveCustomers(orders),
+    };
+  }
+
+  static Map<String, dynamic> _jsonDoc(String id, Map<String, dynamic> data) {
+    return {'id': id, ..._jsonValue(data) as Map<String, dynamic>};
+  }
+
+  static dynamic _jsonValue(dynamic value) {
+    if (value is Timestamp) return value.toDate().toIso8601String();
+    if (value is Map) {
+      return value.map((k, v) => MapEntry(k.toString(), _jsonValue(v)));
+    }
+    if (value is List) return value.map(_jsonValue).toList();
+    return value;
+  }
   Future<int> seedSamplesIfEmpty({
     required List<Map<String, dynamic>> categories,
     required List<Map<String, dynamic>> products,
