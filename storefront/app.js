@@ -1,4 +1,23 @@
-// Store storefront — vanilla JS + Firestore. Mobile-first, COD only, dark SOVA-style theme.
+// Store storefront — vanilla JS + Firestore. Mobile-first, COD only,
+// light "Shop" design language (white marble canvas, violet accent).
+//
+// DESIGN DOC — storeSettings/design (read by this site, written by the
+// admin app's design editor; every field optional, safe defaults below):
+// {
+//   accentColor: string, hex "#rrggbb" (default "#5433eb"; any invalid
+//     value falls back to the default),
+//   announcementBar: { enabled: boolean (default false),
+//                      text: string (default "") },
+//   sections: { hero: boolean (default true),
+//               promos: boolean (default true),
+//               featured: boolean (default true),
+//               delivery: boolean (default true) }
+// }
+// Public-readable under the existing storeSettings/{doc} rule — no rules
+// change. Until the app editor ships, the site runs fully on these
+// defaults. Content slots (brand, tagline, hero, promos, featured,
+// delivery band, categories, products) always come from Firestore docs
+// the app writes — never from literals here, except the defaults above.
 //
 // ANALYTICS BOUNDARY (hard requirement): a visitor's contact info is saved
 // to a checkout attempt ONLY after they complete the info step (press
@@ -41,6 +60,8 @@ window.addEventListener('pagehide', heartbeat);
 let categories = [];
 let products = [];
 let homepage = {};
+let design = {};
+let searchQuery = '';
 let activeCat = 'all';
 let cart = {}; // id -> qty
 let attemptId = null;
@@ -76,10 +97,10 @@ function galleryHtml(p) {
   const imgs = (p.images || []).filter((i) => i && i.url);
   if (imgs.length === 0 && p.imageUrl) imgs.push({ url: p.imageUrl });
   if (imgs.length === 0) return '';
-  const main = `<div id="galMain" style="aspect-ratio:1;border-radius:14px;overflow:hidden;background:linear-gradient(135deg,#ff5a3c,#ff8a3d)"><img src="${deliveryUrl(imgs[0].url)}" style="width:100%;height:100%;object-fit:cover"></div>`;
+  const main = `<div id="galMain" style="aspect-ratio:1;border-radius:20px;overflow:hidden;background:#f2f4f5"><img src="${deliveryUrl(imgs[0].url)}" style="width:100%;height:100%;object-fit:cover"></div>`;
   if (imgs.length === 1) return main;
   const thumbs = imgs.map((im, i) =>
-    `<img src="${deliveryUrl(im.url)}" data-gal="${i}" style="width:64px;height:64px;object-fit:cover;border-radius:10px;cursor:pointer;border:2px solid ${i === 0 ? '#ff5a3c' : '#2a2a2e'}">`).join('');
+    `<img src="${deliveryUrl(im.url)}" data-gal="${i}" style="width:64px;height:64px;object-fit:cover;border-radius:10px;cursor:pointer;border:2px solid ${i === 0 ? 'var(--accent)' : 'var(--border)'}">`).join('');
   return main + `<div style="display:flex;gap:8px;margin-top:10px">${thumbs}</div>`;
 }
 
@@ -94,7 +115,11 @@ async function loadBrand() {
     const snap = await getDoc(doc(db, 'storeSettings', 'settings'));
     if (snap.exists()) {
       const d = snap.data();
-      if (d.brandName) { $('brand').textContent = d.brandName; $('footerBrand').textContent = d.brandName; document.title = d.brandName; }
+      if (d.brandName) {
+        // Wordmark dot in the accent color (Shop signature).
+        $('brand').innerHTML = esc(d.brandName) + '<span class="brand-dot"></span>';
+        $('footerBrand').textContent = d.brandName; document.title = d.brandName;
+      }
       if (d.tagline) $('tagline').textContent = d.tagline;
     }
   } catch (_) {}
@@ -105,6 +130,40 @@ async function loadHomepage() {
     const snap = await getDoc(doc(db, 'storeSettings', 'homepage'));
     if (snap.exists() && snap.data()) homepage = snap.data();
   } catch (_) { homepage = {}; }
+}
+
+// Design doc (storeSettings/design) — every field optional; invalid or
+// missing values fall back to the Shop defaults so the site always
+// renders. Accent is applied as a CSS variable so the whole site
+// re-themes without any markup change.
+function applyDesign() {
+  const d = (design && typeof design === 'object') ? design : {};
+  const accent = typeof d.accentColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(d.accentColor)
+    ? d.accentColor : '#5433eb';
+  const r = parseInt(accent.slice(1, 3), 16);
+  const g = parseInt(accent.slice(3, 5), 16);
+  const b = parseInt(accent.slice(5, 7), 16);
+  document.documentElement.style.setProperty('--accent', accent);
+  document.documentElement.style.setProperty('--accent-rgb', `${r}, ${g}, ${b}`);
+  const bar = (d.announcementBar && typeof d.announcementBar === 'object') ? d.announcementBar : {};
+  const ann = $('announce');
+  if (bar.enabled === true && typeof bar.text === 'string' && bar.text.trim()) {
+    ann.textContent = bar.text;
+    ann.hidden = false;
+  } else {
+    ann.hidden = true;
+  }
+}
+function sectionOn(key) {
+  const s = (design && design.sections && typeof design.sections === 'object') ? design.sections : {};
+  return s[key] !== false; // default true
+}
+async function loadDesign() {
+  try {
+    const snap = await getDoc(doc(db, 'storeSettings', 'design'));
+    if (snap.exists() && snap.data()) design = snap.data();
+  } catch (_) { design = {}; }
+  applyDesign();
 }
 
 // Homepage content resolution — EXACT schema the app editor writes:
@@ -166,8 +225,9 @@ function setFilter(catId) {
 }
 
 function renderHero() {
-  const slides = heroProducts();
   const el = $('hero');
+  if (!sectionOn('hero')) { if (heroTimer) clearInterval(heroTimer); el.innerHTML = ''; return; }
+  const slides = heroProducts();
   if (slides.length === 0) { el.innerHTML = ''; return; }
   if (heroTimer) clearInterval(heroTimer);
   heroIdx = 0;
@@ -208,8 +268,9 @@ function renderHero() {
 }
 
 function renderFeatured() {
-  const p = featuredProduct();
   const el = $('featured');
+  if (!sectionOn('featured')) { el.innerHTML = ''; return; }
+  const p = featuredProduct();
   if (!p) { el.innerHTML = ''; return; }
   el.innerHTML = `
     <div class="feat-card" data-feat="${p.id}">
@@ -253,13 +314,13 @@ function renderCatGrid() {
 }
 
 function renderPromos() {
-  const banners = promoBanners();
   const el = $('promos');
+  if (!sectionOn('promos')) { el.innerHTML = ''; return; }
+  const banners = promoBanners();
   if (banners.length === 0) { el.innerHTML = ''; return; }
   el.innerHTML = banners.map((b) => `
     <div class="promo" data-link-type="${esc(b.linkType || 'none')}" data-link-id="${esc(b.linkId || '')}">
       ${b.imageUrl ? `<img src="${deliveryUrl(b.imageUrl)}" alt="" onerror="this.remove()">` : ''}
-      <div class="shade"></div>
       <div class="txt">
         <h3>${esc(b.title)}</h3>
         ${b.subtitle ? `<p>${esc(b.subtitle)}</p>` : ''}
@@ -274,17 +335,23 @@ function renderPromos() {
 }
 
 function renderDelivery() {
+  const el = $('deliveryBand');
+  if (!sectionOn('delivery')) { el.innerHTML = ''; return; }
   const d = deliveryBanner();
-  $('deliveryBand').innerHTML = `
+  el.innerHTML = `
     <h3>${esc(d.title)}</h3>
     <p>${esc(d.subtitle)}</p>
     ${d.imageUrl ? `<img class="band-img" src="${deliveryUrl(d.imageUrl)}" alt="" onerror="this.remove()">` : ''}`;
 }
 
 function renderGrid() {
-  const list = products.filter((p) => activeCat === 'all' || p.categoryId === activeCat);
+  // Pill search is client-side only: it filters the already-loaded
+  // products by name AND respects the active category filter.
+  const list = products.filter((p) =>
+    (activeCat === 'all' || p.categoryId === activeCat) &&
+    (searchQuery === '' || (p.name || '').toLowerCase().includes(searchQuery)));
   $('grid').innerHTML = list.length === 0
-    ? '<p style="grid-column:1/-1;text-align:center;color:#a1a1aa">مفيش منتجات في القسم ده لسه</p>'
+    ? `<p class="empty">${searchQuery === '' ? 'مفيش منتجات في القسم ده لسه' : 'مفيش منتجات مطابقة لبحثك لسه'}</p>`
     : list.map((p) => `
       <div class="card" data-id="${p.id}">
         <div class="img">${productImage(p)}</div>
@@ -309,7 +376,7 @@ function openProduct(id) {
   $('modalSheet').innerHTML = `
     ${galleryHtml(p)}
     <h2>${esc(p.name)}</h2>
-    <p style="color:#ff8a3d;font-weight:800;font-size:20px">${money(p.price)} ج.م</p>
+    <p class="modal-price">${money(p.price)} ج.م</p>
     <p>${esc(p.description || '')}</p>
     <button class="primary" id="modalAdd">أضف للسلة</button>
     <button class="secondary" id="modalClose">إغلاق</button>`;
@@ -318,8 +385,8 @@ function openProduct(id) {
     const imgs = (p.images || []).filter((i) => i && i.url);
     const main = $('galMain');
     if (main && imgs[t.dataset.gal]) main.innerHTML = `<img src="${deliveryUrl(imgs[t.dataset.gal].url)}" style="width:100%;height:100%;object-fit:cover">`;
-    document.querySelectorAll('[data-gal]').forEach((x) => x.style.borderColor = '#2a2a2e');
-    t.style.borderColor = '#ff5a3c';
+    document.querySelectorAll('[data-gal]').forEach((x) => x.style.borderColor = 'var(--border)');
+    t.style.borderColor = 'var(--accent)';
   }));
   $('modalAdd').addEventListener('click', () => { cart[id] = (cart[id] || 0) + 1; updateCartBadge(); closeModal(); openDrawer(); });
   $('modalClose').addEventListener('click', closeModal);
@@ -381,7 +448,7 @@ $('toCheckout').addEventListener('click', () => {
 function showInfoForm(err = '') {
   $('modalSheet').innerHTML = `
     <h2>بيانات التوصيل</h2>
-    <p style="color:#a1a1aa">الدفع عند الاستلام — مفيش دفع أونلاين</p>
+    <p style="color:var(--muted)">الدفع عند الاستلام — مفيش دفع أونلاين</p>
     <input id="fName" placeholder="الاسم بالكامل">
     <input id="fPhone" placeholder="رقم الموبايل" inputmode="tel">
     <textarea id="fAddr" placeholder="العنوان بالتفصيل" rows="3"></textarea>
@@ -432,7 +499,7 @@ function showReview(customer) {
     <p>الاسم: ${esc(customer.name)}</p>
     <p>الموبايل: ${esc(customer.phone)}</p>
     <p>العنوان: ${esc(customer.addr)}</p>
-    <hr style="border-color:#2a2a2e">
+    <hr style="border-color:var(--border)">
     ${lines.map((l) => `<p>${esc(l.name)} × ${l.qty} = ${money(l.price * l.qty)} ج.م</p>`).join('')}
     <p><strong>الإجمالي: ${money(cartTotal())} ج.م — الدفع عند الاستلام</strong></p>
     <p class="err" id="orderErr"></p>
@@ -474,8 +541,19 @@ function showReview(customer) {
 }
 
 // ---------- boot ----------
+$('siteSearch').addEventListener('input', (e) => {
+  searchQuery = e.target.value.trim().toLowerCase();
+  renderGrid();
+});
+const submitSearch = () => {
+  document.querySelector('#grid').scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
+$('searchSubmit').addEventListener('click', submitSearch);
+$('siteSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitSearch(); });
+
 (async () => {
   await loadBrand();
+  await loadDesign();
   await loadHomepage();
   try {
     const catsSnap = await getDocs(query(collection(db, 'categories'), orderBy('createdAt')));
