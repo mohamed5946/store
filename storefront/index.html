@@ -8,19 +8,44 @@
 <script src="firebase-config.js"></script>
 </head>
 <body>
-<header>
-  <div id="brand">المتجر</div>
-  <button id="cartBtn">السلة (<span id="cartCount">0</span>)</button>
-</header>
+<div class="sticky-top">
+  <header>
+    <div id="brand">المتجر</div>
+    <button id="cartBtn">السلة (<span id="cartCount">0</span>)</button>
+  </header>
+  <div id="cats"></div>
+</div>
 
-<section class="hero">
+<section id="hero"></section>
+
+<section class="intro">
   <h1 id="tagline">كل اللي تحتاجه، في مكان واحد</h1>
   <p>اطلب دلوقتي وادفع عند الاستلام</p>
   <span class="cod-badge">الدفع عند الاستلام</span>
 </section>
 
-<div id="cats"></div>
-<main id="grid"></main>
+<section id="featured"></section>
+
+<section class="section">
+  <p class="eyebrow">تسوق حسب القسم</p>
+  <h2 class="section-title">الأقسام</h2>
+  <div id="catGrid"></div>
+</section>
+
+<section id="promos"></section>
+
+<section class="section">
+  <p class="eyebrow">منتجاتنا</p>
+  <h2 class="section-title">الأكثر رواجًا</h2>
+  <main id="grid"></main>
+</section>
+
+<section id="deliveryBand"></section>
+
+<footer>
+  <div id="footerBrand">المتجر</div>
+  <p>الدفع عند الاستلام — ادفع لما طلبك يوصلك</p>
+</footer>
 
 <div id="drawer">
   <div class="panel">
@@ -34,7 +59,24 @@
 
 <div id="modal"><div class="sheet" id="modalSheet"></div></div>
 
-<footer id="footerBrand">المتجر</footer>
+<div id="journey">
+  <p class="j-title">طلبك اتأكد واتحرك!</p>
+  <div class="j-road">
+    <div class="j-progress"></div>
+    <div class="j-van">
+      <svg viewBox="0 0 120 64" width="110" height="58" aria-hidden="true">
+        <rect x="4" y="12" width="62" height="36" rx="4" fill="#f5f5f5"/>
+        <rect x="66" y="24" width="34" height="24" rx="4" fill="#e5e5e5"/>
+        <rect x="72" y="28" width="16" height="12" rx="2" fill="#0c0c0e"/>
+        <rect x="14" y="20" width="26" height="16" rx="2" fill="#ff5a3c"/>
+        <circle class="wheel" cx="24" cy="50" r="8" fill="#1c1c1f" stroke="#a1a1aa" stroke-width="2"/>
+        <circle class="wheel" cx="84" cy="50" r="8" fill="#1c1c1f" stroke="#a1a1aa" stroke-width="2"/>
+      </svg>
+    </div>
+  </div>
+  <p class="j-sub">العربية ماشية لحد ما توصل لآخر الطريق…</p>
+  <button id="jSkip">تخطي</button>
+</div>
 
 <script type="module" src="app.js"></script>
 </body>
