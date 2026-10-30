@@ -1,14 +1,18 @@
 // Auth screens: account choice, first-admin creation, sign-in.
 // All errors surface loudly with their real reason + a diagnostics entry.
+// Choice + create use the selected Flow theme; sign-in is the FIXED
+// Flow screen (flow_signin_screen.dart) and never follows the theme.
 import 'package:flutter/material.dart';
 
 import '../core/diagnostics.dart';
 import '../core/identifier.dart';
 import '../services/backend.dart';
+import '../theme/flow_theme.dart';
+import 'flow_signin_screen.dart';
 
 void _showError(BuildContext context, String message) {
   ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(message), backgroundColor: Colors.red.shade700),
+    SnackBar(content: Text(message), backgroundColor: FlowPalette.danger),
   );
 }
 
@@ -23,41 +27,49 @@ class AccountChoiceScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    final variant = FlowThemeControllerScope.maybeOf(context)?.variant ??
+        FlowThemeVariant.liquidGloss;
+    return FlowScaffold(
+      variant: variant,
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.storefront_rounded, size: 64, color: Color(0xFF0A84FF)),
+              const Icon(Icons.storefront_rounded,
+                  size: 64, color: FlowPalette.cyan),
               const SizedBox(height: 16),
-              const Text('إدارة المتجر', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+              const Text('إدارة المتجر',
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              const Text('اختر طريقة الدخول', style: TextStyle(color: Colors.grey)),
+              const Text('اختر طريقة الدخول',
+                  style: TextStyle(color: FlowPalette.textSecondary)),
               const SizedBox(height: 32),
               SizedBox(
                 width: double.infinity,
-                child: FilledButton(
+                child: FlowButton(
                   key: const Key('choice-create'),
+                  label: 'إنشاء حساب',
                   onPressed: onCreate,
-                  child: const Text('إنشاء حساب'),
                 ),
               ),
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
-                child: OutlinedButton(
+                child: FlowButton(
                   key: const Key('choice-have-account'),
+                  label: 'لدي حساب بالفعل',
+                  primary: false,
                   onPressed: onHaveAccount,
-                  child: const Text('لدي حساب بالفعل'),
                 ),
               ),
               const SizedBox(height: 16),
               const Text(
                 'إنشاء الحساب للأدمن بس — لو زميلك عمل لك حساب قبل كده، اختار "لدي حساب بالفعل" وادخل من موبايلك.',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.grey, fontSize: 13),
+                style: TextStyle(
+                    color: FlowPalette.textSecondary, fontSize: 13),
               ),
             ],
           ),
@@ -112,7 +124,10 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    final variant = FlowThemeControllerScope.maybeOf(context)?.variant ??
+        FlowThemeVariant.liquidGloss;
+    return FlowScaffold(
+      variant: variant,
       appBar: AppBar(
         title: const Text('إنشاء حساب أدمن'),
         leading: widget.onBack == null
@@ -126,17 +141,18 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
             key: const Key('create-email'),
             controller: _email,
             keyboardType: TextInputType.emailAddress,
-            decoration: const InputDecoration(labelText: 'الإيميل', border: OutlineInputBorder()),
+            style: const TextStyle(color: Colors.white),
+            decoration: const InputDecoration(labelText: 'الإيميل'),
           ),
           const SizedBox(height: 12),
           TextField(
             key: const Key('create-phone'),
             controller: _phone,
             keyboardType: TextInputType.phone,
+            style: const TextStyle(color: Colors.white),
             decoration: const InputDecoration(
               labelText: 'رقم الموبايل',
               hintText: '01xxxxxxxxx',
-              border: OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: 12),
@@ -144,15 +160,15 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
             key: const Key('create-password'),
             controller: _password,
             obscureText: true,
-            decoration: const InputDecoration(labelText: 'كلمة السر', border: OutlineInputBorder()),
+            style: const TextStyle(color: Colors.white),
+            decoration: const InputDecoration(labelText: 'كلمة السر'),
           ),
           const SizedBox(height: 20),
-          FilledButton(
+          FlowButton(
             key: const Key('create-submit'),
+            label: 'إنشاء الحساب',
+            busy: _busy,
             onPressed: _busy ? null : _submit,
-            child: _busy
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text('إنشاء الحساب'),
           ),
         ],
       ),
@@ -160,77 +176,25 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   }
 }
 
-class SignInScreen extends StatefulWidget {
-  const SignInScreen({super.key, required this.onDone, this.onBack});
+/// Sign-in delegates entirely to the fixed Flow screen. Keys
+/// signin-identifier / signin-password / signin-submit live there.
+class SignInScreen extends StatelessWidget {
+  const SignInScreen({
+    super.key,
+    required this.onDone,
+    this.onBack,
+    this.onCreateAccount,
+  });
   final VoidCallback onDone;
   final VoidCallback? onBack;
-
-  @override
-  State<SignInScreen> createState() => _SignInScreenState();
-}
-
-class _SignInScreenState extends State<SignInScreen> {
-  final _identifier = TextEditingController();
-  final _password = TextEditingController();
-  bool _busy = false;
-
-  Future<void> _submit() async {
-    final error = validateSignIn(_identifier.text, _password.text);
-    if (error != null) {
-      _showError(context, error);
-      return;
-    }
-    setState(() => _busy = true);
-    try {
-      await Backend.instance.signIn(_identifier.text, _password.text);
-      if (mounted) widget.onDone();
-    } catch (e) {
-      Diagnostics.instance.log('Sign-in failed: $e');
-      if (mounted) _showError(context, e.toString());
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
+  final VoidCallback? onCreateAccount;
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('تسجيل الدخول'),
-        leading: widget.onBack == null
-            ? null
-            : IconButton(icon: const Icon(Icons.arrow_back), onPressed: widget.onBack),
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(24),
-        children: [
-          TextField(
-            key: const Key('signin-identifier'),
-            controller: _identifier,
-            keyboardType: TextInputType.emailAddress,
-            decoration: const InputDecoration(
-              labelText: 'الإيميل أو رقم الموبايل',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            key: const Key('signin-password'),
-            controller: _password,
-            obscureText: true,
-            decoration: const InputDecoration(labelText: 'كلمة السر', border: OutlineInputBorder()),
-            onSubmitted: (_) => _submit(),
-          ),
-          const SizedBox(height: 20),
-          FilledButton(
-            key: const Key('signin-submit'),
-            onPressed: _busy ? null : _submit,
-            child: _busy
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Text('دخول'),
-          ),
-        ],
-      ),
+    return FlowSignInScreen(
+      onDone: onDone,
+      onBack: onBack,
+      onCreateAccount: onCreateAccount,
     );
   }
 }

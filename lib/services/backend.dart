@@ -4,6 +4,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/customers.dart';
 import '../core/diagnostics.dart';
@@ -214,7 +216,75 @@ class Backend {
 
   Future<void> signOut() async {
     await auth.signOut();
+    try {
+      await GoogleSignIn.instance.disconnect();
+    } catch (_) {
+      // Not signed in with Google — nothing to disconnect.
+    }
     Diagnostics.instance.log('Signed out');
+  }
+
+  /// Sends a password-reset email to [email] (email identifiers only).
+  Future<void> sendPasswordReset(String email) async {
+    _requireInit();
+    try {
+      await auth.sendPasswordResetEmail(email: email.trim());
+      Diagnostics.instance.log('Password reset sent to $email');
+    } on FirebaseAuthException catch (e) {
+      Diagnostics.instance.log('Password reset failed: ${e.code}');
+      throw BackendException(_friendlyAuthError(e));
+    }
+  }
+
+  /// "Remember me" preference for the sign-in screen. Stored only as a
+  /// preference: session persistence itself stays Firebase's (persist
+  /// until explicit sign-out) and is never weakened by this flag.
+  Future<bool> getRememberMe() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool('remember_me') ?? false;
+  }
+
+  Future<void> setRememberMe(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('remember_me', value);
+  }
+
+  /// Google sign-in for admins, with the admin gate enforced: after a
+  /// successful Google sign-in, the admins doc is checked; a Google
+  /// account that is NOT an admin is signed out immediately and the
+  /// sign-in is rejected. Never bypasses the invite gate order — the
+  /// gate + account-choice screens still come first in the app flow.
+  Future<UserCredential> signInWithGoogle() async {
+    _requireInit();
+    try {
+      final googleUser = await GoogleSignIn.instance.authenticate();
+      final googleAuth = googleUser.authentication;
+      final credential = GoogleAuthProvider.credential(
+        idToken: googleAuth.idToken,
+      );
+      final userCred = await auth.signInWithCredential(credential);
+      final uid = userCred.user!.uid;
+      final adminDoc = await db.collection('admins').doc(uid).get();
+      final role = adminDoc.data()?['role'] as String?;
+      if (role != 'admin') {
+        await auth.signOut();
+        try {
+          await GoogleSignIn.instance.disconnect();
+        } catch (_) {}
+        Diagnostics.instance.log('Google sign-in rejected: not an admin');
+        throw BackendException('هذا الحساب ليس حساب أدمن');
+      }
+      Diagnostics.instance.log('Google sign-in accepted as admin');
+      return userCred;
+    } on BackendException {
+      rethrow;
+    } on FirebaseAuthException catch (e) {
+      Diagnostics.instance.log('Google sign-in failed: ${e.code}');
+      throw BackendException(_friendlyAuthError(e));
+    } catch (e) {
+      Diagnostics.instance.log('Google sign-in failed: $e');
+      throw BackendException('تعذر تسجيل الدخول بـ Google: $e');
+    }
   }
 
   // ---- Storefront content ----

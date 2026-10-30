@@ -1,7 +1,7 @@
 name: storeadmin
 description: "Store admin app — manages the Store storefront (catalog, orders, analytics, team)."
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ^3.5.0
@@ -12,6 +12,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   firebase_core: ^3.8.0
   firebase_auth: ^5.3.0
+  google_sign_in: ^7.0.0
   cloud_firestore: ^5.4.0
   image_picker: ^1.1.2
   share_plus: ^11.0.0

@@ -5,17 +5,16 @@
 // plain HTTP multipart POST; the returned secure_url + public_id are saved
 // in the Firestore product doc.
 //
-// PLACEHOLDERS: cloudName and uploadPreset are NOT known yet — Mo supplies
-// them once the Cloudinary account + preset exist. Nothing is invented
-// here; while they are empty, uploads fail loudly and the admin can still
-// paste an image link instead.
+// CONFIG (verified in the Cloudinary console 2026-10-30): free plan,
+// unsigned preset "store-products", asset folder store-products, allowed
+// formats jpg, jpeg, png, webp. cloudName + preset name are client-safe
+// identifiers by design; NO secret is held here, ever.
 //
-// Preset restrictions to apply when the preset is created (documented here
-// so they are applied exactly once, at creation time):
-//   - folder: store-products
-//   - allowed formats: jpg, png, webp
-//   - unsigned: yes (no secret in the app, ever)
-// The app also compresses on-device (max 1200px, quality 80) before upload.
+// CAVEAT (honest): the 10 MB max file size could NOT be set on the
+// preset — the current console UI has no such field (API-only, and the
+// secret was deliberately not used). Acceptable because the app
+// compresses on-device (max 1200px, quality 80) before every upload,
+// so uploads stay far below 10 MB in practice.
 //
 // AUTO-OPTIMIZATION: every displayed Cloudinary URL goes through
 // deliveryUrl(), which injects f_auto,q_auto so the storefront and the app
@@ -34,9 +33,8 @@ import 'dart:typed_data';
 import '../core/diagnostics.dart';
 
 class CloudinaryConfig {
-  // TODO: supplied by Mo once the Cloudinary account + unsigned preset exist.
-  static const String cloudName = '';
-  static const String uploadPreset = '';
+  static const String cloudName = 'v1lolxom';
+  static const String uploadPreset = 'store-products';
 
   static bool get isConfigured =>
       cloudName.isNotEmpty && uploadPreset.isNotEmpty;

@@ -5,6 +5,7 @@
 import 'package:flutter/material.dart';
 
 import '../core/diagnostics.dart';
+import '../theme/flow_theme.dart';
 
 /// The invite code. Referenced by tests through this const only.
 const String kInviteCode = '037204';
@@ -33,18 +34,21 @@ class _GateScreenState extends State<GateScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    final variant = FlowThemeControllerScope.maybeOf(context)?.variant ??
+        FlowThemeVariant.liquidGloss;
+    return FlowScaffold(
+      variant: variant,
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.storefront_rounded, size: 64, color: Color(0xFF0A84FF)),
+              const Icon(Icons.storefront_rounded, size: 64, color: FlowPalette.cyan),
               const SizedBox(height: 16),
               const Text('إدارة المتجر', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              const Text('اكتب كود الدعوة عشان تفتح البرنامج', style: TextStyle(color: Colors.grey)),
+              const Text('اكتب كود الدعوة عشان تفتح البرنامج', style: TextStyle(color: FlowPalette.textSecondary)),
               const SizedBox(height: 24),
               TextField(
                 key: const Key('invite-code-field'),
@@ -52,6 +56,7 @@ class _GateScreenState extends State<GateScreen> {
                 keyboardType: TextInputType.number,
                 obscureText: true,
                 textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white),
                 decoration: InputDecoration(
                   hintText: 'كود الدعوة',
                   errorText: _error,
@@ -62,10 +67,10 @@ class _GateScreenState extends State<GateScreen> {
               const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
-                child: FilledButton(
+                child: FlowButton(
                   key: const Key('invite-submit'),
+                  label: 'دخول',
                   onPressed: _submit,
-                  child: const Text('دخول'),
                 ),
               ),
             ],

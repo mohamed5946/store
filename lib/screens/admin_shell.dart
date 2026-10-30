@@ -16,10 +16,13 @@ import '../core/diagnostics.dart';
 import '../core/sample_data.dart';
 import '../services/backend.dart';
 import '../services/cloudinary.dart';
+import '../theme/flow_theme.dart';
+import '../theme/store_design.dart';
 
 class AdminShell extends StatefulWidget {
-  const AdminShell({super.key, required this.onSignedOut});
+  const AdminShell({super.key, required this.onSignedOut, this.themeController});
   final VoidCallback onSignedOut;
+  final FlowThemeController? themeController;
 
   @override
   State<AdminShell> createState() => _AdminShellState();
@@ -36,31 +39,38 @@ class _AdminShellState extends State<AdminShell> {
       const _CategoriesTab(),
       const _OrdersTab(),
       const _TeamTab(),
-      _SettingsTab(onSignedOut: widget.onSignedOut),
+      _SettingsTab(
+        onSignedOut: widget.onSignedOut,
+        themeController: widget.themeController,
+      ),
     ];
-    return Scaffold(
+    final variant = FlowThemeControllerScope.maybeOf(context)?.variant ??
+        FlowThemeVariant.liquidGloss;
+    return FlowScaffold(
+      variant: variant,
       appBar: AppBar(title: const Text('إدارة المتجر')),
       body: AnimatedSwitcher(
         duration: const Duration(milliseconds: 250),
         child: KeyedSubtree(key: ValueKey<int>(_tab), child: pages[_tab]),
       ),
-      bottomNavigationBar: NavigationBar(
+      bottomNavigationBar: FlowNavPill(
         selectedIndex: _tab,
         onDestinationSelected: (i) => setState(() => _tab = i),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.analytics_outlined), label: 'الرئيسية'),
-          NavigationDestination(icon: Icon(Icons.inventory_2_outlined), label: 'المنتجات'),
-          NavigationDestination(icon: Icon(Icons.category_outlined), label: 'الأقسام'),
-          NavigationDestination(icon: Icon(Icons.receipt_long_outlined), label: 'الطلبات'),
-          NavigationDestination(icon: Icon(Icons.group_outlined), label: 'الفريق'),
-          NavigationDestination(icon: Icon(Icons.settings_outlined), label: 'الإعدادات'),
+        icons: const [
+          Icons.analytics_outlined,
+          Icons.inventory_2_outlined,
+          Icons.category_outlined,
+          Icons.receipt_long_outlined,
+          Icons.group_outlined,
+          Icons.settings_outlined,
         ],
+        labels: const ['الرئيسية', 'المنتجات', 'الأقسام', 'الطلبات', 'الفريق', 'الإعدادات'],
       ),
     );
   }
 }
 
-Widget _loading() => const Center(child: CircularProgressIndicator());
+Widget _loading() => flowLoading();
 
 Widget _streamError(Object error) => Center(
       child: Padding(
@@ -68,22 +78,20 @@ Widget _streamError(Object error) => Center(
         child: Text(
           'تعذر تحميل البيانات: $error',
           textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.red),
+          style: const TextStyle(color: FlowPalette.danger),
         ),
       ),
     );
 
 Future<bool> _confirm(BuildContext context, String message) async {
-  final result = await showDialog<bool>(
+  final result = await showFlowDialog<bool>(
     context: context,
-    builder: (c) => AlertDialog(
-      title: const Text('تأكيد'),
-      content: Text(message),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(c, false), child: const Text('إلغاء')),
-        FilledButton(onPressed: () => Navigator.pop(c, true), child: const Text('تأكيد')),
-      ],
-    ),
+    title: const Text('تأكيد'),
+    content: Text(message),
+    actions: [
+      TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('إلغاء')),
+      FlowButton(label: 'تأكيد', onPressed: () => Navigator.pop(context, true)),
+    ],
   );
   return result ?? false;
 }
@@ -92,7 +100,7 @@ void _snack(BuildContext context, String message, {bool error = false}) {
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
       content: Text(message),
-      backgroundColor: error ? Colors.red.shade700 : null,
+      backgroundColor: error ? FlowPalette.danger : null,
     ),
   );
 }
@@ -119,19 +127,26 @@ class _DashboardTab extends StatelessWidget {
           funnelCounts[furthestStep(steps)] = (funnelCounts[furthestStep(steps)] ?? 0) + 1;
         }
         final avgSeconds = docs.isEmpty ? 0 : totalMs ~/ 1000 ~/ docs.length;
-        return ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            Row(
-              children: [
-                Expanded(child: _StatCard('الزيارات', '${docs.length}')),
-                const SizedBox(width: 12),
-                Expanded(child: _StatCard('متوسط الوقت', '$avgSeconds ث')),
-              ],
-            ),
-            const SizedBox(height: 16),
-            const Text('وصل كل زائر لحد فين', style: TextStyle(fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
+        return StaggeredScope(
+          child: ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              StaggeredItem(
+                index: 0,
+                child: Row(
+                  children: [
+                    Expanded(child: _StatCard('الزيارات', '${docs.length}')),
+                    const SizedBox(width: 12),
+                    Expanded(child: _StatCard('متوسط الوقت', '$avgSeconds ث')),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              const StaggeredItem(
+                index: 1,
+                child: FlowSectionHeader(title: 'وصل كل زائر لحد فين'),
+              ),
+              const SizedBox(height: 8),
             for (final step in funnelOrder)
               ListTile(
                 title: Text(_funnelLabel(step)),
@@ -143,8 +158,9 @@ class _DashboardTab extends StatelessWidget {
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            const _AbandonedList(),
-          ],
+              const StaggeredItem(index: 2, child: _AbandonedList()),
+            ],
+          ),
         );
       },
     );
@@ -175,16 +191,13 @@ class _StatCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Text(value, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 4),
-            Text(label, style: const TextStyle(color: Colors.grey)),
-          ],
-        ),
+    return FlowCard(
+      child: Column(
+        children: [
+          Text(value, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 4),
+          Text(label, style: const TextStyle(color: FlowPalette.textSecondary)),
+        ],
       ),
     );
   }
@@ -513,13 +526,13 @@ class _ProductThumb extends StatelessWidget {
         width: 48,
         height: 48,
         decoration: BoxDecoration(
-          color: Colors.blue.shade50,
+          gradient: FlowPalette.brandGradient,
           borderRadius: BorderRadius.circular(8),
         ),
         alignment: Alignment.center,
         child: Text(
           product.name.isEmpty ? '؟' : product.name.characters.first,
-          style: TextStyle(color: Colors.blue.shade700, fontWeight: FontWeight.bold),
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
       );
 }
@@ -802,8 +815,9 @@ class _TeamTab extends StatelessWidget {
 // ---------------- Settings + diagnostics ----------------
 
 class _SettingsTab extends StatefulWidget {
-  const _SettingsTab({required this.onSignedOut});
+  const _SettingsTab({required this.onSignedOut, this.themeController});
   final VoidCallback onSignedOut;
+  final FlowThemeController? themeController;
 
   @override
   State<_SettingsTab> createState() => _SettingsTabState();
@@ -828,6 +842,29 @@ class _SettingsTabState extends State<_SettingsTab> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        if (widget.themeController != null) ...[
+          const FlowSectionHeader(title: 'شكل البرنامج'),
+          FlowCard(
+            child: Column(
+              children: [
+                for (final v in FlowThemeVariant.values)
+                  ListTile(
+                    key: Key('theme-${v.prefsValue}'),
+                    title: Text(v.label),
+                    subtitle: Text(v == FlowThemeVariant.liquidGloss
+                        ? 'لمعان سائل أعمق'
+                        : 'زجاج هادي فوق تدرّج'),
+                    trailing: widget.themeController!.variant == v
+                        ? const Icon(Icons.check_circle, color: FlowPalette.cyan)
+                        : const Icon(Icons.circle_outlined,
+                            color: FlowPalette.textMuted),
+                    onTap: () => widget.themeController!.setVariant(v),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
         const Text('اسم المتجر', style: TextStyle(fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
