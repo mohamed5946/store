@@ -8,6 +8,7 @@ import 'package:firebase_core/firebase_core.dart';
 import '../core/diagnostics.dart';
 import '../core/identifier.dart';
 import '../firebase_options.dart';
+import 'cloudinary.dart';
 
 class BackendException implements Exception {
   BackendException(this.message);
@@ -42,27 +43,39 @@ class ProductData {
     required this.price,
     required this.description,
     required this.categoryId,
-    this.imageUrl = '',
-    this.imageBase64 = '',
+    this.images = const <CloudinaryImage>[],
   });
   final String id;
   final String name;
   final double price;
   final String description;
   final String categoryId;
-  final String imageUrl;
-  final String imageBase64;
+
+  /// Gallery: cover = images[0]. A pasted link is an entry with an empty
+  /// publicId. Legacy single imageUrl docs are read as one image.
+  final List<CloudinaryImage> images;
 
   factory ProductData.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
     final d = doc.data() ?? {};
+    final rawImages = d['images'] as List<dynamic>? ?? [];
+    var images = rawImages
+        .whereType<Map<String, dynamic>>()
+        .map(CloudinaryImage.fromMap)
+        .where((img) => img.url.isNotEmpty)
+        .toList();
+    if (images.isEmpty) {
+      final legacyUrl = (d['imageUrl'] ?? '') as String;
+      if (legacyUrl.isNotEmpty) {
+        images = [CloudinaryImage(url: legacyUrl, publicId: '')];
+      }
+    }
     return ProductData(
       id: doc.id,
       name: (d['name'] ?? '') as String,
       price: ((d['price'] ?? 0) as num).toDouble(),
       description: (d['description'] ?? '') as String,
       categoryId: (d['categoryId'] ?? '') as String,
-      imageUrl: (d['imageUrl'] ?? '') as String,
-      imageBase64: (d['imageBase64'] ?? '') as String,
+      images: images,
     );
   }
 }
@@ -252,8 +265,7 @@ class Backend {
       'price': p.price,
       'description': p.description,
       'categoryId': p.categoryId,
-      'imageUrl': p.imageUrl,
-      'imageBase64': p.imageBase64,
+      'images': p.images.map((img) => img.toMap()).toList(),
       'updatedAt': FieldValue.serverTimestamp(),
     };
     if (p.id.isEmpty) {
@@ -322,8 +334,7 @@ class Backend {
         'price': p['price'],
         'description': p['description'],
         'categoryId': catIds[p['categoryId']] ?? '',
-        'imageUrl': '',
-        'imageBase64': '',
+        'images': <Map<String, dynamic>>[],
         'createdAt': FieldValue.serverTimestamp(),
       });
     }

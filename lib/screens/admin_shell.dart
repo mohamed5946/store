@@ -1,8 +1,6 @@
 // Admin shell: dashboard (analytics), products, categories, orders,
 // team, settings + diagnostics. Apple-level feel: weighted motion is kept
 // simple and calm — animated switching, no popping, loading states first.
-import 'dart:convert';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -10,9 +8,9 @@ import 'package:package_info_plus/package_info_plus.dart';
 
 import '../core/analytics_steps.dart';
 import '../core/diagnostics.dart';
-import '../core/image_guard.dart';
 import '../core/sample_data.dart';
 import '../services/backend.dart';
+import '../services/cloudinary.dart';
 
 class AdminShell extends StatefulWidget {
   const AdminShell({super.key, required this.onSignedOut});
@@ -278,10 +276,11 @@ class _ProductsTab extends StatelessWidget {
     final price = TextEditingController(
         text: existing == null ? '' : existing.price.toStringAsFixed(0));
     final desc = TextEditingController(text: existing?.description ?? '');
-    final imageUrl = TextEditingController(text: existing?.imageUrl ?? '');
-    var imageBase64 = existing?.imageBase64 ?? '';
+    final link = TextEditingController();
+    var images = List<CloudinaryImage>.from(existing?.images ?? []);
     var categoryId = existing?.categoryId ?? '';
     var busy = false;
+    var uploading = false;
     var errorText = '';
     await showDialog<void>(
       context: context,
@@ -304,37 +303,102 @@ class _ProductsTab extends StatelessWidget {
                   TextField(
                       controller: desc,
                       decoration: const InputDecoration(labelText: 'الوصف')),
-                  TextField(
-                    controller: imageUrl,
-                    decoration: const InputDecoration(
-                      labelText: 'لينك صورة (اختياري)',
-                      hintText: 'https://…',
-                    ),
+                  const SizedBox(height: 12),
+                  const Align(
+                    alignment: Alignment.centerRight,
+                    child: Text('صور المنتج (الأولى هي الغلاف)',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                  const SizedBox(height: 8),
+                  if (images.isEmpty)
+                    const Text('مفيش صور لسه', style: TextStyle(color: Colors.grey)),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: images.map((img) {
+                      return Stack(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Image.network(img.url, width: 72, height: 72,
+                                fit: BoxFit.cover,
+                                errorBuilder: (c, e, st) => const SizedBox(
+                                    width: 72, height: 72, child: Icon(Icons.broken_image_outlined))),
+                          ),
+                          Positioned(
+                            top: 0,
+                            left: 0,
+                            child: GestureDetector(
+                              // Removing deletes the entry from the doc
+                              // only — the file itself stays on Cloudinary
+                              // as an orphan until cleaned from the dashboard.
+                              onTap: () => setState(
+                                  () => images.removeWhere((x) => x.url == img.url)),
+                              child: Container(
+                                decoration: const BoxDecoration(
+                                  color: Colors.red,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(Icons.close, size: 16, color: Colors.white),
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    }).toList(),
                   ),
                   const SizedBox(height: 8),
                   OutlinedButton.icon(
                     icon: const Icon(Icons.photo_outlined),
-                    label: Text(imageBase64.isEmpty ? 'اختيار صورة من الموبايل' : 'تم اختيار صورة'),
-                    onPressed: () async {
-                      final picked = await ImagePicker().pickImage(
-                        source: ImageSource.gallery,
-                        maxWidth: 800,
-                        maxHeight: 800,
-                        imageQuality: 70,
-                      );
-                      if (picked == null) return;
-                      final bytes = await picked.readAsBytes();
-                      final b64 = base64Encode(bytes);
-                      final err = ImageGuard.checkSize(b64);
-                      if (err != null) {
-                        setState(() => errorText = err);
-                        return;
-                      }
-                      setState(() {
-                        imageBase64 = b64;
-                        errorText = '';
-                      });
-                    },
+                    label: Text(uploading ? 'جارٍ الرفع…' : 'رفع صورة من الموبايل'),
+                    onPressed: uploading
+                        ? null
+                        : () async {
+                            final picked = await ImagePicker().pickImage(
+                              source: ImageSource.gallery,
+                              maxWidth: 1200,
+                              maxHeight: 1200,
+                              imageQuality: 80,
+                            );
+                            if (picked == null) return;
+                            setState(() {
+                              uploading = true;
+                              errorText = '';
+                            });
+                            try {
+                              final bytes = await picked.readAsBytes();
+                              final uploaded = await uploadImageToCloudinary(bytes);
+                              setState(() => images.add(uploaded));
+                            } catch (e) {
+                              setState(() => errorText = e.toString());
+                            } finally {
+                              setState(() => uploading = false);
+                            }
+                          },
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: link,
+                          decoration: const InputDecoration(
+                            labelText: 'أو لينك صورة',
+                            hintText: 'https://…',
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () {
+                          final url = link.text.trim();
+                          if (url.isEmpty) return;
+                          setState(() {
+                            images.add(CloudinaryImage(url: url, publicId: ''));
+                            link.clear();
+                          });
+                        },
+                        child: const Text('إضافة'),
+                      ),
+                    ],
                   ),
                   if (errorText.isNotEmpty)
                     Padding(
@@ -388,8 +452,7 @@ class _ProductsTab extends StatelessWidget {
                             price: double.parse(price.text.trim()),
                             description: desc.text.trim(),
                             categoryId: categoryId,
-                            imageUrl: imageUrl.text.trim(),
-                            imageBase64: imageBase64,
+                            images: images,
                           ));
                           if (c.mounted) Navigator.pop(c);
                         } catch (e) {
@@ -415,23 +478,12 @@ class _ProductThumb extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (product.imageUrl.isNotEmpty) {
+    if (product.images.isNotEmpty) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(8),
-        child: Image.network(product.imageUrl, width: 48, height: 48, fit: BoxFit.cover,
-            errorBuilder: (c, e, st) => _fallback()),
+        child: Image.network(product.images.first.url, width: 48, height: 48,
+            fit: BoxFit.cover, errorBuilder: (c, e, st) => _fallback()),
       );
-    }
-    if (product.imageBase64.isNotEmpty) {
-      try {
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: Image.memory(base64Decode(product.imageBase64),
-              width: 48, height: 48, fit: BoxFit.cover, errorBuilder: (c, e, st) => _fallback()),
-        );
-      } catch (_) {
-        return _fallback();
-      }
     }
     return _fallback();
   }

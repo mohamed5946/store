@@ -48,10 +48,26 @@ const $ = (id) => document.getElementById(id);
 const money = (n) => Number(n || 0).toFixed(0);
 
 function productImage(p) {
+  const imgs = p.images || [];
+  if (imgs.length > 0 && imgs[0].url) return `<img src="${imgs[0].url}" alt="">`;
   if (p.imageBase64) return `<img src="data:image/jpeg;base64,${p.imageBase64}" alt="">`;
   if (p.imageUrl) return `<img src="${p.imageUrl}" alt="" onerror="this.remove()">`;
   const initial = (p.name || '?').trim().charAt(0);
   return initial;
+}
+
+function galleryHtml(p) {
+  const imgs = (p.images || []).filter((i) => i && i.url);
+  if (imgs.length === 0) {
+    if (p.imageBase64) imgs.push({ url: `data:image/jpeg;base64,${p.imageBase64}` });
+    else if (p.imageUrl) imgs.push({ url: p.imageUrl });
+  }
+  if (imgs.length === 0) return '';
+  const main = `<div id="galMain" style="aspect-ratio:1;border-radius:14px;overflow:hidden;background:linear-gradient(135deg,#0a84ff,#64d2ff)"><img src="${imgs[0].url}" style="width:100%;height:100%;object-fit:cover"></div>`;
+  if (imgs.length === 1) return main;
+  const thumbs = imgs.map((im, i) =>
+    `<img src="${im.url}" data-gal="${i}" style="width:64px;height:64px;object-fit:cover;border-radius:10px;cursor:pointer;border:2px solid ${i === 0 ? '#0a84ff' : '#eee'}">`).join('');
+  return main + `<div style="display:flex;gap:8px;margin-top:10px">${thumbs}</div>`;
 }
 
 // ---------- brand + catalog ----------
@@ -104,13 +120,20 @@ function openProduct(id) {
   if (!p) return;
   recordStep('product');
   $('modalSheet').innerHTML = `
-    <div class="img" style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;font-size:64px;font-weight:800;color:#fff;background:linear-gradient(135deg,#0a84ff,#64d2ff);border-radius:14px;overflow:hidden">${productImage(p)}</div>
+    ${galleryHtml(p)}
     <h2>${p.name}</h2>
     <p style="color:#0a84ff;font-weight:800;font-size:20px">${money(p.price)} ج.م</p>
     <p>${p.description || ''}</p>
     <button class="primary" id="modalAdd">أضف للسلة</button>
     <button class="secondary" id="modalClose">إغلاق</button>`;
   $('modal').classList.add('open');
+  document.querySelectorAll('[data-gal]').forEach((t) => t.addEventListener('click', () => {
+    const imgs = (p.images || []).filter((i) => i && i.url);
+    const main = $('galMain');
+    if (main && imgs[t.dataset.gal]) main.innerHTML = `<img src="${imgs[t.dataset.gal].url}" style="width:100%;height:100%;object-fit:cover">`;
+    document.querySelectorAll('[data-gal]').forEach((x) => x.style.borderColor = '#eee');
+    t.style.borderColor = '#0a84ff';
+  }));
   $('modalAdd').addEventListener('click', () => { cart[id] = (cart[id] || 0) + 1; updateCartBadge(); closeModal(); openDrawer(); });
   $('modalClose').addEventListener('click', closeModal);
 }

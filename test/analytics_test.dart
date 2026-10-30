@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:storeadmin/core/analytics_steps.dart';
-import 'package:storeadmin/core/image_guard.dart';
 
 void main() {
   test('furthest funnel step', () {
@@ -25,10 +24,6 @@ void main() {
       CategoryDeletePlan.reassign,
     );
   });
-
-  test('image size guard', () {
-    expect(ImageGuard.checkSize('a' * 100), isNull);
-    expect(ImageGuard.checkSize('a' * (ImageGuard.maxBase64Chars + 1)), isNotNull);
-    expect(ImageGuard.approxBytes('aaaa'), 3);
-  });
 }
+
+
