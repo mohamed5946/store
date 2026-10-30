@@ -22,7 +22,7 @@
 //   apps. There is no fully silent update and this feature never
 //   claims otherwise, in UI copy or in logs.
 // - Update-over-install works because every release build is signed
-//   with the same stable release key (guarded in CI as 3E:37).
+//   with the same stable release key (guarded in CI as 9C:D0).
 
 import 'dart:convert';
 import 'dart:io';

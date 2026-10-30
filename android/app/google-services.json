@@ -22,6 +22,14 @@
           }
         },
         {
+          "client_id": "766975771796-blqgv3faiauifluoqdgjsn82a0pga3ve.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.valor.storeadmin",
+            "certificate_hash": "9cd008a1c305e4b0038e084cfe75be7017859fd6"
+          }
+        },
+        {
           "client_id": "766975771796-eoi7l1ih31hmnqefrk31fi8lt5luqkma.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {
