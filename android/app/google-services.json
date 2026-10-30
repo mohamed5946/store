@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "766975771796",
+    "project_id": "store-3384c",
+    "storage_bucket": "store-3384c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:766975771796:android:9e2c8f1f55af5364e8e081",
+        "android_client_info": {
+          "package_name": "com.valor.storeadmin"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCzESXbev23RMeNRRrJ-iXWGRLokLILLsE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

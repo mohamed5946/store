@@ -1,0 +1,59 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAdmin() {
+      return request.auth != null
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // Public storefront content: anyone can read, only admins write.
+    match /storeSettings/{doc} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+    match /categories/{doc} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+    match /products/{doc} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Orders: anyone can CREATE an order (COD checkout); only admins read
+    // or change status. Customers cannot read each other's orders.
+    match /orders/{doc} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // Admin profiles: an admin can read/write; any signed-in user may
+    // CREATE their own profile doc (bootstrap: the first admin has no
+    // profile yet, so isAdmin() cannot be true for them at that moment).
+    match /admins/{uid} {
+      allow create: if request.auth != null && request.auth.uid == uid;
+      allow read, update, delete: if isAdmin();
+    }
+
+    // Phone lookups: get-only by anyone (needed for phone sign-in
+    // resolution); listing all lookups is never allowed. Creation is
+    // allowed for admins, plus self-creation for the bootstrap case.
+    match /phones/{key} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isAdmin()
+        || (request.auth != null && request.resource.data.uid == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    // Analytics: public create + update (the storefront writes its own
+    // session doc and refreshes its duration with a heartbeat — anonymous
+    // ids are random, so one visitor cannot guess another's); reads and
+    // deletes are admin-only.
+    match /analytics/{section}/items/{doc} {
+      allow create, update: if true;
+      allow read, delete: if isAdmin();
+    }
+  }
+}
