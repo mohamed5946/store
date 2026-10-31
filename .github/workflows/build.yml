@@ -69,12 +69,17 @@ jobs:
           unzip -l "$APK" | grep 'lib/.*/libapp.so'
 
       - name: Enforce release cert fingerprint        # Tripwire: the release MUST be signed with the accepted stable key
-        # (9C:D0..., accepted 2026-10-30). A silent keystore change broke v1.0.0 -> v1.1
-        # updates; this step fails the build instead of shipping an
-        # APK Android would refuse as an update. The fingerprint is
+        # (74:5A..., verified 2026-10-30 with androguard on ALL shipped builds
+        # v1.0.0/v1.1.1/v1.1.2: DN CN=Test/OU=Test/O=Test/C=EG, serial
+        # 14433908001296680548). The older constants (7B:34, AB:42, 3E:37,
+        # 9C:D0, 37:4A) were NOT real certificates: the old guard script
+        # hashed bytes from inside the signatures region instead of the
+        # certificate, so it false-alarmed on every version while the real
+        # key never changed. This step fails the build instead of shipping
+        # an APK Android would refuse as an update. The fingerprint is
         # a public certificate identifier, safe to hard-code.
         run: |
-          python3 tools/check_release_cert.py build/app/outputs/flutter-apk/app-release.apk 9C:D0:08:A1:C3:05:E4:B0:03:8E:08:4C:FE:75:BE:70:17:85:9F:D6
+          python3 tools/check_release_cert.py build/app/outputs/flutter-apk/app-release.apk 74:5A:63:38:E2:00:D7:43:0A:80:C1:DE:A5:15:2D:C6:DD:A1:D3:D5
 
       - name: Verify launcher icon has no white edges
         # The icon is a full-bleed dark-navy adaptive icon; any white

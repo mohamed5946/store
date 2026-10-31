@@ -38,6 +38,14 @@
           }
         },
         {
+          "client_id": "766975771796-j1iald5jhplocc66oh4nm6f7mne6l36r.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.valor.storeadmin",
+            "certificate_hash": "745a6338e200d7430a80c1dea5152dc6dda1d3d5"
+          }
+        },
+        {
           "client_id": "766975771796-mpgvl4r7iia2r0mgtq9abeq0cckcfgk0.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {

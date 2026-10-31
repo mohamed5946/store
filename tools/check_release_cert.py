@@ -7,6 +7,23 @@ install as an update over the previous release.
 
 Usage: check_release_cert.py <apk> <expected-sha1-colon-hex>
 Exit 0 on match, 1 on mismatch or unparseable input.
+
+Layout of the v2 block value (this is where an earlier version of this
+script went wrong, so it is spelled out): the value starts with a
+uint32 SEQUENCE length covering the signers that follow; each signer
+is itself length-prefixed, and only then comes the length-prefixed
+signed data (digests, certificates, additional attributes), the
+length-prefixed signatures, and the length-prefixed public key. The
+old script treated the sequence length as the signer length, shifting
+its whole parse by one length field: it ended up hashing bytes from
+inside the SIGNATURES region instead of the certificate. Signature
+bytes change whenever the APK content changes (per version) and stay
+stable across runs of the same commit (deterministic RSA), which is
+exactly the phantom "key rotation" pattern the old script reported
+while the real certificate never changed. The fix below skips the
+sequence length first, and additionally refuses any blob that does
+not start with a DER SEQUENCE tag (0x30) so a mis-parse fails loudly
+instead of producing a plausible-looking wrong fingerprint.
 """
 import hashlib
 import struct
@@ -30,20 +47,34 @@ def find_eocd(data):
 
 
 def v2_cert_sha1(block_value):
-    # Block value = sequence of signers; each is length-prefixed.
-    # We use the first signer (our builds have exactly one).
-    pos = 0
+    # Block value = length-prefixed SEQUENCE of signers; each signer is
+    # length-prefixed. Our builds have exactly one signer; we use it.
+    if len(block_value) < 8:
+        raise SystemExit('v2 block value too small for a signer')
+    seq_len = u32(block_value, 0)
+    if seq_len + 4 > len(block_value):
+        raise SystemExit('v2 signer sequence overruns block value')
+    pos = 4
     signer_len = u32(block_value, pos)
-    signer = block_value[pos + 4:pos + 4 + signer_len]
+    pos += 4
+    if pos + signer_len > len(block_value):
+        raise SystemExit('v2 signer overruns block value')
+    signer = block_value[pos:pos + signer_len]
     # Signer = signed_data (len-prefixed), signatures (len-prefixed),
     # public_key (len-prefixed).
+    if len(signer) < 4:
+        raise SystemExit('v2 signer too small for signed data')
     sd_len = u32(signer, 0)
+    if 4 + sd_len > len(signer):
+        raise SystemExit('v2 signed data overruns signer')
     signed_data = signer[4:4 + sd_len]
     # Signed data = digests (len-prefixed), certificates
     # (len-prefixed), additional attributes (len-prefixed).
     p = 0
     digests_len = u32(signed_data, p)
     p += 4 + digests_len
+    if p + 4 > len(signed_data):
+        raise SystemExit('v2 digests overrun signed data')
     certs_len = u32(signed_data, p)
     p += 4
     certs_end = p + certs_len
@@ -53,6 +84,10 @@ def v2_cert_sha1(block_value):
     cert = signed_data[p + 4:p + 4 + cert_len]
     if len(cert) != cert_len:
         raise SystemExit('certificate truncated')
+    if not cert or cert[0] != 0x30:
+        raise SystemExit(
+            'extracted blob is not a DER certificate (missing 0x30 tag); '
+            'the v2 parse is wrong, refusing to hash it')
     return ':'.join('%02X' % b for b in hashlib.sha1(cert).digest())
 
 
