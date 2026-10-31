@@ -1,39 +1,58 @@
-// Store storefront — vanilla JS + Firestore. Mobile-first, COD only,
-// light "Shop" design language (white marble canvas, violet accent).
-//
-// DESIGN DOC — storeSettings/design (read by this site, written by the
-// admin app's design editor; every field optional, safe defaults below):
-// {
-//   accentColor: string, hex "#rrggbb" (default "#5433eb"; any invalid
-//     value falls back to the default),
-//   announcementBar: { enabled: boolean (default false),
-//                      text: string (default "") },
-//   sections: { hero: boolean (default true),
-//               promos: boolean (default true),
-//               featured: boolean (default true),
-//               delivery: boolean (default true) }
-// }
-// Public-readable under the existing storeSettings/{doc} rule — no rules
-// change. Until the app editor ships, the site runs fully on these
-// defaults. Content slots (brand, tagline, hero, promos, featured,
-// delivery band, categories, products) always come from Firestore docs
-// the app writes — never from literals here, except the defaults above.
-//
-// ANALYTICS BOUNDARY (hard requirement): a visitor's contact info is saved
-// to a checkout attempt ONLY after they complete the info step (press
-// "مراجعة الطلب" with valid data). Opening checkout, or typing without
-// completing the step, never stores any contact info. Sessions are
-// anonymous (random localStorage id, no personal data).
+/* Faithful restore of the user-supplied glass storefront design, rewired to
+ * the store's real Firestore backend. The LOOK is the original exactly:
+ * teal accent #3f7f8c + sage #8fb8b0 (and dark variants), earbuds hero
+ * illustration, original hero copy, Tajawal + Inter, glass surfaces.
+ *
+ * DESIGN DOC — storeSettings/design is read ONLY for announcementBar and
+ * section toggles. The accentColor field is DELIBERATELY IGNORED in this
+ * version: the look is fixed teal per the owner's explicit restore decision,
+ * not re-themed from the doc. (The app's design editor for announcement /
+ * sections still applies; accent edits there have no effect here.)
+ *
+ * APP-EDITABLE FIELDS (all optional; every one falls back to the ORIGINAL
+ * look/text when missing or empty — the page then renders EXACTLY like the
+ * faithful restore). A future admin-app build implements the editor for
+ * these; the field names below are the contract it must write.
+ * - storeSettings/settings.logoImageUrl (string, default ""): brand logo
+ *   mark image shown in the topbar next to the brand name. When set to a
+ *   non-empty URL it replaces the pulse SVG mark (same 40x40 box, radius
+ *   14px, object-fit contain). When empty/missing the pulse SVG renders.
+ * - storeSettings/homepage.heroImageUrl (string, default ""): hero image
+ *   shown inside the hero card. When set it fills the card's visual area
+ *   (object-fit cover, card radius); the earbuds SVG and its two float
+ *   chips are hidden with it (the chips carry earbuds-specific claims).
+ *   When empty/missing the original earbuds SVG + chips render exactly.
+ * - storeSettings/homepage.heroTitle (string): hero headline first line.
+ *   Default (when missing/empty): "نبض التكنولوجيا" (the original line).
+ * - storeSettings/homepage.heroAccent (string): hero headline accent
+ *   second line, keeps its accent color class. Default: "في كل تفصيلة".
+ * - storeSettings/homepage.heroSubtitle (string): hero paragraph below
+ *   the headline. Default: the original tech subcopy, verbatim.
+ * All five fields accept any string; only non-empty (after trim) values
+ * override. Field URLs are the store's own Cloudinary uploads (f_auto,
+ * q_auto applied via deliveryUrl; non-Cloudinary links pass through).
+ *
+ * FROZEN RULES (never weaken these):
+ * - 2-step Cash-on-Delivery checkout ONLY: info -> review -> order doc.
+ * - Customer contact is saved ONLY after the info step completes with valid
+ *   data. Typing without completing never stores contact. No keystroke
+ *   capture anywhere.
+ * - The order doc is created EXACTLY ONCE, before the journey animation.
+ *   On failure the real error shows and NO animation plays (never fake).
+ * - Analytics are anonymous (random localStorage id, heartbeat, funnel).
+ * - No invented stats, discount codes, or product claims anywhere.
+ */
+
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {
-  getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc,
-  addDoc, serverTimestamp, arrayUnion, query, orderBy,
+  getFirestore, collection, query, orderBy, getDocs, doc, getDoc,
+  setDoc, updateDoc, addDoc, serverTimestamp, arrayUnion,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 const app = initializeApp(window.STORE_FIREBASE_CONFIG);
 const db = getFirestore(app);
 
-// ---------- anonymous session + funnel ----------
+/* ---------- anonymous session + funnel ---------- */
 let sessionId = localStorage.getItem('store_session_id');
 if (!sessionId) {
   sessionId = 's_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -56,414 +75,400 @@ setDoc(sessionRef, { startedAt: serverTimestamp(), lastSeenAt: serverTimestamp()
 setInterval(heartbeat, 30000);
 window.addEventListener('pagehide', heartbeat);
 
-// ---------- state ----------
+/* ---------- state ---------- */
 let categories = [];
 let products = [];
 let homepage = {};
 let design = {};
 let searchQuery = '';
-let activeCat = 'all';
-let cart = {}; // id -> qty
+let filter = 'all';
+let cart = JSON.parse(localStorage.getItem('sp-cart') || '{}');
 let attemptId = null;
-let heroIdx = 0;
-let heroTimer = null;
+let ordering = false;
+let theme = localStorage.getItem('sp-theme') || 'light';
 
-const $ = (id) => document.getElementById(id);
-const money = (n) => Number(n || 0).toFixed(0);
-const esc = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const $ = (s, el = document) => el.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = (n) => `${Number(n || 0).toLocaleString('ar-EG')} ج.م`;
 
-// Cloudinary auto-optimization: every Cloudinary image is served with
-// f_auto,q_auto so the storefront loads fast. Pasted links pass through.
+/* Cloudinary auto-optimization: every Cloudinary image is served with
+ * f_auto,q_auto so the storefront loads fast. Pasted links pass through. */
 function deliveryUrl(u) {
   if (!u || !u.includes('res.cloudinary.com') || u.includes('f_auto')) return u;
   return u.replace('/upload/', '/upload/f_auto,q_auto/');
 }
-
 function coverUrl(p) {
   const imgs = p.images || [];
   if (imgs.length > 0 && imgs[0].url) return deliveryUrl(imgs[0].url);
   if (p.imageUrl) return p.imageUrl;
   return '';
 }
-
-function productImage(p) {
-  const url = coverUrl(p);
-  if (url) return `<img src="${url}" alt="" onerror="this.remove()">`;
-  const initial = (p.name || '?').trim().charAt(0);
-  return esc(initial);
+function productImages(p) {
+  const imgs = (p.images || []).filter((i) => i && i.url).map((i) => deliveryUrl(i.url));
+  if (imgs.length === 0 && p.imageUrl) imgs.push(p.imageUrl);
+  return imgs;
 }
-
-function galleryHtml(p) {
-  const imgs = (p.images || []).filter((i) => i && i.url);
-  if (imgs.length === 0 && p.imageUrl) imgs.push({ url: p.imageUrl });
-  if (imgs.length === 0) return '';
-  const main = `<div id="galMain" style="aspect-ratio:1;border-radius:20px;overflow:hidden;background:#f2f4f5"><img src="${deliveryUrl(imgs[0].url)}" style="width:100%;height:100%;object-fit:cover"></div>`;
-  if (imgs.length === 1) return main;
-  const thumbs = imgs.map((im, i) =>
-    `<img src="${deliveryUrl(im.url)}" data-gal="${i}" style="width:64px;height:64px;object-fit:cover;border-radius:10px;cursor:pointer;border:2px solid ${i === 0 ? 'var(--accent)' : 'var(--border)'}">`).join('');
-  return main + `<div style="display:flex;gap:8px;margin-top:10px">${thumbs}</div>`;
-}
-
-function catName(id) {
-  const c = categories.find((x) => x.id === id);
-  return c ? c.name : '';
-}
-
-// ---------- brand + catalog + homepage ----------
-async function loadBrand() {
-  try {
-    const snap = await getDoc(doc(db, 'storeSettings', 'settings'));
-    if (snap.exists()) {
-      const d = snap.data();
-      if (d.brandName) {
-        // Wordmark dot in the accent color (Shop signature).
-        $('brand').innerHTML = esc(d.brandName) + '<span class="brand-dot"></span>';
-        $('footerBrand').textContent = d.brandName; document.title = d.brandName;
-      }
-      if (d.tagline) $('tagline').textContent = d.tagline;
-    }
-  } catch (_) {}
-}
-
-async function loadHomepage() {
-  try {
-    const snap = await getDoc(doc(db, 'storeSettings', 'homepage'));
-    if (snap.exists() && snap.data()) homepage = snap.data();
-  } catch (_) { homepage = {}; }
-}
-
-// Design doc (storeSettings/design) — every field optional; invalid or
-// missing values fall back to the Shop defaults so the site always
-// renders. Accent is applied as a CSS variable so the whole site
-// re-themes without any markup change.
-function applyDesign() {
-  const d = (design && typeof design === 'object') ? design : {};
-  const accent = typeof d.accentColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(d.accentColor)
-    ? d.accentColor : '#5433eb';
-  const r = parseInt(accent.slice(1, 3), 16);
-  const g = parseInt(accent.slice(3, 5), 16);
-  const b = parseInt(accent.slice(5, 7), 16);
-  document.documentElement.style.setProperty('--accent', accent);
-  document.documentElement.style.setProperty('--accent-rgb', `${r}, ${g}, ${b}`);
-  const bar = (d.announcementBar && typeof d.announcementBar === 'object') ? d.announcementBar : {};
-  const ann = $('announce');
-  if (bar.enabled === true && typeof bar.text === 'string' && bar.text.trim()) {
-    ann.textContent = bar.text;
-    ann.hidden = false;
-  } else {
-    ann.hidden = true;
-  }
-}
+function initialOf(name) { return (name || '?').trim().charAt(0); }
+function catCount(id) { return products.filter((p) => p.categoryId === id).length; }
 function sectionOn(key) {
   const s = (design && design.sections && typeof design.sections === 'object') ? design.sections : {};
   return s[key] !== false; // default true
 }
-async function loadDesign() {
-  try {
-    const snap = await getDoc(doc(db, 'storeSettings', 'design'));
-    if (snap.exists() && snap.data()) design = snap.data();
-  } catch (_) { design = {}; }
-  applyDesign();
+
+/* ---------- brand + design application ---------- */
+function applyBrand() {
+  const name = window.__brandName || 'المتجر';
+  const tag = window.__brandTag || 'تسوق';
+  $('#brandName').textContent = name;
+  $('#brandTag').textContent = tag;
+  $('#footerBrand').textContent = name;
+  $('#footerTag').textContent = 'الدفع عند الاستلام — ادفع لما طلبك يوصلك';
+  $('#copyBrand').textContent = name;
+  $('#aboutTitle').textContent = `لماذا ${name}؟`;
+  document.title = name;
+}
+function applyDesign() {
+  const d = (design && typeof design === 'object') ? design : {};
+  // Announcement bar: shown ONLY when enabled with non-empty text.
+  const ab = d.announcementBar || {};
+  const bar = $('#announce');
+  if (ab.enabled === true && ab.text) { bar.textContent = ab.text; bar.hidden = false; }
+  else { bar.hidden = true; }
+  // Section toggles (accentColor deliberately ignored — fixed teal look).
+  const hero = document.querySelector('.hero');
+  if (hero) hero.style.display = sectionOn('hero') ? '' : 'none';
+  $('#offers').style.display = sectionOn('promos') ? '' : 'none';
+  $('#featuredSpot').style.display = sectionOn('featured') ? '' : 'none';
+  $('#delivery').style.display = sectionOn('delivery') ? '' : 'none';
 }
 
-// Homepage content resolution — EXACT schema the app editor writes:
-// { heroProductIds: string[] (max 4, ordered),
-//   promoBanners: [{imageUrl, title, subtitle, linkType: 'category'|'product'|'none', linkId}],
-//   featuredProductId: string,
-//   deliveryBanner: {title, subtitle, imageUrl} }
-// Every field is optional: missing fields fall back to real products so the
-// site always looks complete. Only the store's own images are ever used.
-function heroProducts() {
-  const ids = Array.isArray(homepage.heroProductIds) ? homepage.heroProductIds : [];
-  const picked = ids.map((id) => products.find((p) => p.id === id)).filter(Boolean).slice(0, 4);
-  if (picked.length > 0) return picked;
-  return products.slice(0, 4);
+/* ---------- app-editable brand mark + hero (see header contract) ---------- */
+function applyLogoMark() {
+  const url = window.__logoImageUrl;
+  if (!url) return; // unset: keep the original pulse SVG exactly as in the HTML
+  $('#brandMark').innerHTML = `<img src="${esc(deliveryUrl(url))}" alt="" />`;
 }
-function featuredProduct() {
-  if (typeof homepage.featuredProductId === 'string') {
-    const f = products.find((p) => p.id === homepage.featuredProductId);
-    if (f) return f;
-  }
-  return products[0] || null;
-}
-function promoBanners() {
-  const list = Array.isArray(homepage.promoBanners) ? homepage.promoBanners : [];
-  const valid = list.filter((b) => b && typeof b.title === 'string').slice(0, 2);
-  if (valid.length > 0) return valid;
-  return products.slice(0, 2).map((p) => ({
-    imageUrl: coverUrl(p), title: p.name, subtitle: `${money(p.price)} ج.م`,
-    linkType: 'product', linkId: p.id,
-  }));
-}
-function deliveryBanner() {
-  const d = (homepage.deliveryBanner && typeof homepage.deliveryBanner === 'object') ? homepage.deliveryBanner : {};
-  return {
-    title: typeof d.title === 'string' && d.title ? d.title : 'الدفع عند الاستلام',
-    subtitle: typeof d.subtitle === 'string' && d.subtitle ? d.subtitle : 'ادفع كاش لما طلبك يوصلك لحد البيت — من غير أي دفع أونلاين',
-    imageUrl: typeof d.imageUrl === 'string' ? d.imageUrl : '',
+function applyHero() {
+  const hp = homepage || {};
+  const setText = (id, v) => {
+    if (typeof v === 'string' && v.trim()) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = v.trim();
+    }
   };
+  setText('heroTitleLine', hp.heroTitle);
+  setText('heroAccentLine', hp.heroAccent);
+  setText('heroSubtitle', hp.heroSubtitle);
+  // Hero image: only when set. Otherwise the original earbuds SVG + chips
+  // stay exactly as in the HTML (nothing here touches them).
+  const imgUrl = (typeof hp.heroImageUrl === 'string' && hp.heroImageUrl.trim())
+    ? deliveryUrl(hp.heroImageUrl.trim()) : '';
+  if (!imgUrl) return;
+  const media = $('#heroMedia');
+  media.innerHTML = `<img src="${esc(imgUrl)}" alt="" />`;
+  media.hidden = false;
+  const svg = $('#heroEarbuds');
+  if (svg) svg.hidden = true;
+  // The float chips carry earbuds-specific claims ("65W", "4.9"), so they
+  // hide with the earbuds visual and return with it.
+  document.querySelectorAll('.hero-card .float-chip').forEach((c) => { c.hidden = true; });
 }
 
-// ---------- sections ----------
-function renderCats() {
-  const el = $('cats');
-  const chips = [{ id: 'all', name: 'الكل' }, ...categories];
-  el.innerHTML = chips.map((c) =>
-    `<button class="chip ${c.id === activeCat ? 'active' : ''}" data-cat="${c.id}">${esc(c.name)}</button>`).join('');
-  el.querySelectorAll('.chip').forEach((b) => b.addEventListener('click', () => {
-    activeCat = b.dataset.cat;
-    if (activeCat !== 'all') recordStep('category');
-    renderCats(); renderGrid();
-  }));
+/* ---------- render: live data into the original markup ---------- */
+function renderMarquee() {
+  const names = categories.map((c) => c.name).filter(Boolean);
+  const sec = $('#marqueeSection');
+  if (names.length === 0) { sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  const spans = names.map((n) => `<span>${esc(n)}</span>`).join('');
+  $('#marqueeTrack').innerHTML = spans + spans; // duplicated for the loop
 }
-
-function setFilter(catId) {
-  activeCat = catId;
-  if (activeCat !== 'all') recordStep('category');
-  renderCats(); renderGrid();
-  document.querySelector('#grid').scrollIntoView({ behavior: 'smooth', block: 'start' });
+function renderStats() {
+  $('#heroStats').innerHTML = `
+    <li><strong data-count="${products.length}">0</strong><span>منتج</span></li>
+    <li><strong data-count="${categories.length}">0</strong><span>قسم</span></li>
+    <li><strong>كاش</strong><span>الدفع عند الاستلام</span></li>`;
+  animateCounters();
+  const about = $('#aboutCatalog');
+  if (about) about.textContent = `${products.length} منتج في ${categories.length} قسم — بتتحدث من البرنامج.`;
 }
-
-function renderHero() {
-  const el = $('hero');
-  if (!sectionOn('hero')) { if (heroTimer) clearInterval(heroTimer); el.innerHTML = ''; return; }
-  const slides = heroProducts();
-  if (slides.length === 0) { el.innerHTML = ''; return; }
-  if (heroTimer) clearInterval(heroTimer);
-  heroIdx = 0;
-  const slideHtml = (p, i) => `
-    <div class="hero-slide ${i === 0 ? 'active' : ''}">
-      <p class="hero-eyebrow">${esc(catName(p.categoryId) || 'منتج مميز')}</p>
-      <h2>${esc(p.name)}</h2>
-      <p class="hero-price">${money(p.price)} ج.م</p>
-      ${coverUrl(p) ? `<img class="hero-img" src="${coverUrl(p)}" alt="" onerror="this.remove()">` : ''}
-      <div class="hero-actions">
-        <button class="primary" data-hero-add="${p.id}">أضف للسلة</button>
-        <button class="ghost" data-hero-open="${p.id}">التفاصيل</button>
+function renderCategories() {
+  $('#categoriesGrid').innerHTML = categories.map((c) => `
+    <a class="cat-card reveal" href="#featured" data-cat="${c.id}">
+      <span class="ico">${esc(initialOf(c.name))}</span>
+      <h3>${esc(c.name)}</h3>
+      <p>تسوق منتجات القسم</p>
+      <div class="count">${catCount(c.id)} منتج</div>
+    </a>`).join('');
+}
+function renderPills() {
+  const all = [{ id: 'all', name: 'الكل' }, ...categories];
+  $('#filterPills').innerHTML = all.map((c) => `
+    <button class="pill ${filter === c.id ? 'active' : ''}" data-filter="${c.id}" role="tab">${esc(c.name)}</button>`).join('');
+}
+function productCard(p) {
+  const cover = coverUrl(p);
+  const visual = cover
+    ? `<img src="${esc(cover)}" alt="${esc(p.name)}" loading="lazy" />`
+    : esc(initialOf(p.name));
+  return `
+  <article class="product" data-id="${p.id}">
+    <div class="product-visual">${visual}</div>
+    <div class="product-body">
+      <h3>${esc(p.name)}</h3>
+      ${p.description ? `<p class="desc">${esc(p.description)}</p>` : ''}
+      <div class="price-row">
+        <span class="price">${money(p.price)}</span>
+        <button class="add-btn" data-add="${p.id}" aria-label="أضف للسلة">+</button>
       </div>
-    </div>`;
-  el.innerHTML = `
-    <button class="hero-arrow next" aria-label="التالي">›</button>
-    <button class="hero-arrow prev" aria-label="السابق">‹</button>
-    ${slides.map(slideHtml).join('')}
-    <div class="hero-dots">${slides.map((_, i) => `<button data-dot="${i}" class="${i === 0 ? 'on' : ''}" aria-label="شريحة ${i + 1}"></button>`).join('')}</div>`;
-  const show = (i) => {
-    heroIdx = (i + slides.length) % slides.length;
-    el.querySelectorAll('.hero-slide').forEach((s, j) => s.classList.toggle('active', j === heroIdx));
-    el.querySelectorAll('[data-dot]').forEach((d, j) => d.classList.toggle('on', j === heroIdx));
-  };
-  const restart = () => {
-    if (heroTimer) clearInterval(heroTimer);
-    if (slides.length > 1) heroTimer = setInterval(() => show(heroIdx + 1), 4500);
-  };
-  el.querySelector('.hero-arrow.next').addEventListener('click', () => { show(heroIdx + 1); restart(); });
-  el.querySelector('.hero-arrow.prev').addEventListener('click', () => { show(heroIdx - 1); restart(); });
-  el.querySelectorAll('[data-dot]').forEach((d) => d.addEventListener('click', () => { show(+d.dataset.dot); restart(); }));
-  el.querySelectorAll('[data-hero-add]').forEach((b) => b.addEventListener('click', () => {
-    cart[b.dataset.heroAdd] = (cart[b.dataset.heroAdd] || 0) + 1;
-    updateCartBadge();
-  }));
-  el.querySelectorAll('[data-hero-open]').forEach((b) => b.addEventListener('click', () => openProduct(b.dataset.heroOpen)));
-  restart();
+    </div>
+  </article>`;
 }
-
+function visibleProducts() {
+  return products.filter((p) =>
+    (filter === 'all' || p.categoryId === filter) &&
+    (searchQuery === '' || (p.name || '').toLowerCase().includes(searchQuery)));
+}
+function renderProducts() {
+  $('#productsGrid').innerHTML = visibleProducts().map(productCard).join('');
+  observeReveals();
+}
 function renderFeatured() {
-  const el = $('featured');
-  if (!sectionOn('featured')) { el.innerHTML = ''; return; }
-  const p = featuredProduct();
-  if (!p) { el.innerHTML = ''; return; }
-  el.innerHTML = `
-    <div class="feat-card" data-feat="${p.id}">
-      ${coverUrl(p) ? `<img src="${coverUrl(p)}" alt="" onerror="this.remove()">` : ''}
-      <div class="feat-body">
-        <p class="eyebrow">منتج الشهر</p>
+  const spot = $('#featuredSpot');
+  if (!sectionOn('featured')) { spot.innerHTML = ''; return; }
+  const hp = homepage || {};
+  let p = products.find((x) => x.id === hp.featuredProductId);
+  if (!p) p = products[0];
+  if (!p) { spot.innerHTML = ''; return; }
+  const cover = coverUrl(p);
+  spot.innerHTML = `
+    <div class="glass featured-card reveal in">
+      ${cover ? `<div class="featured-media"><img src="${esc(cover)}" alt="${esc(p.name)}" /></div>` : ''}
+      <div class="featured-body">
+        <span class="eyebrow">منتج الشهر</span>
         <h3>${esc(p.name)}</h3>
         ${p.description ? `<p>${esc(p.description)}</p>` : ''}
-        <div class="feat-price">${money(p.price)} ج.م</div>
-        <div style="display:flex;gap:10px">
-          <button class="primary" style="margin-top:0" data-feat-add="${p.id}">أضف للسلة</button>
-          <button class="ghost" data-feat-open="${p.id}">التفاصيل</button>
+        <div class="price">${money(p.price)}</div>
+        <div class="hero-cta">
+          <button class="btn btn-primary" data-add="${p.id}">أضف للسلة</button>
+          <button class="btn btn-ghost" data-open="${p.id}">التفاصيل</button>
         </div>
       </div>
     </div>`;
-  el.querySelector('[data-feat-add]').addEventListener('click', (e) => {
-    e.stopPropagation();
-    cart[p.id] = (cart[p.id] || 0) + 1;
-    updateCartBadge();
-  });
-  el.querySelector('[data-feat-open]').addEventListener('click', () => openProduct(p.id));
-  el.querySelector('.feat-card').addEventListener('click', (e) => {
-    if (e.target.closest('button')) return;
-    openProduct(p.id);
+}
+/* Promo product carousel: per-product image index, kept across re-renders
+ * so an arrow tap is never reset by a data refresh. */
+const promoCarouselIdx = {};
+function stepPromoCarousel(id, dir) {
+  const prod = products.find((x) => x.id === id);
+  const imgs = prod ? productImages(prod) : [];
+  if (imgs.length <= 1) return;
+  const next = ((promoCarouselIdx[id] || 0) + dir + imgs.length) % imgs.length;
+  promoCarouselIdx[id] = next;
+  document.querySelectorAll('[data-carousel-img]').forEach((im) => {
+    if (im.dataset.carouselImg === id) im.src = imgs[next];
   });
 }
-
-function renderCatGrid() {
-  const el = $('catGrid');
-  if (categories.length === 0) { el.innerHTML = ''; return; }
-  el.innerHTML = categories.map((c) => {
-    const count = products.filter((p) => p.categoryId === c.id).length;
-    const initial = (c.name || '?').trim().charAt(0);
-    return `<div class="cat-tile" data-tile-cat="${c.id}">
-      <div class="initial">${esc(initial)}</div>
-      <div class="cname">${esc(c.name)}</div>
-      <div class="ccount">${count} منتج</div>
+function attachPromoCarouselSwipe(wrap) {
+  wrap.querySelectorAll('.promo-carousel[data-carousel-prod]').forEach((c) => {
+    let x0 = null;
+    c.addEventListener('touchstart', (e) => { x0 = e.changedTouches[0].clientX; }, { passive: true });
+    c.addEventListener('touchend', (e) => {
+      if (x0 === null) return;
+      const dx = e.changedTouches[0].clientX - x0; x0 = null;
+      if (Math.abs(dx) < 40) return;
+      stepPromoCarousel(c.dataset.carouselProd, dx < 0 ? 1 : -1);
+    }, { passive: true });
+  });
+}
+function renderPromos() {
+  const wrap = $('#promoWrap');
+  const hp = homepage || {};
+  let banners = Array.isArray(hp.promoBanners) ? hp.promoBanners.filter((b) => b && (b.title || b.imageUrl)) : [];
+  if (banners.length === 0) {
+    // Fallback: build promo cards from the first products (never a fake code).
+    banners = products.slice(0, 2).map((p) => ({ imageUrl: coverUrl(p), title: p.name, subtitle: money(p.price), linkType: 'product', linkId: p.id }));
+  }
+  if (banners.length === 0) { $('#offers').style.display = 'none'; return; }
+  wrap.innerHTML = banners.map((b) => {
+    const action = (b.linkType === 'product' && b.linkId)
+      ? `<button class="btn btn-primary" data-open="${b.linkId}">اطلب الآن</button>`
+      : (b.linkType === 'category' && b.linkId)
+        ? `<button class="btn btn-primary" data-cat-link="${b.linkId}">اطلب الآن</button>`
+        : `<a href="#featured" class="btn btn-primary">اطلب الآن</a>`;
+    // Product-linked offer: show the product's real images INSTEAD of the
+    // decorative gradient orb — carousel when >1 image, orb fallback when 0.
+    // Banners that do not resolve to a product keep the old rendering.
+    const prod = (b.linkType === 'product' && b.linkId)
+      ? products.find((x) => x.id === b.linkId) : null;
+    const imgs = prod ? productImages(prod) : [];
+    let visual;
+    if (imgs.length > 0) {
+      const idx = Math.min(promoCarouselIdx[prod.id] || 0, imgs.length - 1);
+      promoCarouselIdx[prod.id] = idx;
+      const arrows = imgs.length > 1
+        ? `<button class="carousel-arrow carousel-next" data-carousel="${esc(prod.id)}" data-dir="1" aria-label="الصورة التالية">›</button>`
+          + `<button class="carousel-arrow carousel-prev" data-carousel="${esc(prod.id)}" data-dir="-1" aria-label="الصورة السابقة">‹</button>`
+        : '';
+      visual = `<div class="promo-carousel" data-carousel-prod="${esc(prod.id)}"><img class="promo-carousel-img" data-carousel-img="${esc(prod.id)}" src="${esc(imgs[idx])}" alt="" />${arrows}</div>`;
+    } else {
+      const img = b.imageUrl ? `<img class="promo-img" src="${esc(deliveryUrl(b.imageUrl))}" alt="" />` : '';
+      visual = `${img}<div class="promo-orb" aria-hidden="true"></div>`;
+    }
+    return `
+    <div class="promo glass reveal in">
+      <div>
+        <span class="eyebrow">عرض</span>
+        <h2>${esc(b.title || '')}</h2>
+        ${b.subtitle ? `<p>${esc(b.subtitle)}</p>` : ''}
+        ${action}
+      </div>
+      ${visual}
     </div>`;
   }).join('');
-  el.querySelectorAll('[data-tile-cat]').forEach((t) => t.addEventListener('click', () => setFilter(t.dataset.tileCat)));
+  attachPromoCarouselSwipe(wrap);
 }
-
-function renderPromos() {
-  const el = $('promos');
-  if (!sectionOn('promos')) { el.innerHTML = ''; return; }
-  const banners = promoBanners();
-  if (banners.length === 0) { el.innerHTML = ''; return; }
-  el.innerHTML = banners.map((b) => `
-    <div class="promo" data-link-type="${esc(b.linkType || 'none')}" data-link-id="${esc(b.linkId || '')}">
-      ${b.imageUrl ? `<img src="${deliveryUrl(b.imageUrl)}" alt="" onerror="this.remove()">` : ''}
-      <div class="txt">
-        <h3>${esc(b.title)}</h3>
-        ${b.subtitle ? `<p>${esc(b.subtitle)}</p>` : ''}
-        <span class="cta">تسوق الآن</span>
-      </div>
-    </div>`).join('');
-  el.querySelectorAll('.promo').forEach((pr) => pr.addEventListener('click', () => {
-    const type = pr.dataset.linkType, id = pr.dataset.linkId;
-    if (type === 'category' && categories.some((c) => c.id === id)) setFilter(id);
-    else if (type === 'product' && products.some((p) => p.id === id)) openProduct(id);
-  }));
-}
-
 function renderDelivery() {
-  const el = $('deliveryBand');
-  if (!sectionOn('delivery')) { el.innerHTML = ''; return; }
-  const d = deliveryBanner();
-  el.innerHTML = `
-    <h3>${esc(d.title)}</h3>
-    <p>${esc(d.subtitle)}</p>
-    ${d.imageUrl ? `<img class="band-img" src="${deliveryUrl(d.imageUrl)}" alt="" onerror="this.remove()">` : ''}`;
+  const wrap = $('#deliveryWrap');
+  if (!sectionOn('delivery')) { wrap.innerHTML = ''; return; }
+  const hp = homepage || {};
+  const d = hp.deliveryBanner || {};
+  const title = d.title || 'الدفع عند الاستلام';
+  const subtitle = d.subtitle || 'ادفع كاش لما طلبك يوصلك لحد البيت — من غير أي دفع أونلاين';
+  const img = d.imageUrl ? `<img class="delivery-img" src="${esc(deliveryUrl(d.imageUrl))}" alt="" />` : '';
+  wrap.innerHTML = `
+    <div class="glass delivery-band reveal in">
+      <h2>${esc(title)}</h2>
+      <p>${esc(subtitle)}</p>
+      ${img}
+    </div>`;
+}
+function renderAll() {
+  renderMarquee();
+  renderStats();
+  renderCategories();
+  renderPills();
+  renderFeatured();
+  renderProducts();
+  renderPromos();
+  renderDelivery();
+  observeReveals();
 }
 
-function renderGrid() {
-  // Pill search is client-side only: it filters the already-loaded
-  // products by name AND respects the active category filter.
-  const list = products.filter((p) =>
-    (activeCat === 'all' || p.categoryId === activeCat) &&
-    (searchQuery === '' || (p.name || '').toLowerCase().includes(searchQuery)));
-  $('grid').innerHTML = list.length === 0
-    ? `<p class="empty">${searchQuery === '' ? 'مفيش منتجات في القسم ده لسه' : 'مفيش منتجات مطابقة لبحثك لسه'}</p>`
-    : list.map((p) => `
-      <div class="card" data-id="${p.id}">
-        <div class="img">${productImage(p)}</div>
-        <div class="body">
-          <div class="name">${esc(p.name)}</div>
-          <div class="price">${money(p.price)} ج.م</div>
-          <button class="add" data-add="${p.id}">أضف للسلة</button>
+/* ---------- cart ---------- */
+function cartLines() {
+  return Object.entries(cart).map(([id, qty]) => ({ p: products.find((x) => x.id === id), qty })).filter((x) => x.p);
+}
+function cartTotal() { return cartLines().reduce((s, i) => s + i.qty * i.p.price, 0); }
+function renderCart() {
+  const items = cartLines();
+  const count = items.reduce((s, i) => s + i.qty, 0);
+  $('#cartItems').innerHTML = items.length ? items.map(({ p, qty }) => {
+    const cover = coverUrl(p);
+    const thumb = cover ? `<img src="${esc(cover)}" alt="" />` : esc(initialOf(p.name));
+    return `
+    <div class="cart-line">
+      <div class="cart-thumb">${thumb}</div>
+      <div>
+        <h4>${esc(p.name)}</h4>
+        <div class="qty">
+          <button data-dec="${p.id}" aria-label="-">−</button>
+          <span>${qty}</span>
+          <button data-inc="${p.id}" aria-label="+">+</button>
         </div>
-      </div>`).join('');
-  document.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', (e) => {
-    e.stopPropagation();
-    cart[b.dataset.add] = (cart[b.dataset.add] || 0) + 1;
-    updateCartBadge();
-  }));
-  document.querySelectorAll('.card[data-id]').forEach((c) => c.addEventListener('click', () => openProduct(c.dataset.id)));
+      </div>
+      <div>
+        <strong>${money(p.price * qty)}</strong>
+        <div><button style="font-size:12px;color:var(--text-soft)" data-remove="${p.id}">إزالة</button></div>
+      </div>
+    </div>`;
+  }).join('') : '<p class="cart-empty">السلة فارغة حالياً</p>';
+  $('#cartTotal').textContent = money(cartTotal());
+  const badge = $('#cartCount');
+  badge.textContent = count;
+  badge.classList.toggle('show', count > 0);
+  localStorage.setItem('sp-cart', JSON.stringify(cart));
+}
+function addToCart(id) {
+  cart[id] = (cart[id] || 0) + 1;
+  renderCart();
+  toast('تمت الإضافة للسلة');
+  const btn = document.querySelector(`[data-add="${id}"]`);
+  if (btn) { btn.classList.remove('added'); void btn.offsetWidth; btn.classList.add('added'); }
+}
+function changeQty(id, delta) {
+  const next = (cart[id] || 0) + delta;
+  if (next <= 0) delete cart[id]; else cart[id] = next;
+  renderCart();
+}
+function openCart(open) {
+  $('#cartDrawer').classList.toggle('open', open);
+  $('#cartDrawer').setAttribute('aria-hidden', !open);
+  $('#scrim').classList.toggle('show', open);
+  if (open) recordStep('cart');
 }
 
+/* ---------- toast ---------- */
+let toastTimer;
+function toast(msg) {
+  const el = $('#toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+/* ---------- modal ---------- */
+function openModal(html) {
+  $('#modalSheet').innerHTML = html;
+  $('#modal').classList.add('open');
+  $('#modal').setAttribute('aria-hidden', 'false');
+}
+function closeModal() {
+  $('#modal').classList.remove('open');
+  $('#modal').setAttribute('aria-hidden', 'true');
+  $('#modalSheet').innerHTML = '';
+}
 function openProduct(id) {
   const p = products.find((x) => x.id === id);
   if (!p) return;
   recordStep('product');
-  $('modalSheet').innerHTML = `
-    ${galleryHtml(p)}
+  const imgs = productImages(p);
+  const main = imgs[0] || '';
+  openModal(`
+    <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
+    ${main ? `<div class="modal-media"><img id="modalMain" src="${esc(main)}" alt="${esc(p.name)}" /></div>` : ''}
+    ${imgs.length > 1 ? `<div class="modal-thumbs">${imgs.map((u, i) => `<button class="mthumb ${i === 0 ? 'on' : ''}" data-thumb="${esc(u)}">${`<img src="${esc(u)}" alt="" />`}</button>`).join('')}</div>` : ''}
     <h2>${esc(p.name)}</h2>
-    <p class="modal-price">${money(p.price)} ج.م</p>
-    <p>${esc(p.description || '')}</p>
-    <button class="primary" id="modalAdd">أضف للسلة</button>
-    <button class="secondary" id="modalClose">إغلاق</button>`;
-  $('modal').classList.add('open');
-  document.querySelectorAll('[data-gal]').forEach((t) => t.addEventListener('click', () => {
-    const imgs = (p.images || []).filter((i) => i && i.url);
-    const main = $('galMain');
-    if (main && imgs[t.dataset.gal]) main.innerHTML = `<img src="${deliveryUrl(imgs[t.dataset.gal].url)}" style="width:100%;height:100%;object-fit:cover">`;
-    document.querySelectorAll('[data-gal]').forEach((x) => x.style.borderColor = 'var(--border)');
-    t.style.borderColor = 'var(--accent)';
-  }));
-  $('modalAdd').addEventListener('click', () => { cart[id] = (cart[id] || 0) + 1; updateCartBadge(); closeModal(); openDrawer(); });
-  $('modalClose').addEventListener('click', closeModal);
-}
-function closeModal() { $('modal').classList.remove('open'); }
-$('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
-
-// ---------- cart drawer ----------
-function cartLines() {
-  return Object.entries(cart).map(([id, qty]) => {
-    const p = products.find((x) => x.id === id);
-    return p ? { ...p, qty } : null;
-  }).filter(Boolean);
-}
-function cartTotal() { return cartLines().reduce((n, l) => n + l.price * l.qty, 0); }
-function updateCartBadge() {
-  $('cartCount').textContent = Object.values(cart).reduce((n, q) => n + q, 0);
-}
-function openDrawer() {
-  recordStep('cart');
-  const lines = cartLines();
-  $('cartLines').innerHTML = lines.length === 0
-    ? '<p>السلة فاضية</p>'
-    : lines.map((l) => `
-      <div class="line">
-        <span>${esc(l.name)}</span>
-        <span class="qty">
-          <button data-dec="${l.id}">−</button> ${l.qty}
-          <button data-inc="${l.id}">+</button>
-        </span>
-        <span>${money(l.price * l.qty)} ج.م</span>
-      </div>`).join('');
-  $('cartTotal').textContent = money(cartTotal());
-  $('drawer').classList.add('open');
-  document.querySelectorAll('[data-inc]').forEach((b) => b.addEventListener('click', () => { cart[b.dataset.inc]++; updateCartBadge(); openDrawer(); }));
-  document.querySelectorAll('[data-dec]').forEach((b) => b.addEventListener('click', () => {
-    cart[b.dataset.dec]--;
-    if (cart[b.dataset.dec] <= 0) delete cart[b.dataset.dec];
-    updateCartBadge(); openDrawer();
+    <div class="price">${money(p.price)}</div>
+    ${p.description ? `<p>${esc(p.description)}</p>` : ''}
+    <button class="btn btn-primary btn-block" data-add="${p.id}">أضف للسلة</button>`);
+  document.querySelectorAll('[data-thumb]').forEach((b) => b.addEventListener('click', () => {
+    document.querySelectorAll('[data-thumb]').forEach((x) => x.classList.remove('on'));
+    b.classList.add('on');
+    const m = $('#modalMain');
+    if (m) m.src = b.dataset.thumb;
   }));
 }
-function closeDrawer() { $('drawer').classList.remove('open'); }
-$('cartBtn').addEventListener('click', openDrawer);
-$('closeDrawer').addEventListener('click', closeDrawer);
 
-// ---------- checkout (COD, two steps) ----------
-$('toCheckout').addEventListener('click', () => {
-  if (cartLines().length === 0) return;
-  recordStep('checkout');
-  closeDrawer();
-  // Attempt doc is created WITHOUT any contact info. Contact is added
-  // only when the info step is completed (review button), never before.
-  attemptId = 'a_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-  setDoc(doc(db, 'analytics', 'attempts', 'items', attemptId),
-    { startedAt: serverTimestamp(), ordered: false }, { merge: true }).catch(() => {});
-  showInfoForm();
-});
-
+/* ---------- checkout: 2-step COD, contact ONLY after info step ---------- */
 function showInfoForm(err = '') {
-  $('modalSheet').innerHTML = `
+  openModal(`
+    <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
     <h2>بيانات التوصيل</h2>
-    <p style="color:var(--muted)">الدفع عند الاستلام — مفيش دفع أونلاين</p>
-    <input id="fName" placeholder="الاسم بالكامل">
-    <input id="fPhone" placeholder="رقم الموبايل" inputmode="tel">
-    <textarea id="fAddr" placeholder="العنوان بالتفصيل" rows="3"></textarea>
-    ${err ? `<p class="err">${esc(err)}</p>` : ''}
-    <button class="primary" id="toReview">مراجعة الطلب</button>
-    <button class="secondary" id="formClose">إلغاء</button>`;
-  $('modal').classList.add('open');
-  $('formClose').addEventListener('click', closeModal);
-  $('toReview').addEventListener('click', () => {
-    const name = $('fName').value.trim();
-    const phone = $('fPhone').value.trim();
-    const addr = $('fAddr').value.trim();
+    <p style="color:var(--text-soft)">الدفع عند الاستلام — مفيش دفع أونلاين</p>
+    ${err ? `<p class="form-err">${esc(err)}</p>` : ''}
+    <label class="field"><span>الاسم</span><input id="fName" type="text" autocomplete="name" /></label>
+    <label class="field"><span>رقم الموبايل</span><input id="fPhone" type="tel" dir="ltr" style="text-align:right" autocomplete="tel" /></label>
+    <label class="field"><span>العنوان</span><textarea id="fAddr" rows="2" autocomplete="street-address"></textarea></label>
+    <button class="btn btn-primary btn-block" id="toReview">مراجعة الطلب</button>`);
+  $('#toReview').addEventListener('click', () => {
+    const name = $('#fName').value.trim();
+    const phone = $('#fPhone').value.trim();
+    const addr = $('#fAddr').value.trim();
     const digits = phone.replace(/\D/g, '');
-    if (!name) return showInfoForm('اكتب اسمك');
-    if (digits.length < 10) return showInfoForm('رقم الموبايل مش كامل');
+    if (!name) return showInfoForm('اكتب الاسم');
+    if (digits.length < 10) return showInfoForm('اكتب رقم موبايل صحيح');
     if (!addr) return showInfoForm('اكتب العنوان');
     // Info step COMPLETED here — only now may contact info be saved.
     updateDoc(doc(db, 'analytics', 'attempts', 'items', attemptId),
@@ -471,95 +476,221 @@ function showInfoForm(err = '') {
     showReview({ name, phone, addr });
   });
 }
+function showReview(customer) {
+  const lines = cartLines();
+  openModal(`
+    <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
+    <h2>مراجعة الطلب</h2>
+    <div class="review-box">
+      <p><strong>${esc(customer.name)}</strong> — ${esc(customer.phone)}</p>
+      <p>${esc(customer.addr)}</p>
+    </div>
+    ${lines.map((l) => `<div class="cart-line"><div class="cart-thumb">${(() => { const c = coverUrl(l.p); return c ? `<img src="${esc(c)}" alt="" />` : esc(initialOf(l.p.name)); })()}</div><div><h4>${esc(l.p.name)}</h4><span>× ${l.qty}</span></div><strong>${money(l.p.price * l.qty)}</strong></div>`).join('')}
+    <div class="cart-foot"><div class="row"><span>الإجمالي</span><strong>${money(cartTotal())}</strong></div></div>
+    <p style="color:var(--text-soft)">الدفع عند الاستلام</p>
+    <button class="btn btn-primary btn-block" id="confirmOrder">تأكيد الطلب</button>`);
+  $('#confirmOrder').addEventListener('click', () => placeOrder(customer));
+}
 
-// Order journey animation — PRESENTATION ONLY. The order doc is created
-// exactly once below, before the animation starts. On failure the real
-// error shows and no animation (never a fake success). Tappable to skip.
-function showJourney(onDone) {
-  const j = $('journey');
-  j.classList.remove('journey-run');
-  void j.offsetWidth; // restart CSS animations
-  j.classList.add('open', 'journey-run');
+/* ---------- order journey: doc created EXACTLY ONCE, then the van drives ---------- */
+async function placeOrder(customer) {
+  if (ordering) return;
+  ordering = true;
+  const btn = $('#confirmOrder');
+  if (btn) btn.disabled = true;
+  const lines = cartLines();
+  const total = cartTotal();
+  try {
+    await addDoc(collection(db, 'orders'), {
+      customerName: customer.name,
+      customerPhone: customer.phone,
+      customerAddress: customer.addr,
+      items: lines.map((l) => ({ id: l.id, name: l.name, price: l.price, qty: l.qty })),
+      total,
+      status: 'new',
+      createdAt: serverTimestamp(),
+    });
+    await updateDoc(doc(db, 'analytics', 'attempts', 'items', attemptId), { ordered: true }).catch(() => {});
+    recordStep('order');
+    cart = {}; renderCart();
+    ordering = false;
+    closeModal();
+    showJourney();
+  } catch (e) {
+    ordering = false;
+    // Real error, NO animation — never a fake success.
+    openModal(`
+      <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
+      <h2>حصلت مشكلة</h2>
+      <p style="color:var(--text-soft)">${esc(e && e.message ? e.message : 'تعذر إرسال الطلب، حاول تاني')}</p>
+      <button class="btn btn-primary btn-block" id="retryOrder">حاول تاني</button>`);
+    $('#retryOrder').addEventListener('click', () => showReview(customer));
+  }
+}
+function showJourney() {
+  const j = $('#journey');
+  j.classList.add('open');
+  j.setAttribute('aria-hidden', 'false');
+  requestAnimationFrame(() => j.classList.add('journey-run'));
   let done = false;
   const finish = () => {
     if (done) return;
     done = true;
-    clearTimeout(timer);
     j.classList.remove('open', 'journey-run');
-    onDone();
+    j.setAttribute('aria-hidden', 'true');
+    openModal(`
+      <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
+      <div style="text-align:center;padding:20px 0">
+        <h2>طلبك اتأكد! ✅</h2>
+        <p style="color:var(--text-soft)">هندفع عند الاستلام — شكراً لطلبك.</p>
+        <button class="btn btn-primary btn-block" id="successClose">تمام</button>
+      </div>`);
+    $('#successClose').addEventListener('click', closeModal);
   };
-  const timer = setTimeout(finish, 2500);
-  $('jSkip').onclick = finish;
+  setTimeout(finish, 2500);
+  $('#jSkip').onclick = finish;
 }
 
-function showReview(customer) {
-  const lines = cartLines();
-  $('modalSheet').innerHTML = `
-    <h2>مراجعة الطلب</h2>
-    <p>الاسم: ${esc(customer.name)}</p>
-    <p>الموبايل: ${esc(customer.phone)}</p>
-    <p>العنوان: ${esc(customer.addr)}</p>
-    <hr style="border-color:var(--border)">
-    ${lines.map((l) => `<p>${esc(l.name)} × ${l.qty} = ${money(l.price * l.qty)} ج.م</p>`).join('')}
-    <p><strong>الإجمالي: ${money(cartTotal())} ج.م — الدفع عند الاستلام</strong></p>
-    <p class="err" id="orderErr"></p>
-    <button class="primary" id="confirmOrder">تأكيد الطلب</button>
-    <button class="secondary" id="backToForm">تعديل البيانات</button>`;
-  $('backToForm').addEventListener('click', () => showInfoForm());
-  let ordering = false;
-  $('confirmOrder').addEventListener('click', async () => {
-    if (ordering) return;
-    ordering = true;
-    const btn = $('confirmOrder');
-    btn.disabled = true;
-    btn.textContent = 'جارٍ إرسال الطلب…';
-    try {
-      await addDoc(collection(db, 'orders'), {
-        customerName: customer.name,
-        customerPhone: customer.phone,
-        customerAddress: customer.addr,
-        items: lines.map((l) => ({ id: l.id, name: l.name, price: l.price, qty: l.qty })),
-        total: cartTotal(),
-        status: 'new',
-        createdAt: serverTimestamp(),
-      });
-      await updateDoc(doc(db, 'analytics', 'attempts', 'items', attemptId), { ordered: true }).catch(() => {});
-      recordStep('order');
-      cart = {}; updateCartBadge();
-      ordering = false;
-      showJourney(() => {
-        $('modalSheet').innerHTML = `<div class="ok"><h2>تم استلام طلبك بنجاح</h2><p>هنكلمك قريب لتأكيد التوصيل — والدفع عند الاستلام.</p><button class="primary" id="doneBtn">تمام</button></div>`;
-        $('doneBtn').addEventListener('click', closeModal);
-      });
-    } catch (e) {
-      ordering = false;
-      btn.disabled = false;
-      btn.textContent = 'تأكيد الطلب';
-      $('orderErr').textContent = 'تعذر إرسال الطلب — حاول تاني';
-    }
+/* ---------- motion (original behaviour) ---------- */
+let revealObserver;
+function observeReveals() {
+  if (!('IntersectionObserver' in window)) {
+    document.querySelectorAll('.reveal, .product').forEach((el) => el.classList.add('in'));
+    return;
+  }
+  revealObserver?.disconnect();
+  revealObserver = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (e.isIntersecting) { e.target.classList.add('in'); revealObserver.unobserve(e.target); }
+    });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.reveal:not(.in), .product:not(.in)').forEach((el) => revealObserver.observe(el));
+}
+function animateCounters() {
+  const counters = document.querySelectorAll('[data-count]');
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      const el = e.target;
+      const target = +el.dataset.count;
+      const start = performance.now();
+      const step = (now) => {
+        const p = Math.min((now - start) / 1600, 1);
+        const eased = 1 - Math.pow(1 - p, 3);
+        el.textContent = Math.round(target * eased).toLocaleString('ar-EG') + (target >= 100 ? '+' : '');
+        if (p < 1) requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+      io.unobserve(el);
+    });
+  }, { threshold: 0.6 });
+  counters.forEach((c) => io.observe(c));
+}
+function applyTheme() {
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem('sp-theme', theme);
+}
+
+/* ---------- events ---------- */
+document.addEventListener('click', (e) => {
+  const car = e.target.closest('[data-carousel]');
+  if (car) { stepPromoCarousel(car.dataset.carousel, Number(car.dataset.dir || 1)); return; }
+  const add = e.target.closest('[data-add]');
+  if (add) { addToCart(add.dataset.add); return; }
+  const open = e.target.closest('[data-open]');
+  if (open) { openProduct(open.dataset.open); return; }
+  const catLink = e.target.closest('[data-cat-link]');
+  if (catLink) { filter = catLink.dataset.catLink; renderPills(); renderProducts(); document.querySelector('#featured')?.scrollIntoView({ behavior: 'smooth' }); return; }
+  const pill = e.target.closest('[data-filter]');
+  if (pill) { filter = pill.dataset.filter; renderPills(); renderProducts(); return; }
+  const cat = e.target.closest('[data-cat]');
+  if (cat) { filter = cat.dataset.cat; renderPills(); renderProducts(); recordStep('category'); return; }
+  const prod = e.target.closest('.product');
+  if (prod) { openProduct(prod.dataset.id); return; }
+  const inc = e.target.closest('[data-inc]');
+  if (inc) return changeQty(inc.dataset.inc, 1);
+  const dec = e.target.closest('[data-dec]');
+  if (dec) return changeQty(dec.dataset.dec, -1);
+  const rm = e.target.closest('[data-remove]');
+  if (rm) { delete cart[rm.dataset.remove]; renderCart(); return; }
+  if (e.target.closest('#modalClose')) { closeModal(); return; }
+  if (e.target === $('#modal')) { closeModal(); return; }
+});
+$('#cartToggle').addEventListener('click', () => openCart(true));
+$('#cartClose').addEventListener('click', () => openCart(false));
+$('#scrim').addEventListener('click', () => openCart(false));
+$('#checkoutBtn').addEventListener('click', () => {
+  if (cartLines().length === 0) { toast('السلة فارغة حالياً'); return; }
+  recordStep('checkout');
+  // Attempt doc WITHOUT contact on checkout open — contact comes only
+  // after the info step completes (see showInfoForm).
+  attemptId = 'a_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  setDoc(doc(db, 'analytics', 'attempts', 'items', attemptId),
+    { startedAt: serverTimestamp(), ordered: false }, { merge: true }).catch(() => {});
+  openCart(false);
+  showInfoForm();
+});
+$('#searchToggle').addEventListener('click', () => {
+  const bar = $('#searchBar');
+  bar.classList.toggle('open');
+  if (bar.classList.contains('open')) $('#searchInput').focus();
+});
+$('#searchInput').addEventListener('input', (e) => {
+  searchQuery = e.target.value.trim().toLowerCase();
+  renderProducts();
+});
+$('#themeToggle').addEventListener('click', () => {
+  theme = theme === 'dark' ? 'light' : 'dark';
+  applyTheme();
+});
+window.addEventListener('scroll', () => {
+  $('#topbar').classList.toggle('scrolled', window.scrollY > 20);
+}, { passive: true });
+
+/* Subtle parallax on hero card (original behaviour) */
+const heroCard = document.querySelector('.hero-card');
+if (heroCard && matchMedia('(pointer: fine)').matches) {
+  document.addEventListener('pointermove', (e) => {
+    const x = (e.clientX / window.innerWidth - 0.5) * 14;
+    const y = (e.clientY / window.innerHeight - 0.5) * 14;
+    heroCard.style.transform = `translate(${x * 0.3}px, ${y * 0.3}px)`;
   });
 }
 
-// ---------- boot ----------
-$('siteSearch').addEventListener('input', (e) => {
-  searchQuery = e.target.value.trim().toLowerCase();
-  renderGrid();
-});
-const submitSearch = () => {
-  document.querySelector('#grid').scrollIntoView({ behavior: 'smooth', block: 'start' });
-};
-$('searchSubmit').addEventListener('click', submitSearch);
-$('siteSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitSearch(); });
-
-(async () => {
-  await loadBrand();
-  await loadDesign();
-  await loadHomepage();
+/* ---------- boot ---------- */
+$('#year').textContent = new Date().getFullYear();
+applyTheme();
+renderCart();
+(async function boot() {
+  try {
+    const sSnap = await getDoc(doc(db, 'storeSettings', 'settings'));
+    if (sSnap.exists()) {
+      const d = sSnap.data();
+      // Brand slot: settings brandName when set, else neutral "المتجر".
+      if (d.brandName) window.__brandName = d.brandName;
+      if (d.tagline) window.__brandTag = d.tagline;
+      // Logo mark: settings logoImageUrl when set (non-empty), else pulse SVG.
+      if (typeof d.logoImageUrl === 'string' && d.logoImageUrl.trim()) window.__logoImageUrl = d.logoImageUrl.trim();
+    }
+  } catch (_) {}
+  try {
+    const hSnap = await getDoc(doc(db, 'storeSettings', 'homepage'));
+    if (hSnap.exists() && hSnap.data()) homepage = hSnap.data();
+  } catch (_) {}
+  try {
+    const dSnap = await getDoc(doc(db, 'storeSettings', 'design'));
+    if (dSnap.exists() && dSnap.data()) design = dSnap.data();
+  } catch (_) {}
   try {
     const catsSnap = await getDocs(query(collection(db, 'categories'), orderBy('createdAt')));
     categories = catsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     const prodsSnap = await getDocs(query(collection(db, 'products'), orderBy('createdAt')));
     products = prodsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
   } catch (_) {}
-  renderCats(); renderHero(); renderFeatured(); renderCatGrid(); renderPromos(); renderDelivery(); renderGrid();
+  applyBrand();
+  applyDesign();
+  applyLogoMark();
+  applyHero();
+  renderAll();
+  observeReveals();
 })();
