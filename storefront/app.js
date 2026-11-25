@@ -84,6 +84,11 @@ let searchQuery = '';
 let filter = 'all';
 let cart = JSON.parse(localStorage.getItem('sp-cart') || '{}');
 let attemptId = null;
+let clientOrderId = localStorage.getItem('sp-checkout') || null;
+function newClientOrderId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  return 'o_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
 let ordering = false;
 let theme = localStorage.getItem('sp-theme') || 'light';
 
@@ -500,12 +505,21 @@ async function placeOrder(customer) {
   if (btn) btn.disabled = true;
   const lines = cartLines();
   const total = cartTotal();
+  // Idempotency: one clientOrderId per checkout attempt. Normally set when
+  // the checkout opens; generate here only if placeOrder is ever reached
+  // without it, so the order doc id is never null.
+  if (!clientOrderId) {
+    clientOrderId = newClientOrderId();
+    localStorage.setItem('sp-checkout', clientOrderId);
+  }
   try {
-    await addDoc(collection(db, 'orders'), {
+    await setDoc(doc(db, 'orders', clientOrderId), {
+      id: clientOrderId,
+      clientOrderId,
       customerName: customer.name,
       customerPhone: customer.phone,
       customerAddress: customer.addr,
-      items: lines.map((l) => ({ id: l.id, name: l.name, price: l.price, qty: l.qty })),
+      items: lines.map((l) => ({ id: l.p.id, name: l.p.name, price: l.p.price, qty: l.qty })),
       total,
       status: 'new',
       createdAt: serverTimestamp(),
@@ -513,11 +527,17 @@ async function placeOrder(customer) {
     await updateDoc(doc(db, 'analytics', 'attempts', 'items', attemptId), { ordered: true }).catch(() => {});
     recordStep('order');
     cart = {}; renderCart();
+    // Order created: this checkout attempt is done, so the next checkout
+    // gets a fresh id.
+    localStorage.removeItem('sp-checkout');
+    clientOrderId = null;
     ordering = false;
     closeModal();
     showJourney();
   } catch (e) {
     ordering = false;
+    // Failure: clientOrderId is deliberately KEPT (sp-checkout untouched),
+    // so a retry writes the same order doc id instead of a duplicate.
     // Real error, NO animation — never a fake success.
     openModal(`
       <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
@@ -625,6 +645,13 @@ $('#checkoutBtn').addEventListener('click', () => {
   // Attempt doc WITHOUT contact on checkout open — contact comes only
   // after the info step completes (see showInfoForm).
   attemptId = 'a_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+  // One clientOrderId per checkout attempt, persisted so a reload or a
+  // retry after a failed order reuses the same id (same order doc id, so
+  // no duplicate). Cleared only when the order is created.
+  if (!clientOrderId) {
+    clientOrderId = newClientOrderId();
+    localStorage.setItem('sp-checkout', clientOrderId);
+  }
   setDoc(doc(db, 'analytics', 'attempts', 'items', attemptId),
     { startedAt: serverTimestamp(), ordered: false }, { merge: true }).catch(() => {});
   openCart(false);
