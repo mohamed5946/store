@@ -41,6 +41,15 @@ class _SettingsTabState extends State<_SettingsTab> {
   String _savedDeliveryTitle = '';
   String _savedDeliverySubtitle = '';
   String _savedDeliveryImage = '';
+  // The four storefront hero overrides (storeSettings/homepage).
+  // Saved-only, no draft and no editor UI yet — the storefront
+  // contract says the editor for these is a future build. They are
+  // carried from load to save so an editor save round-trips them
+  // instead of wiping them (Decision 27).
+  String _savedHeroImageUrl = '';
+  String _savedHeroTitle = '';
+  String _savedHeroAccent = '';
+  String _savedHeroSubtitle = '';
 
   @override
   void initState() {
@@ -310,6 +319,10 @@ class _SettingsTabState extends State<_SettingsTab> {
     _savedDeliveryTitle = delivery['title'] as String;
     _savedDeliverySubtitle = delivery['subtitle'] as String;
     _savedDeliveryImage = delivery['imageUrl'] as String;
+    _savedHeroImageUrl = parsed['heroImageUrl'] as String;
+    _savedHeroTitle = parsed['heroTitle'] as String;
+    _savedHeroAccent = parsed['heroAccent'] as String;
+    _savedHeroSubtitle = parsed['heroSubtitle'] as String;
     _heroIds = List<String>.from(_savedHeroIds);
     _banners = _savedBanners
         .map((b) => Map<String, dynamic>.from(b))
@@ -344,6 +357,12 @@ class _SettingsTabState extends State<_SettingsTab> {
           'subtitle': _deliverySubtitle.text.trim(),
           'imageUrl': _deliveryImage,
         },
+        // The hero overrides are not editable here yet — pass the
+        // last-saved values through so Save never wipes them.
+        heroImageUrl: _savedHeroImageUrl,
+        heroTitle: _savedHeroTitle,
+        heroAccent: _savedHeroAccent,
+        heroSubtitle: _savedHeroSubtitle,
       );
       await Backend.instance.setHomepage(doc);
       if (mounted) {

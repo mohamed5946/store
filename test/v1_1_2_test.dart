@@ -253,7 +253,16 @@ void main() {
         'promoBanners',
         'featuredProductId',
         'deliveryBanner',
+        'heroImageUrl',
+        'heroTitle',
+        'heroAccent',
+        'heroSubtitle',
       });
+      // Not passed: the hero overrides default to "" and are emitted.
+      expect(doc['heroImageUrl'], '');
+      expect(doc['heroTitle'], '');
+      expect(doc['heroAccent'], '');
+      expect(doc['heroSubtitle'], '');
       expect(doc['heroProductIds'], ['a', 'b', 'c', 'd']);
       final banners = doc['promoBanners'] as List<dynamic>;
       expect(banners.length, 2);
@@ -273,6 +282,73 @@ void main() {
       final partial = parseHomepageDoc({'heroProductIds': ['x']});
       expect(partial['heroProductIds'], ['x']);
       expect(partial['featuredProductId'], '');
+    });
+
+    test('hero overrides round-trip parse -> build -> parse unchanged',
+        () {
+      // An editor save must never wipe the storefront hero fields:
+      // parse the stored doc, build it back, parse again — the four
+      // values come back exactly.
+      final stored = <String, dynamic>{
+        'heroProductIds': ['p1'],
+        'promoBanners': [],
+        'featuredProductId': '',
+        'deliveryBanner': {'title': '', 'subtitle': '', 'imageUrl': ''},
+        'heroImageUrl': 'https://x.test/hero.png',
+        'heroTitle': 'عنوان جديد',
+        'heroAccent': 'بلمسة',
+        'heroSubtitle': 'وصف قصير',
+      };
+      final first = parseHomepageDoc(stored);
+      final rebuilt = buildHomepageDoc(
+        heroProductIds:
+            List<String>.from(first['heroProductIds'] as List<dynamic>),
+        promoBanners: (first['promoBanners'] as List<dynamic>)
+            .map((b) => Map<String, dynamic>.from(b as Map<String, dynamic>))
+            .toList(),
+        featuredProductId: first['featuredProductId'] as String,
+        deliveryBanner:
+            Map<String, dynamic>.from(first['deliveryBanner'] as Map),
+        heroImageUrl: first['heroImageUrl'] as String,
+        heroTitle: first['heroTitle'] as String,
+        heroAccent: first['heroAccent'] as String,
+        heroSubtitle: first['heroSubtitle'] as String,
+      );
+      final second = parseHomepageDoc(rebuilt);
+      expect(second['heroImageUrl'], 'https://x.test/hero.png');
+      expect(second['heroTitle'], 'عنوان جديد');
+      expect(second['heroAccent'], 'بلمسة');
+      expect(second['heroSubtitle'], 'وصف قصير');
+    });
+
+    test('hero overrides default to empty when the doc predates them',
+        () {
+      // A doc written before the hero fields existed parses to ""
+      // and builds back with the four keys present as "".
+      final first = parseHomepageDoc({'heroProductIds': ['x']});
+      expect(first['heroImageUrl'], '');
+      expect(first['heroTitle'], '');
+      expect(first['heroAccent'], '');
+      expect(first['heroSubtitle'], '');
+      final rebuilt = buildHomepageDoc(
+        heroProductIds:
+            List<String>.from(first['heroProductIds'] as List<dynamic>),
+        promoBanners: [],
+        featuredProductId: first['featuredProductId'] as String,
+        deliveryBanner:
+            Map<String, dynamic>.from(first['deliveryBanner'] as Map),
+        heroImageUrl: first['heroImageUrl'] as String,
+        heroTitle: first['heroTitle'] as String,
+        heroAccent: first['heroAccent'] as String,
+        heroSubtitle: first['heroSubtitle'] as String,
+      );
+      expect(rebuilt.keys.toSet(), containsAll({
+        'heroImageUrl',
+        'heroTitle',
+        'heroAccent',
+        'heroSubtitle',
+      }));
+      expect(parseHomepageDoc(rebuilt)['heroTitle'], '');
     });
   });
 

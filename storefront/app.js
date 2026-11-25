@@ -46,7 +46,7 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {
   getFirestore, collection, query, orderBy, getDocs, doc, getDoc,
-  setDoc, updateDoc, addDoc, serverTimestamp, arrayUnion,
+  setDoc, updateDoc, serverTimestamp, arrayUnion,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 const app = initializeApp(window.STORE_FIREBASE_CONFIG);
