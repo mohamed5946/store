@@ -1,7 +1,7 @@
-/* Phase 2 Firestore rules tests (design doc file 36: T19–T21 + the
- * file-36 list — anonymous order creation denied, admin writes without
- * an audit entry denied, the audit entry's fields enforced, public
- * reads kept for the storefront's catalog only).
+/* No-functions Firestore rules tests (contract 2026-11-26 §3 — replaces
+ * the Phase 2 file-36 list: anonymous order creation is now ALLOWED
+ * through the client transaction, with shape + price + discount +
+ * audit checks in the rules; feedback is a one-way card).
  *
  * EMULATOR-GATED: these tests CANNOT run on a machine without Java
  * (the Firestore emulator needs it) and they CANNOT run against the
@@ -13,8 +13,10 @@
  *
  * (from the repo root, with firestore.rules in place). The emulator
  * loads firestore.rules automatically. CI wiring for this job is NOT
- * in build.yml — the Phase 2 file boundary does not include it — so
- * run it on a machine with the emulator before deploying the rules.
+ * in build.yml, so run it on a machine with the emulator before
+ * deploying the rules. Rules are verified by code review + these
+ * emulator tests, NOT by a live run — say so plainly if the emulator
+ * could not run.
  *
  * The function-side audit tests (T14: one entry per order, no second
  * entry on an idempotent retry, no customer PII) live in
@@ -33,13 +35,14 @@ const {
 } = require('@firebase/rules-unit-testing');
 const {
   doc, setDoc, getDoc, updateDoc, deleteDoc, deleteField, writeBatch,
-  serverTimestamp, collection, getDocs,
+  serverTimestamp, collection, getDocs, runTransaction, Timestamp,
 } = require('firebase/firestore');
 
 const PROJECT_ID = 'demo-store-3384c';
 const RULES_PATH = path.join(__dirname, '..', 'firestore.rules');
 const ADMIN_UID = 'admin-uid';
 const MANAGER_UID = 'manager-uid';
+const MANAGER2_UID = 'manager2-uid';
 
 let testEnv;
 let opCounter = 0;
@@ -54,16 +57,78 @@ before(async () => {
     },
   });
   // Seed: admin + manager profiles, one product + its inventory,
-  // one order, one feedback record, the active-template pointer.
+  // one order, feedback records, the active-template pointer, plus
+  // the no-functions fixtures: dedicated products/inventory for the
+  // order-transaction tests (prod-1's price/stock mutate across the
+  // older tests, so the new tests own their own docs), discount
+  // codes in every state, and a manager WITH orders_create_manual.
   await testEnv.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     await setDoc(doc(db, 'admins', ADMIN_UID), { role: 'admin', name: 'Admin' });
     await setDoc(doc(db, 'admins', MANAGER_UID), { role: 'manager', name: 'Manager' });
+    await setDoc(doc(db, 'admins', MANAGER2_UID), {
+      role: 'manager', name: 'Manager 2',
+      permissions: { orders_create_manual: true },
+    });
     await setDoc(doc(db, 'products', 'prod-1'), {
       name: 'سماعة بلوتوث', price: 500, categoryId: 'cat-1', inStock: true,
     });
     await setDoc(doc(db, 'inventory', 'prod-1'), {
       productId: 'prod-1', stock: 5, reserved: 0, minStock: 5, costPrice: 300,
+    });
+    // prod-2: anonymous order tests (price 200, stock 3).
+    await setDoc(doc(db, 'products', 'prod-2'), {
+      name: 'شاحن سريع', price: 200, categoryId: 'cat-1', inStock: true,
+    });
+    await setDoc(doc(db, 'inventory', 'prod-2'), {
+      productId: 'prod-2', stock: 3, reserved: 0, minStock: 5, costPrice: 100,
+    });
+    // prod-3: the §13 inStock refresh tests (stock 2, reserved 2 —
+    // the flag must be false; the seed deliberately says true).
+    await setDoc(doc(db, 'products', 'prod-3'), {
+      name: 'كابل USB', price: 100, categoryId: 'cat-1', inStock: true,
+    });
+    await setDoc(doc(db, 'inventory', 'prod-3'), {
+      productId: 'prod-3', stock: 2, reserved: 2, minStock: 5, costPrice: 50,
+    });
+    // prod-4: discount-invalid + bad-shape tests (price 300, stock 10).
+    await setDoc(doc(db, 'products', 'prod-4'), {
+      name: 'جراب موبايل', price: 300, categoryId: 'cat-1', inStock: true,
+    });
+    await setDoc(doc(db, 'inventory', 'prod-4'), {
+      productId: 'prod-4', stock: 10, reserved: 0, minStock: 5, costPrice: 150,
+    });
+    // prod-5: manual-order tests (price 300, stock 10).
+    await setDoc(doc(db, 'products', 'prod-5'), {
+      name: 'سماعة سلكية', price: 300, categoryId: 'cat-1', inStock: true,
+    });
+    await setDoc(doc(db, 'inventory', 'prod-5'), {
+      productId: 'prod-5', stock: 10, reserved: 0, minStock: 5, costPrice: 150,
+    });
+    // prod-6: fractional-price test (correction 2026-11-26 — the
+    // order rule uses `is number`, so a stored 19.99 price must not
+    // deny a matching order).
+    await setDoc(doc(db, 'products', 'prod-6'), {
+      name: 'وصلة صوت', price: 19.99, categoryId: 'cat-1', inStock: true,
+    });
+    await setDoc(doc(db, 'inventory', 'prod-6'), {
+      productId: 'prod-6', stock: 10, reserved: 0, minStock: 5, costPrice: 10,
+    });
+    await setDoc(doc(db, 'discounts', 'SAVE10'), {
+      percent: 10, active: true, usedBy: null, expiresAt: null,
+    });
+    await setDoc(doc(db, 'discounts', 'USED10'), {
+      percent: 10, active: true, usedBy: 'order-old', expiresAt: null,
+    });
+    await setDoc(doc(db, 'discounts', 'OFF10'), {
+      percent: 10, active: false, usedBy: null, expiresAt: null,
+    });
+    await setDoc(doc(db, 'discounts', 'EXP10'), {
+      percent: 10, active: true, usedBy: null,
+      expiresAt: Timestamp.fromMillis(Date.now() - 86400000),
+    });
+    await setDoc(doc(db, 'discounts', 'CLAIM10'), {
+      percent: 15, active: true, usedBy: null, expiresAt: null,
     });
     await setDoc(doc(db, 'orders', 'order-1'), {
       id: 'order-1', clientOrderId: 'order-1', status: 'new',
@@ -97,9 +162,14 @@ before(async () => {
       customerName: 'اختبار', customerPhone: '01012345678',
       cancelledAt: serverTimestamp(), cancelReason: 'cancelled_by_admin',
     });
+    // Feedback seeds use the NEW one-way shape (contract §6).
     await setDoc(doc(db, 'feedback', 'fb-1'), {
-      id: 'fb-1', trackingCode: 'FB-AAAAAA', status: 'new',
-      priority: 'low', customerRef: { phone: '01012345678', linked: false },
+      name: 'أحمد', email: 'a@test.com', address: 'القاهرة',
+      message: 'شكوى تجريبية كافية الطول', createdAt: serverTimestamp(),
+    });
+    await setDoc(doc(db, 'feedback', 'fb-2'), {
+      name: 'منى', email: 'm@test.com', address: 'الجيزة',
+      message: 'شكوى تجريبية ثانية كافية الطول', createdAt: serverTimestamp(),
     });
     await setDoc(doc(db, 'storeSettings', 'activeTemplate'), { templateId: 'tpl-live' });
     await setDoc(doc(db, 'templates', 'tpl-live'), { name: 'Live', status: 'active' });
@@ -113,6 +183,7 @@ after(async () => {
 
 function adminDb() { return testEnv.authenticatedContext(ADMIN_UID).firestore(); }
 function managerDb() { return testEnv.authenticatedContext(MANAGER_UID).firestore(); }
+function manager2Db() { return testEnv.authenticatedContext(MANAGER2_UID).firestore(); }
 function anonDb() { return testEnv.unauthenticatedContext().firestore(); }
 
 /* Write one document + its audit entry in a single batch, the way the
@@ -146,17 +217,265 @@ async function auditedSet(db, uid, { collection: coll, docId, data, operation = 
   return opId;
 }
 
-/* ---------- anonymous access (file 36) ---------- */
+/* Delete one document + its deterministic delete-audit entry in a
+ * single batch (del_<collection>_<docId>). */
+async function deleteWithAudit(db, uid, coll, docId) {
+  const opId = `del_${coll}_${docId}`;
+  const batch = writeBatch(db);
+  batch.delete(doc(db, coll, docId));
+  batch.set(doc(db, 'audit', opId), {
+    operationId: opId,
+    actor: uid,
+    actorName: 'Test Admin',
+    timestamp: serverTimestamp(),
+    collection: coll,
+    docId,
+    operation: 'delete',
+    changedFields: [],
+    oldValues: {},
+    newValues: {},
+    docIds: { [`${coll}/${docId}`]: [] },
+    newValuesByDoc: { [`${coll}/${docId}`]: {} },
+    documents: [],
+    source: 'test',
+  });
+  await batch.commit();
+  return opId;
+}
 
-test('Phase 2 (T19): an anonymous order create is denied', async () => {
+/* The client order transaction the way storefront/app.js placeOrderTx
+ * does it (contract §1): idempotency read, product + inventory (+
+ * discount) reads, total from DATABASE prices, stock reservation,
+ * discount claim, order + movement + audit entry. `source` /
+ * `createdBy` / `actor` / `operation` switch it to the manual-order
+ * shape. Deliberately does NOT validate stock client-side — the
+ * rules must deny an over-reservation on their own. */
+async function placeOrderTx(db, {
+  orderId, productId, qty, discountCode = null,
+  priceOverride = null, totalOverride = null,
+  source = 'storefront', createdBy = null,
+  actor = 'anonymous', actorName = 'storefront', operation = 'create',
+  movementSource = 'placeOrder',
+}) {
+  const auditId = `audit-${orderId}`;
+  await runTransaction(db, async (tx) => {
+    const existing = await tx.get(doc(db, 'orders', orderId));
+    if (existing.exists()) throw new Error('order already exists');
+    const productSnap = await tx.get(doc(db, 'products', productId));
+    const product = productSnap.data();
+    const invSnap = await tx.get(doc(db, 'inventory', productId));
+    const inv = invSnap.data();
+    let discount = null;
+    if (discountCode) {
+      const discSnap = await tx.get(doc(db, 'discounts', discountCode));
+      const rec = discSnap.data();
+      discount = { code: discountCode, percent: rec.percent };
+    }
+    const price = priceOverride != null ? priceOverride : product.price;
+    const subtotal = price * qty;
+    const discountPercent = discount ? discount.percent : null;
+    const discountAmount = discount ? Math.round((subtotal * discount.percent) / 100) : 0;
+    const total = totalOverride != null ? totalOverride : subtotal - discountAmount;
+    const now = serverTimestamp();
+    tx.set(doc(db, 'inventory', productId), {
+      productId, stock: inv.stock, reserved: inv.reserved + qty,
+      minStock: inv.minStock, costPrice: inv.costPrice, updatedAt: now,
+    }, { merge: true });
+    tx.set(doc(collection(db, 'movements')), {
+      productId, type: 'order_reserve', qty: -qty, orderId,
+      source: movementSource, actorUid: createdBy, createdAt: now,
+    });
+    if (discount) {
+      tx.set(doc(db, 'discounts', discount.code), { usedBy: orderId, usedAt: now }, { merge: true });
+    }
+    tx.set(doc(db, 'orders', orderId), {
+      id: orderId, clientOrderId: orderId,
+      customerName: 'اختبار', customerPhone: '01012345678', customerAddress: 'القاهرة',
+      items: [{ productId, name: product.name, price, qty }],
+      subtotal, discountCode: discount ? discount.code : null,
+      discountPercent, discountAmount, total,
+      status: 'new', paymentStatus: 'cod_pending', source,
+      createdBy, shippingCompanyId: null, trackingNumber: null, notes: null,
+      createdAt: now, updatedAt: now,
+      acceptedAt: null, deliveredAt: null, cancelledAt: null, cancelReason: null,
+      auditId,
+    });
+    tx.set(doc(db, 'audit', auditId), {
+      operationId: auditId, actor, actorName,
+      timestamp: now, collection: 'orders', docId: orderId, operation,
+      changedFields: ['status', 'total'], oldValues: {},
+      newValues: { status: 'new', total },
+      docIds: { [`orders/${orderId}`]: ['status', 'total'] },
+      newValuesByDoc: { [`orders/${orderId}`]: { status: 'new', total } },
+      documents: [{ collection: 'orders', docId: orderId, changedFields: ['status', 'total'], oldValues: {}, newValues: { status: 'new', total } }],
+      source: movementSource,
+    });
+  });
+  return orderId;
+}
+
+/* Write one order + its reservation + movement + audit in a batch,
+ * starting from the valid storefront shape and applying `omit`
+ * (keys to delete) / `overrides`. The batch mirrors the
+ * transaction's writes, so a denial isolates the order rule. */
+async function rawOrderBatch(db, {
+  orderId, productId, productName, price, qty, stock, reserved,
+  omit = [], overrides = {},
+}) {
+  const auditId = `audit-${orderId}`;
+  const subtotal = price * qty;
+  const now = serverTimestamp();
+  const order = {
+    id: orderId, clientOrderId: orderId,
+    customerName: 'اختبار', customerPhone: '01012345678', customerAddress: 'القاهرة',
+    items: [{ productId, name: productName, price, qty }],
+    subtotal, discountCode: null, discountPercent: null, discountAmount: 0, total: subtotal,
+    status: 'new', paymentStatus: 'cod_pending', source: 'storefront',
+    createdBy: null, shippingCompanyId: null, trackingNumber: null, notes: null,
+    createdAt: now, updatedAt: now,
+    acceptedAt: null, deliveredAt: null, cancelledAt: null, cancelReason: null,
+    auditId,
+  };
+  for (const k of omit) delete order[k];
+  Object.assign(order, overrides);
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'inventory', productId), {
+    productId, stock, reserved: reserved + qty,
+    minStock: 5, costPrice: 100, updatedAt: now,
+  }, { merge: true });
+  batch.set(doc(collection(db, 'movements')), {
+    productId, type: 'order_reserve', qty: -qty, orderId,
+    source: 'placeOrder', actorUid: null, createdAt: now,
+  });
+  batch.set(doc(db, 'orders', orderId), order);
+  batch.set(doc(db, 'audit', auditId), {
+    operationId: auditId, actor: 'anonymous', actorName: 'storefront',
+    timestamp: now, collection: 'orders', docId: orderId, operation: 'create',
+    changedFields: ['status', 'total'], oldValues: {},
+    newValues: { status: 'new', total: order.total },
+    docIds: { [`orders/${orderId}`]: ['status', 'total'] },
+    newValuesByDoc: { [`orders/${orderId}`]: { status: 'new', total: order.total } },
+    documents: [{ collection: 'orders', docId: orderId, changedFields: ['status', 'total'], oldValues: {}, newValues: { status: 'new', total: order.total } }],
+    source: 'placeOrder',
+  });
+  return batch.commit();
+}
+
+/* ---------- anonymous access: the order transaction ---------- */
+
+test('No-functions: an anonymous order create via the storefront transaction succeeds', async () => {
   const db = anonDb();
-  await assertFails(setDoc(doc(db, 'orders', 'order-x'), {
-    clientOrderId: 'order-x', status: 'new', total: 100,
+  await assertSucceeds(placeOrderTx(db, {
+    orderId: 'order-nf-1', productId: 'prod-2', qty: 2,
   }));
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-nf-1'))).data();
+  assert.equal(order.status, 'new');
+  assert.equal(order.total, 400);
+  assert.equal(order.paymentStatus, 'cod_pending');
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-2'))).data().reserved, 2);
 });
 
-test('Phase 2 (T19): an anonymous order read is denied', async () => {
+test('No-functions: an anonymous order with a WRONG price is rejected', async () => {
   const db = anonDb();
+  // The totals are consistent with the forged price — only the price
+  // check (against the products doc) must deny it.
+  await assertFails(placeOrderTx(db, {
+    orderId: 'order-nf-price', productId: 'prod-2', qty: 1, priceOverride: 999,
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-nf-price'))).exists(), false);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-2'))).data().reserved, 2);
+});
+
+test('No-functions: an anonymous order reserving MORE than available is rejected', async () => {
+  const db = anonDb();
+  // prod-2: stock 3, reserved 2 — asking for 5 more writes
+  // reserved 7 > stock 3; the inventory rule must deny the batch.
+  await assertFails(placeOrderTx(db, {
+    orderId: 'order-nf-stock', productId: 'prod-2', qty: 5,
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-nf-stock'))).exists(), false);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-2'))).data().reserved, 2);
+});
+
+test('No-functions: an anonymous order with a BAD shape is rejected', async () => {
+  const db = anonDb();
+  const base = {
+    productId: 'prod-4', productName: 'جراب موبايل', price: 300,
+    qty: 1, stock: 10, reserved: 0,
+  };
+  // Missing customerAddress.
+  await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-1', omit: ['customerAddress'] }));
+  // Phone shorter than 10 digits.
+  await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-2', overrides: { customerPhone: '010123456' } }));
+  // qty 0.
+  await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-3', overrides: { items: [{ productId: 'prod-4', name: 'جراب موبايل', price: 300, qty: 0 }] } }));
+  // Total does not match subtotal - discountAmount.
+  await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-4', overrides: { total: 999 } }));
+  // Extra field outside the exact key list.
+  await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-5', overrides: { extraField: 1 } }));
+  for (const id of ['order-bad-1', 'order-bad-2', 'order-bad-3', 'order-bad-4', 'order-bad-5']) {
+    assert.equal((await getDoc(doc(adminDb(), 'orders', id))).exists(), false);
+  }
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 0);
+});
+
+test('No-functions: an anonymous order with a VALID discount code succeeds and claims it', async () => {
+  const db = anonDb();
+  await assertSucceeds(placeOrderTx(db, {
+    orderId: 'order-nf-disc', productId: 'prod-2', qty: 1, discountCode: 'SAVE10',
+  }));
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-nf-disc'))).data();
+  assert.equal(order.discountCode, 'SAVE10');
+  assert.equal(order.discountPercent, 10);
+  assert.equal(order.discountAmount, 20);
+  assert.equal(order.total, 180);
+  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'SAVE10'))).data().usedBy, 'order-nf-disc');
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-2'))).data().reserved, 3);
+});
+
+test('No-functions: an anonymous order with a FRACTIONAL stored price succeeds', async () => {
+  const db = anonDb();
+  // prod-6 costs 19.99 — the order rule checks `is number`, not
+  // `is int`, so the matching line price must pass.
+  await assertSucceeds(placeOrderTx(db, {
+    orderId: 'order-nf-frac', productId: 'prod-6', qty: 2,
+  }));
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-nf-frac'))).data();
+  assert.equal(order.total, 39.98);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-6'))).data().reserved, 2);
+});
+
+test('No-functions: an order with an INACTIVE, USED, or EXPIRED code is rejected', async () => {
+  const db = anonDb();
+  for (const code of ['OFF10', 'USED10', 'EXP10']) {
+    await assertFails(placeOrderTx(db, {
+      orderId: `order-nf-${code.toLowerCase()}`, productId: 'prod-4', qty: 1, discountCode: code,
+    }));
+    assert.equal((await getDoc(doc(adminDb(), 'orders', `order-nf-${code.toLowerCase()}`))).exists(), false);
+  }
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 0);
+});
+
+test('No-functions: claiming a discount WITHOUT a matching order is denied', async () => {
+  const db = anonDb();
+  await assertFails(updateDoc(doc(db, 'discounts', 'CLAIM10'), {
+    usedBy: 'order-nope', usedAt: serverTimestamp(),
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'CLAIM10'))).data().usedBy, null);
+  // And a second claim of the already-used SAVE10 is denied too.
+  await assertFails(updateDoc(doc(db, 'discounts', 'SAVE10'), {
+    usedBy: 'order-nf-other', usedAt: serverTimestamp(),
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'SAVE10'))).data().usedBy, 'order-nf-disc');
+});
+
+/* ---------- anonymous reads: what the transaction needs ---------- */
+
+test('No-functions: anonymous may probe a non-existent order id, never read an existing order', async () => {
+  const db = anonDb();
+  const probe = await getDoc(doc(db, 'orders', 'order-nope-123'));
+  await assertSucceeds(Promise.resolve(probe));
+  assert.equal(probe.exists(), false);
   await assertFails(getDoc(doc(db, 'orders', 'order-1')));
 });
 
@@ -167,13 +486,89 @@ test('Phase 2 (T19): the public catalog stays readable anonymously', async () =>
   await assertSucceeds(getDocs(collection(db, 'products')));
 });
 
-test('Phase 2 (T19): anonymous reads of inventory, discounts, feedback, and audit are denied', async () => {
+test('No-functions: anonymous gets of inventory and discounts are allowed (the transaction reads them), lists and feedback/audit are denied', async () => {
   const db = anonDb();
-  await assertFails(getDoc(doc(db, 'inventory', 'prod-1')));
-  await assertFails(getDoc(doc(db, 'discounts', 'SAVE10')));
+  await assertSucceeds(getDoc(doc(db, 'inventory', 'prod-1')));
+  await assertSucceeds(getDoc(doc(db, 'discounts', 'SAVE10')));
+  await assertFails(getDocs(collection(db, 'inventory')));
+  await assertFails(getDocs(collection(db, 'discounts')));
   await assertFails(getDoc(doc(db, 'feedback', 'fb-1')));
   await assertFails(getDoc(doc(db, 'audit', 'op-test-1')));
   await assertFails(getDoc(doc(db, 'rateLimits', 'ip:x')));
+});
+
+/* ---------- anonymous inventory writes: reservation only ---------- */
+
+test('No-functions: an anonymous inventory write that is NOT a reservation is denied', async () => {
+  const db = anonDb();
+  // prod-2 is fully reserved now (stock 3, reserved 3).
+  await assertFails(setDoc(doc(db, 'inventory', 'prod-2'), { stock: 99 }, { merge: true }));
+  await assertFails(setDoc(doc(db, 'inventory', 'prod-2'), { reserved: 1 }, { merge: true }));
+  const inv = (await getDoc(doc(adminDb(), 'inventory', 'prod-2'))).data();
+  assert.equal(inv.stock, 3);
+  assert.equal(inv.reserved, 3);
+});
+
+/* ---------- §13 inStock refresh ---------- */
+
+test('No-functions: the anonymous inStock refresh sets the verified value', async () => {
+  const db = anonDb();
+  // prod-3: stock 2, reserved 2 — inStock must be false.
+  await assertSucceeds(setDoc(doc(db, 'products', 'prod-3'), { inStock: false }, { merge: true }));
+  assert.equal((await getDoc(doc(adminDb(), 'products', 'prod-3'))).data().inStock, false);
+});
+
+test('No-functions: the anonymous inStock refresh with a WRONG value is denied', async () => {
+  const db = anonDb();
+  await assertFails(setDoc(doc(db, 'products', 'prod-3'), { inStock: true }, { merge: true }));
+  assert.equal((await getDoc(doc(adminDb(), 'products', 'prod-3'))).data().inStock, false);
+});
+
+test('No-functions: an anonymous products price change is denied', async () => {
+  const db = anonDb();
+  await assertFails(setDoc(doc(db, 'products', 'prod-3'), { price: 1 }, { merge: true }));
+  assert.equal((await getDoc(doc(adminDb(), 'products', 'prod-3'))).data().price, 100);
+});
+
+/* ---------- manual orders (authenticated) ---------- */
+
+test('No-functions: an authenticated manual order succeeds', async () => {
+  const db = adminDb();
+  await assertSucceeds(placeOrderTx(db, {
+    orderId: 'order-nf-manual-1', productId: 'prod-5', qty: 1,
+    source: 'admin_manual', createdBy: ADMIN_UID,
+    actor: ADMIN_UID, actorName: 'Admin', operation: 'manual_order_create',
+    movementSource: 'createManualOrder',
+  }));
+  const order = (await getDoc(doc(db, 'orders', 'order-nf-manual-1'))).data();
+  assert.equal(order.source, 'admin_manual');
+  assert.equal(order.createdBy, ADMIN_UID);
+  assert.equal(order.total, 300);
+  assert.equal((await getDoc(doc(db, 'inventory', 'prod-5'))).data().reserved, 1);
+});
+
+test('No-functions: a manager WITHOUT orders_create_manual may not place a manual order', async () => {
+  const db = managerDb();
+  await assertFails(placeOrderTx(db, {
+    orderId: 'order-nf-manual-no', productId: 'prod-5', qty: 1,
+    source: 'admin_manual', createdBy: MANAGER_UID,
+    actor: MANAGER_UID, actorName: 'Manager', operation: 'manual_order_create',
+    movementSource: 'createManualOrder',
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-nf-manual-no'))).exists(), false);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, 1);
+});
+
+test('No-functions: a manager WITH orders_create_manual may place a manual order', async () => {
+  const db = manager2Db();
+  await assertSucceeds(placeOrderTx(db, {
+    orderId: 'order-nf-manual-2', productId: 'prod-5', qty: 1,
+    source: 'admin_manual', createdBy: MANAGER2_UID,
+    actor: MANAGER2_UID, actorName: 'Manager 2', operation: 'manual_order_create',
+    movementSource: 'createManualOrder',
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-nf-manual-2'))).data().source, 'admin_manual');
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, 2);
 });
 
 /* ---------- audit enforcement (T19/T20) ---------- */
@@ -447,29 +842,46 @@ test('Reopen: cancelled -> in_transit is denied (must go via new)', async () => 
   assert.equal((await getDoc(doc(db, 'orders', 'order-reopen-bad'))).data().status, 'cancelled');
 });
 
-test('Phase 2: an illegal feedback transition is denied, a legal one passes', async () => {
-  const db = adminDb();
-  await assertFails(auditedSet(db, ADMIN_UID, {
-    collection: 'feedback', docId: 'fb-1',
-    data: { status: 'resolved' }, sensitive: { status: 'resolved' },
-  }));
-  await assertSucceeds(auditedSet(db, ADMIN_UID, {
-    collection: 'feedback', docId: 'fb-1',
-    data: { status: 'in_review' }, sensitive: { status: 'in_review' },
+/* ---------- Feedback: one-way cards (contract §6) ---------- */
+
+test('No-functions: an anonymous one-way complaint create succeeds', async () => {
+  const db = anonDb();
+  await assertSucceeds(setDoc(doc(collection(db, 'feedback')), {
+    name: 'اختبار', email: 'test@example.com', address: 'القاهرة',
+    message: 'رسالة شكوى كافية الطول', createdAt: serverTimestamp(),
   }));
 });
 
-test('Phase 2: only an admin may set urgent priority — a manager is denied', async () => {
-  const mdb = managerDb();
-  await assertFails(auditedSet(mdb, MANAGER_UID, {
-    collection: 'feedback', docId: 'fb-1',
-    data: { priority: 'urgent' }, sensitive: {},
+test('No-functions: a complaint with a bad shape is rejected', async () => {
+  const db = anonDb();
+  // Extra field (the old Phase 3 shape is gone).
+  await assertFails(setDoc(doc(collection(db, 'feedback')), {
+    name: 'اختبار', email: 'test@example.com', address: 'القاهرة',
+    message: 'رسالة شكوى كافية الطول', status: 'new', createdAt: serverTimestamp(),
   }));
-  const adb = adminDb();
-  await assertSucceeds(auditedSet(adb, ADMIN_UID, {
-    collection: 'feedback', docId: 'fb-1',
-    data: { priority: 'urgent' }, sensitive: {},
+  // Message shorter than 10 chars.
+  await assertFails(setDoc(doc(collection(db, 'feedback')), {
+    name: 'اختبار', email: 'test@example.com', address: 'القاهرة',
+    message: 'قصير', createdAt: serverTimestamp(),
   }));
+  // Email without '@'.
+  await assertFails(setDoc(doc(collection(db, 'feedback')), {
+    name: 'اختبار', email: 'not-an-email', address: 'القاهرة',
+    message: 'رسالة شكوى كافية الطول', createdAt: serverTimestamp(),
+  }));
+});
+
+test('No-functions: feedback update is denied, admin delete with a delete-audit succeeds', async () => {
+  const db = adminDb();
+  await assertFails(updateDoc(doc(db, 'feedback', 'fb-1'), { message: 'تعديل' }));
+  await assertSucceeds(deleteWithAudit(db, ADMIN_UID, 'feedback', 'fb-1'));
+  assert.equal((await getDoc(doc(db, 'feedback', 'fb-1'))).exists(), false);
+});
+
+test('No-functions: a manager may not delete feedback', async () => {
+  const db = managerDb();
+  await assertFails(deleteDoc(doc(db, 'feedback', 'fb-2')));
+  assert.equal((await getDoc(doc(adminDb(), 'feedback', 'fb-2'))).exists(), true);
 });
 
 /* ---------- roles: manager vs admin ---------- */
