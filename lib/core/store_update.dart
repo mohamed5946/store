@@ -46,11 +46,12 @@ import 'diagnostics.dart';
 const String defaultManifestUrl =
     'https://store-3384c.web.app/updates/version.json';
 
-/// Stable APK URL: the `app-release.apk` asset of the "latest"
-/// release. NEVER an expiring fast link — the updater must keep
-/// working months after a release, not 48 hours.
+/// Stable APK URL: the `app-release.apk` file on Firebase Hosting.
+/// NEVER an expiring fast link — the updater must keep working
+/// months after a release, not 48 hours. (The old GitHub "latest"
+/// URL is gone: the repo is private, so anonymous requests 404.)
 const String defaultApkUrl =
-    'https://github.com/mohamed5946/store/releases/download/latest/app-release.apk';
+    'https://store-3384c.web.app/updates/app-release.apk';
 
 /// The Windows Store Manager entry of the shared manifest.
 /// All fields are optional at the manifest level — an older manifest
@@ -328,8 +329,11 @@ class StoreUpdateService {
           .get(Uri.parse(manifestUrl))
           .timeout(const Duration(seconds: 20));
       if (response.statusCode != 200) {
-        final reason =
-            'Update check failed: server returned HTTP ${response.statusCode}.';
+        // 404 gets the exact reason: the manifest file itself is
+        // missing from Hosting, not a generic server error.
+        final reason = response.statusCode == 404
+            ? 'تعذر التحقق من التحديثات: HTTP 404 — الملف مش متاح'
+            : 'Update check failed: server returned HTTP ${response.statusCode}.';
         _error('Update check failed: $reason');
         throw StoreUpdateException(reason);
       }
@@ -373,8 +377,12 @@ class StoreUpdateService {
           .send(request)
           .timeout(const Duration(seconds: 30));
       if (streamed.statusCode != 200) {
+        // 404 gets the exact reason: the APK file itself is missing
+        // from Hosting, not a generic server error.
         throw StoreUpdateException(
-          'Download failed: server returned HTTP ${streamed.statusCode}.',
+          streamed.statusCode == 404
+              ? 'HTTP 404 — الملف مش متاح'
+              : 'Download failed: server returned HTTP ${streamed.statusCode}.',
         );
       }
       final total = streamed.contentLength;

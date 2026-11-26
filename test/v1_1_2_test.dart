@@ -6,6 +6,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:storeadmin/core/dashboard_stats.dart';
 import 'package:storeadmin/core/homepage.dart';
 import 'package:storeadmin/core/store_update.dart';
@@ -214,6 +216,102 @@ void main() {
       expect(formatApkSize(56465651), '54 MB');
       expect(formatApkSize(1500), '1 KB');
       expect(formatApkSize(0), '');
+    });
+  });
+
+  group('updater HTTP 404 surfaces the exact reason', () {
+    // A 404 means the file itself is missing from Hosting — the UI
+    // must say exactly that (in Arabic), not a generic server error.
+    // Other statuses keep the existing generic message.
+    const manifestJson = '{"versionCode": 5, "versionName": "1.1.3", '
+        '"apkUrl": "https://example.test/app.apk", '
+        '"apkSha256": "abcdef", "apkSizeBytes": 12345}';
+
+    test('fetchManifest 404 names the missing file in Arabic', () async {
+      final service = StoreUpdateService(
+        client: MockClient((_) async => http.Response('', 404)),
+      );
+      await expectLater(
+        service.fetchManifest(),
+        throwsA(
+          isA<StoreUpdateException>().having(
+            (e) => e.reason,
+            'reason',
+            'تعذر التحقق من التحديثات: HTTP 404 — الملف مش متاح',
+          ),
+        ),
+      );
+    });
+
+    test('fetchManifest keeps the generic message for other statuses',
+        () async {
+      final service = StoreUpdateService(
+        client: MockClient((_) async => http.Response('', 500)),
+      );
+      await expectLater(
+        service.fetchManifest(),
+        throwsA(
+          isA<StoreUpdateException>().having(
+            (e) => e.reason,
+            'reason',
+            'Update check failed: server returned HTTP 500.',
+          ),
+        ),
+      );
+    });
+
+    test('downloadAndVerify 404 names the missing file in Arabic',
+        () async {
+      final dir = Directory.systemTemp.createTempSync('store_update_404_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final manifest = StoreUpdateManifest.tryParse(manifestJson)!;
+      final service = StoreUpdateService(
+        client: MockClient((_) async => http.Response('', 404)),
+        downloadDir: () => dir,
+      );
+      await expectLater(
+        service.downloadAndVerify(manifest),
+        throwsA(
+          isA<StoreUpdateException>().having(
+            (e) => e.reason,
+            'reason',
+            'HTTP 404 — الملف مش متاح',
+          ),
+        ),
+      );
+      // No partial file left behind after the failed download.
+      expect(
+        File('${dir.path}/updates/app-release.apk').existsSync(),
+        isFalse,
+      );
+    });
+
+    test('downloadAndVerify keeps the generic message for other statuses',
+        () async {
+      final dir = Directory.systemTemp.createTempSync('store_update_500_');
+      addTearDown(() => dir.deleteSync(recursive: true));
+      final manifest = StoreUpdateManifest.tryParse(manifestJson)!;
+      final service = StoreUpdateService(
+        client: MockClient((_) async => http.Response('', 500)),
+        downloadDir: () => dir,
+      );
+      await expectLater(
+        service.downloadAndVerify(manifest),
+        throwsA(
+          isA<StoreUpdateException>().having(
+            (e) => e.reason,
+            'reason',
+            'Download failed: server returned HTTP 500.',
+          ),
+        ),
+      );
+    });
+
+    test('defaultApkUrl points at Firebase Hosting, not GitHub', () {
+      expect(
+        defaultApkUrl,
+        'https://store-3384c.web.app/updates/app-release.apk',
+      );
     });
   });
 
