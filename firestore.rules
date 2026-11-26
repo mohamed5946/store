@@ -517,7 +517,7 @@ service cloud.firestore {
       return d.keys().hasOnly(['name', 'email', 'phone', 'message', 'createdAt'])
         && d.keys().size() == 5
         && d.name is string && d.name.size() > 0 && d.name.size() <= 100
-        && d.email is string && d.email.size() <= 100 && d.email.matches('.*@.*')
+        && d.email is string && d.email.size() <= 100 && (d.email == '' || d.email.matches('.*@.*'))
         && d.phone is string && d.phone.matches('[0-9]{10,15}')
         && d.message is string && d.message.size() >= 10 && d.message.size() <= 2000
         && d.createdAt == request.time;

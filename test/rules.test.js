@@ -903,6 +903,14 @@ test('No-functions: an anonymous one-way complaint create succeeds', async () =>
   }));
 });
 
+test('No-functions: a complaint with an empty email succeeds (email is optional)', async () => {
+  const db = anonDb();
+  await assertSucceeds(setDoc(doc(collection(db, 'feedback')), {
+    name: 'اختبار', email: '', phone: '01012345678',
+    message: 'رسالة شكوى كافية الطول', createdAt: serverTimestamp(),
+  }));
+});
+
 test('No-functions: a complaint with a bad shape is rejected', async () => {
   const db = anonDb();
   // Extra field (the old Phase 3 shape is gone).

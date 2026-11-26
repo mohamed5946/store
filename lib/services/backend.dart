@@ -430,7 +430,7 @@ class Backend {
       return 'اكتب الاسم (بحد أقصى 100 حرف)';
     }
     final mail = email.trim();
-    if (mail.isEmpty || mail.length > 100 || !mail.contains('@')) {
+    if (mail.length > 100 || (mail.isNotEmpty && !mail.contains('@'))) {
       return 'اكتب إيميل صحيح';
     }
     final digits = phone.replaceAll(RegExp(r'[^0-9]'), '');
@@ -754,11 +754,18 @@ class Backend {
     final id = p.id.isEmpty ? db.collection('products').doc().id : p.id;
     if (p.id.isEmpty) {
       data['createdAt'] = FieldValue.serverTimestamp();
+      // A brand-new product has no inventory doc yet (0 available),
+      // so it starts out of stock — otherwise the storefront treats
+      // a missing inStock flag as available.
+      data['inStock'] = false;
     }
     await _auditedBatch(
       writes: {'products/$id': data},
       sensitive: {
-        'products/$id': {'price': p.price},
+        'products/$id': {
+          'price': p.price,
+          if (p.id.isEmpty) 'inStock': false,
+        },
       },
       operation: p.id.isEmpty ? 'create' : 'update',
     );

@@ -178,6 +178,7 @@ Future<void> _showFeedbackDetail(
   QueryDocumentSnapshot<Map<String, dynamic>> doc,
 ) async {
   final data = doc.data();
+  final email = (data['email'] ?? '') as String;
   await showDialog<void>(
     context: context,
     builder: (c) => AlertDialog(
@@ -189,7 +190,9 @@ Future<void> _showFeedbackDetail(
             mainAxisSize: MainAxisSize.min,
             children: [
               StaggeredItem(
-                  index: 0, child: Text('الإيميل: ${data['email'] ?? ''}')),
+                  index: 0,
+                  child: Text(
+                      'الإيميل: ${email.isNotEmpty ? email : '—'}')),
               StaggeredItem(
                   index: 1,
                   child: Text(

@@ -178,6 +178,11 @@ void main() {
       expect(validate(email: '${'x' * 95}@e.com'), isNotNull);
     });
 
+    test('email is optional (phone is the required contact)', () {
+      expect(validate(email: ''), isNull);
+      expect(validate(email: '   '), isNull);
+    });
+
     test('name at most 100 chars', () {
       expect(validate(name: 'x' * 101), isNotNull);
     });
