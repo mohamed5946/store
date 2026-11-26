@@ -19,4 +19,23 @@ void main() {
   test('orders without a phone are skipped', () {
     expect(deriveCustomers([{'customerName': 'x', 'total': 10}]), isEmpty);
   });
+
+  test('old orders with a nested customer block still derive', () {
+    final customers = deriveCustomers([
+      {
+        'customer': {
+          'name': 'محمد',
+          'phone': '0151',
+          'address': 'القاهرة',
+        },
+        'total': 100,
+        'createdAt': '2026-10-01',
+      },
+    ]);
+    expect(customers.length, 1);
+    expect(customers.first['phone'], '0151');
+    expect(customers.first['name'], 'محمد');
+    expect(customers.first['address'], 'القاهرة');
+    expect(customers.first['ordersCount'], 1);
+  });
 }

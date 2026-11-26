@@ -1066,10 +1066,13 @@ async function submitOrder(customer) {
     if (code === 'INSUFFICIENT_STOCK') {
       const name = (details.productId && (products.find((x) => x.id === details.productId) || {}).name) || 'المنتج';
       const avail = details.availableQty ?? 0;
+      const msg = avail === 0
+        ? 'المنتج ده خلص من المخزون'
+        : `المتاح دلوقتي من "${esc(name)}" ${avail} بس — عدّل الكمية في السلة وحاول تاني.`;
       openModal(`
         <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
         <h2>الكمية مش متاحة</h2>
-        <p style="color:var(--text-soft)">المتاح دلوقتي من "${esc(name)}" ${avail} بس — عدّل الكمية في السلة وحاول تاني.</p>
+        <p style="color:var(--text-soft)">${msg}</p>
         <button class="btn btn-primary btn-block" id="adjustQty">تعديل الكمية</button>`);
       $('#adjustQty').addEventListener('click', () => { closeModal(); openCart(true); });
       return;
@@ -1086,10 +1089,13 @@ async function submitOrder(customer) {
           if (l.qty > avail) { short = { name: l.p.name, avail }; break; }
         }
         if (short) {
+          const msg = short.avail === 0
+            ? 'المنتج ده خلص من المخزون'
+            : `المتاح دلوقتي من "${esc(short.name)}" ${short.avail} بس — عدّل الكمية في السلة وحاول تاني.`;
           openModal(`
             <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
             <h2>الكمية مش متاحة</h2>
-            <p style="color:var(--text-soft)">المتاح دلوقتي من "${esc(short.name)}" ${short.avail} بس — عدّل الكمية في السلة وحاول تاني.</p>
+            <p style="color:var(--text-soft)">${msg}</p>
             <button class="btn btn-primary btn-block" id="adjustQty">تعديل الكمية</button>`);
           $('#adjustQty').addEventListener('click', () => { closeModal(); openCart(true); });
           return;
@@ -1276,7 +1282,7 @@ async function submitFeedbackForm(e) {
   const phone = (($('#fbPhone') || {}).value || '').replace(/[^0-9]/g, '');
   const message = (($('#fbMessage') || {}).value || '').trim();
   if (name.length === 0 || name.length > 100) return showResult('اكتب الاسم (لحد 100 حرف)');
-  if (!email.includes('@') || email.length > 100) return showResult('اكتب إيميل صحيح');
+  if (email.length > 0 && (!email.includes('@') || email.length > 100)) return showResult('اكتب إيميل صحيح');
   if (phone.length < 10 || phone.length > 15) return showResult('اكتب رقم موبايل صحيح');
   if (message.length < 10 || message.length > 2000) return showResult('اكتب رسالتك (من 10 لـ 2000 حرف)');
   const btn = $('#fbSubmit');
