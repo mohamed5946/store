@@ -14,6 +14,9 @@ void main() {
       expect(Backend.isAllowedOrderTransition('preparing', 'ready'), isTrue);
       expect(Backend.isAllowedOrderTransition('ready', 'in_transit'), isTrue);
       expect(Backend.isAllowedOrderTransition('in_transit', 'delivered'), isTrue);
+      // Reopen (2026-11-26 hotfix): a cancelled order goes back to
+      // new — never straight to a later state.
+      expect(Backend.isAllowedOrderTransition('cancelled', 'new'), isTrue);
     });
 
     test('illegal transitions are denied', () {
@@ -23,6 +26,7 @@ void main() {
       expect(Backend.isAllowedOrderTransition('in_transit', 'ready'), isFalse);
       expect(Backend.isAllowedOrderTransition('delivered', 'cancelled'), isFalse);
       expect(Backend.isAllowedOrderTransition('cancelled', 'accepted'), isFalse);
+      expect(Backend.isAllowedOrderTransition('cancelled', 'in_transit'), isFalse);
       expect(Backend.isAllowedOrderTransition('expired', 'accepted'), isFalse);
       expect(Backend.isAllowedOrderTransition('delivered', 'delivered'), isFalse);
     });
@@ -41,6 +45,11 @@ void main() {
         Backend.orderTransitions.keys.toSet(),
         {'new', 'accepted', 'preparing', 'ready', 'in_transit', 'delivered', 'cancelled', 'expired'},
       );
+    });
+
+    test('reopen: cancelled lists only new as its next state', () {
+      expect(Backend.orderTransitions['cancelled'], ['new']);
+      expect(Backend.orderTransitions['expired'], []);
     });
   });
 

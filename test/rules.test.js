@@ -32,7 +32,7 @@ const {
   assertFails,
 } = require('@firebase/rules-unit-testing');
 const {
-  doc, setDoc, getDoc, updateDoc, deleteDoc, writeBatch,
+  doc, setDoc, getDoc, updateDoc, deleteDoc, deleteField, writeBatch,
   serverTimestamp, collection, getDocs,
 } = require('firebase/firestore');
 
@@ -82,6 +82,20 @@ before(async () => {
       id: 'order-cancel-bad', clientOrderId: 'order-cancel-bad',
       status: 'new', paymentStatus: 'cod_pending', total: 1000,
       customerName: 'اختبار', customerPhone: '01012345678',
+    });
+    // Reopen hotfix (2026-11-26): fresh CANCELLED orders — the
+    // reopen tests need orders already carrying the cancel stamp.
+    await setDoc(doc(db, 'orders', 'order-reopen-ok'), {
+      id: 'order-reopen-ok', clientOrderId: 'order-reopen-ok',
+      status: 'cancelled', paymentStatus: 'cod_pending', total: 1000,
+      customerName: 'اختبار', customerPhone: '01012345678',
+      cancelledAt: serverTimestamp(), cancelReason: 'cancelled_by_admin',
+    });
+    await setDoc(doc(db, 'orders', 'order-reopen-bad'), {
+      id: 'order-reopen-bad', clientOrderId: 'order-reopen-bad',
+      status: 'cancelled', paymentStatus: 'cod_pending', total: 1000,
+      customerName: 'اختبار', customerPhone: '01012345678',
+      cancelledAt: serverTimestamp(), cancelReason: 'cancelled_by_admin',
     });
     await setDoc(doc(db, 'feedback', 'fb-1'), {
       id: 'fb-1', trackingCode: 'FB-AAAAAA', status: 'new',
@@ -385,6 +399,52 @@ test('A3: cancelling an order with the OLD hard-coded audit list is denied', asy
   });
   await assertFails(batch.commit());
   assert.equal((await getDoc(doc(db, 'orders', 'order-cancel-bad'))).data().status, 'new');
+});
+
+/* ---------- Reopen hotfix (2026-11-26): cancelled is no longer
+ * terminal — cancelled -> new is legal, but only via new (a direct
+ * jump to a later state stays denied). The app's reopen write is an
+ * audited batch that sets status 'new' and DELETES cancelledAt +
+ * cancelReason; the deleted keys are affectedKeys too, so the audit
+ * entry must cover them — these tests pin exactly that shape. */
+
+test('Reopen: cancelled -> new WITH the lifecycle deletes covered passes', async () => {
+  const db = adminDb();
+  opCounter += 1;
+  const opId = `op-test-${opCounter}`;
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'orders', 'order-reopen-ok'), {
+    status: 'new',
+    cancelledAt: deleteField(),
+    cancelReason: deleteField(),
+    operationId: opId,
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+  batch.set(doc(db, 'audit', opId), {
+    operationId: opId, actor: ADMIN_UID, actorName: 'Test Admin',
+    timestamp: serverTimestamp(), collection: 'orders', docId: 'order-reopen-ok',
+    operation: 'status_change',
+    changedFields: ['status', 'cancelledAt', 'cancelReason', 'operationId', 'updatedAt'],
+    oldValues: { status: 'cancelled' }, newValues: { status: 'new' },
+    docIds: { 'orders/order-reopen-ok': ['status', 'cancelledAt', 'cancelReason', 'operationId', 'updatedAt'] },
+    newValuesByDoc: { 'orders/order-reopen-ok': { status: 'new' } },
+    documents: [{ collection: 'orders', docId: 'order-reopen-ok', changedFields: ['status', 'cancelledAt', 'cancelReason'], oldValues: { status: 'cancelled' }, newValues: { status: 'new' } }],
+    source: 'test',
+  });
+  await assertSucceeds(batch.commit());
+  const data = (await getDoc(doc(db, 'orders', 'order-reopen-ok'))).data();
+  assert.equal(data.status, 'new');
+  assert.equal(data.cancelledAt, undefined);
+  assert.equal(data.cancelReason, undefined);
+});
+
+test('Reopen: cancelled -> in_transit is denied (must go via new)', async () => {
+  const db = adminDb();
+  await assertFails(auditedSet(db, ADMIN_UID, {
+    collection: 'orders', docId: 'order-reopen-bad',
+    data: { status: 'in_transit' }, sensitive: { status: 'in_transit' },
+  }));
+  assert.equal((await getDoc(doc(db, 'orders', 'order-reopen-bad'))).data().status, 'cancelled');
 });
 
 test('Phase 2: an illegal feedback transition is denied, a legal one passes', async () => {

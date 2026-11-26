@@ -171,7 +171,8 @@ service cloud.firestore {
         || (from == 'accepted' && to in ['preparing', 'cancelled'])
         || (from == 'preparing' && to in ['ready', 'cancelled'])
         || (from == 'ready' && to in ['in_transit', 'cancelled'])
-        || (from == 'in_transit' && to == 'delivered');
+        || (from == 'in_transit' && to == 'delivered')
+        || (from == 'cancelled' && to == 'new');
     }
 
     /* The feedback state machine (v1.4 §8.3). */

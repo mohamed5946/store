@@ -666,7 +666,7 @@ class Backend {
     'ready': ['in_transit', 'cancelled'],
     'in_transit': ['delivered'],
     'delivered': [],
-    'cancelled': [],
+    'cancelled': ['new'],
     'expired': [],
   };
 
@@ -691,7 +691,13 @@ class Backend {
   /// Pure status steps (accept → prepare → ready → in transit) are an
   /// audited batch on the order alone. The lifecycle timestamps
   /// (acceptedAt / deliveredAt / cancelledAt) are stamped with the
-  /// transition; cancelReason is set on cancel/expire.
+  /// transition; cancelReason is set on cancel/expire. Reopen
+  /// (cancelled → new) is the reverse of the cancel stamp: it DELETES
+  /// cancelledAt + cancelReason so the order reads as a fresh new
+  /// order (the audit entry's docIds are derived from the real write
+  /// keys, so the deleted fields stay covered by the rules). Reopen
+  /// does NOT re-reserve stock — cancel already released the
+  /// reservation, and the reopen write touches the order alone.
   Future<void> setOrderStatus(String id, String status, {String? reason}) async {
     _requireInit();
     final orderRef = db.collection('orders').doc(id);
@@ -827,6 +833,11 @@ class Backend {
     }
     final orderUpdate = <String, dynamic>{'status': status};
     if (status == 'accepted') orderUpdate['acceptedAt'] = FieldValue.serverTimestamp();
+    if (from == 'cancelled' && status == 'new') {
+      // Reopen: wipe the cancel stamp so the order reads as fresh-new.
+      orderUpdate['cancelledAt'] = FieldValue.delete();
+      orderUpdate['cancelReason'] = FieldValue.delete();
+    }
     await _auditedBatch(
       writes: {'orders/$id': orderUpdate},
       sensitive: {'orders/$id': {'status': status}},
