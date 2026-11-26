@@ -1,6 +1,6 @@
 // Feedback section (no-functions contract §6).
 //
-// One-way complaint cards: name, email, address, complaint + date.
+// One-way complaint cards: name, email, phone, complaint + date.
 // NO status, NO priority, NO replies, NO tracking code, NO lookup.
 // The admin reads the cards and can delete one (spam, audited
 // delete). A new complaint can be added on a customer's behalf
@@ -26,7 +26,7 @@ class _FeedbackTabState extends State<_FeedbackTab> {
   Future<void> _addFeedback() async {
     final nameCtrl = TextEditingController();
     final emailCtrl = TextEditingController();
-    final addressCtrl = TextEditingController();
+    final phoneCtrl = TextEditingController();
     final messageCtrl = TextEditingController();
     var errorText = '';
     var busy = false;
@@ -49,8 +49,9 @@ class _FeedbackTabState extends State<_FeedbackTab> {
                   decoration: const InputDecoration(labelText: 'الإيميل'),
                 ),
                 TextField(
-                  controller: addressCtrl,
-                  decoration: const InputDecoration(labelText: 'العنوان'),
+                  controller: phoneCtrl,
+                  keyboardType: TextInputType.phone,
+                  decoration: const InputDecoration(labelText: 'رقم الموبايل'),
                 ),
                 TextField(
                   controller: messageCtrl,
@@ -77,7 +78,7 @@ class _FeedbackTabState extends State<_FeedbackTab> {
                       final error = Backend.validateFeedbackInput(
                         name: nameCtrl.text,
                         email: emailCtrl.text,
-                        address: addressCtrl.text,
+                        phone: phoneCtrl.text,
                         message: messageCtrl.text,
                       );
                       if (error != null) {
@@ -89,7 +90,7 @@ class _FeedbackTabState extends State<_FeedbackTab> {
                         await Backend.instance.submitFeedback(
                           name: nameCtrl.text,
                           email: emailCtrl.text,
-                          address: addressCtrl.text,
+                          phone: phoneCtrl.text,
                           message: messageCtrl.text,
                         );
                         if (c.mounted) Navigator.pop(c, true);
@@ -169,7 +170,7 @@ class _FeedbackTabState extends State<_FeedbackTab> {
   }
 }
 
-/// Complaint detail dialog: name, email, address, complaint + date,
+/// Complaint detail dialog: name, email, phone, complaint + date,
 /// and the audited delete (spam). Nothing else — no status, no
 /// replies, no tracking code.
 Future<void> _showFeedbackDetail(
@@ -190,7 +191,9 @@ Future<void> _showFeedbackDetail(
               StaggeredItem(
                   index: 0, child: Text('الإيميل: ${data['email'] ?? ''}')),
               StaggeredItem(
-                  index: 1, child: Text('العنوان: ${data['address'] ?? ''}')),
+                  index: 1,
+                  child: Text(
+                      'رقم الموبايل: ${(data['phone'] ?? data['address'] ?? '')}')),
               StaggeredItem(
                   index: 2,
                   child: Text(

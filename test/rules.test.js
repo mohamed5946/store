@@ -164,11 +164,11 @@ before(async () => {
     });
     // Feedback seeds use the NEW one-way shape (contract §6).
     await setDoc(doc(db, 'feedback', 'fb-1'), {
-      name: 'أحمد', email: 'a@test.com', address: 'القاهرة',
+      name: 'أحمد', email: 'a@test.com', phone: '01012345678',
       message: 'شكوى تجريبية كافية الطول', createdAt: serverTimestamp(),
     });
     await setDoc(doc(db, 'feedback', 'fb-2'), {
-      name: 'منى', email: 'm@test.com', address: 'الجيزة',
+      name: 'منى', email: 'm@test.com', phone: '01123456789',
       message: 'شكوى تجريبية ثانية كافية الطول', createdAt: serverTimestamp(),
     });
     await setDoc(doc(db, 'storeSettings', 'activeTemplate'), { templateId: 'tpl-live' });
@@ -898,7 +898,7 @@ test('Reopen: cancelled -> in_transit is denied (must go via new)', async () => 
 test('No-functions: an anonymous one-way complaint create succeeds', async () => {
   const db = anonDb();
   await assertSucceeds(setDoc(doc(collection(db, 'feedback')), {
-    name: 'اختبار', email: 'test@example.com', address: 'القاهرة',
+    name: 'اختبار', email: 'test@example.com', phone: '01012345678',
     message: 'رسالة شكوى كافية الطول', createdAt: serverTimestamp(),
   }));
 });
@@ -907,17 +907,32 @@ test('No-functions: a complaint with a bad shape is rejected', async () => {
   const db = anonDb();
   // Extra field (the old Phase 3 shape is gone).
   await assertFails(setDoc(doc(collection(db, 'feedback')), {
-    name: 'اختبار', email: 'test@example.com', address: 'القاهرة',
+    name: 'اختبار', email: 'test@example.com', phone: '01012345678',
     message: 'رسالة شكوى كافية الطول', status: 'new', createdAt: serverTimestamp(),
   }));
   // Message shorter than 10 chars.
   await assertFails(setDoc(doc(collection(db, 'feedback')), {
-    name: 'اختبار', email: 'test@example.com', address: 'القاهرة',
+    name: 'اختبار', email: 'test@example.com', phone: '01012345678',
     message: 'قصير', createdAt: serverTimestamp(),
   }));
   // Email without '@'.
   await assertFails(setDoc(doc(collection(db, 'feedback')), {
-    name: 'اختبار', email: 'not-an-email', address: 'القاهرة',
+    name: 'اختبار', email: 'not-an-email', phone: '01012345678',
+    message: 'رسالة شكوى كافية الطول', createdAt: serverTimestamp(),
+  }));
+  // Phone shorter than 10 digits.
+  await assertFails(setDoc(doc(collection(db, 'feedback')), {
+    name: 'اختبار', email: 'test@example.com', phone: '010123456',
+    message: 'رسالة شكوى كافية الطول', createdAt: serverTimestamp(),
+  }));
+  // Phone with non-digits.
+  await assertFails(setDoc(doc(collection(db, 'feedback')), {
+    name: 'اختبار', email: 'test@example.com', phone: '010-abc-4567',
+    message: 'رسالة شكوى كافية الطول', createdAt: serverTimestamp(),
+  }));
+  // Old shape: address instead of phone.
+  await assertFails(setDoc(doc(collection(db, 'feedback')), {
+    name: 'اختبار', email: 'test@example.com', address: 'القاهرة',
     message: 'رسالة شكوى كافية الطول', createdAt: serverTimestamp(),
   }));
 });

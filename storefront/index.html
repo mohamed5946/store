@@ -146,11 +146,11 @@
       <div class="glass contact-card">
         <form id="fbForm" novalidate>
           <div class="fb-row">
-            <label class="field"><span>الاسم</span><input id="fbName" type="text" maxlength="100" placeholder="اسمك" /></label>
-            <label class="field"><span>الإيميل</span><input id="fbEmail" type="email" dir="ltr" style="text-align:right" maxlength="100" placeholder="example@mail.com" /></label>
+            <label class="field"><span>الاسم</span><input id="fbName" type="text" autocomplete="name" name="name" maxlength="100" placeholder="اسمك" /></label>
+            <label class="field"><span>الإيميل</span><input id="fbEmail" type="email" dir="ltr" autocomplete="email" name="email" style="text-align:right" maxlength="100" placeholder="example@mail.com" /></label>
           </div>
-          <label class="field"><span>العنوان</span><input id="fbAddress" type="text" maxlength="300" placeholder="عنوانك" /></label>
-          <label class="field"><span>الشكوى</span><textarea id="fbMessage" rows="4" placeholder="اكتب شكواك هنا (من 10 لـ 2000 حرف)"></textarea></label>
+          <label class="field"><span>رقم الموبايل</span><input id="fbPhone" type="tel" dir="ltr" autocomplete="tel" name="phone" maxlength="20" placeholder="01xxxxxxxxx" /></label>
+          <label class="field"><span>الشكوى</span><textarea id="fbMessage" rows="4" name="message" placeholder="اكتب شكواك هنا (من 10 لـ 2000 حرف)"></textarea></label>
           <button class="btn btn-primary" id="fbSubmit" type="submit">إرسال</button>
           <p class="fb-result" id="fbResult" hidden></p>
         </form>
