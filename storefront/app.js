@@ -54,18 +54,12 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {
   getFirestore, collection, query, orderBy, getDocs, doc, getDoc,
-  setDoc, updateDoc, serverTimestamp, arrayUnion,
+  setDoc, updateDoc, serverTimestamp, arrayUnion, runTransaction,
+  writeBatch,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
-import {
-  getFunctions, httpsCallable,
-} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js';
 
 const app = initializeApp(window.STORE_FIREBASE_CONFIG);
 const db = getFirestore(app);
-const functions = getFunctions(app); /* us-central1 (default) */
-const placeOrderCallable = httpsCallable(functions, 'placeOrder');
-const submitFeedbackCallable = httpsCallable(functions, 'submitFeedback');
-const getFeedbackStatusCallable = httpsCallable(functions, 'getFeedbackStatus');
 
 /* ---------- anonymous session + funnel ---------- */
 let sessionId = localStorage.getItem('store_session_id');
@@ -97,6 +91,15 @@ let homepage = {};
 let design = {};
 let searchQuery = '';
 let filter = 'all';
+/* Price filter (min/max, EGP) + sort by price. Null bounds mean "no
+ * limit"; 'none' keeps the catalog's own order. */
+let priceMin = null;
+let priceMax = null;
+let sortMode = 'none';
+/* WhatsApp ordering (storeSettings/settings): off by default; the
+ * number defaults to the store's WhatsApp line. */
+let whatsappOrderEnabled = false;
+let whatsappNumber = '201557887719';
 let cart = JSON.parse(localStorage.getItem('sp-cart') || '{}');
 let attemptId = null;
 let clientOrderId = localStorage.getItem('sp-checkout') || null;
@@ -106,8 +109,8 @@ function newClientOrderId() {
 }
 let ordering = false;
 let theme = localStorage.getItem('sp-theme') || 'light';
-/* Discount code typed in the review step (sent to the placeOrder
- * callable; the function validates and consumes it server-side). */
+/* Discount code typed in the review step (validated against the
+ * discounts collection inside the order transaction). */
 let discountCode = '';
 /* True when the catalog load failed at boot — renderProducts shows an
  * error UI with a retry instead of an empty grid (the silent catches
@@ -382,9 +385,14 @@ function productCard(p) {
   </article>`;
 }
 function visibleProducts() {
-  return products.filter((p) =>
+  const list = products.filter((p) =>
     (filter === 'all' || p.categoryId === filter) &&
-    (searchQuery === '' || (p.name || '').toLowerCase().includes(searchQuery)));
+    (searchQuery === '' || (p.name || '').toLowerCase().includes(searchQuery)) &&
+    (priceMin === null || Number(p.price) >= priceMin) &&
+    (priceMax === null || Number(p.price) <= priceMax));
+  if (sortMode === 'price-asc') list.sort((a, b) => Number(a.price) - Number(b.price));
+  else if (sortMode === 'price-desc') list.sort((a, b) => Number(b.price) - Number(a.price));
+  return list;
 }
 function renderProducts() {
   if (bootFailed) {
@@ -432,19 +440,13 @@ function renderProducts() {
   }
   observeReveals();
 }
-function renderFeatured() {
-  const spot = $('#featuredSpot');
-  if (!sectionOn('featured')) { spot.innerHTML = ''; return; }
-  const hp = homepage || {};
-  let p = products.find((x) => x.id === hp.featuredProductId);
-  if (!p) p = products[0];
-  if (!p) { spot.innerHTML = ''; return; }
+function featuredCard(p, eyebrow) {
   const cover = coverUrl(p);
-  spot.innerHTML = `
+  return `
     <div class="glass featured-card reveal in">
       ${cover ? `<div class="featured-media"><img src="${esc(cover)}" alt="${esc(p.name)}" /></div>` : ''}
       <div class="featured-body">
-        <span class="eyebrow">منتج الشهر</span>
+        <span class="eyebrow">${esc(eyebrow)}</span>
         <h3>${esc(p.name)}</h3>
         ${p.description ? `<p>${esc(p.description)}</p>` : ''}
         <div class="price">${money(p.price)}</div>
@@ -454,6 +456,23 @@ function renderFeatured() {
         </div>
       </div>
     </div>`;
+}
+function renderFeatured() {
+  const spot = $('#featuredSpot');
+  if (!sectionOn('featured')) { spot.innerHTML = ''; return; }
+  const hp = homepage || {};
+  /* All products flagged featured, in their own section, shown first.
+   * Fallback when none are flagged: the old featuredProductId /
+   * first-product behaviour. */
+  const featured = products.filter((x) => x.featured === true);
+  if (featured.length > 0) {
+    spot.innerHTML = featured.map((p) => featuredCard(p, 'منتج مميز')).join('');
+    return;
+  }
+  let p = products.find((x) => x.id === hp.featuredProductId);
+  if (!p) p = products[0];
+  if (!p) { spot.innerHTML = ''; return; }
+  spot.innerHTML = featuredCard(p, 'منتج الشهر');
 }
 /* Promo product carousel: per-product image index, kept across re-renders
  * so an arrow tap is never reset by a data refresh. */
@@ -634,14 +653,18 @@ function openProduct(id) {
   recordStep('product');
   const imgs = productImages(p);
   const main = imgs[0] || '';
+  /* Availability comes from products.inStock only — never the count.
+   * A missing flag means available (older products predate the field). */
+  const inStock = p.inStock !== false;
   openModal(`
     <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
     ${main ? `<div class="modal-media"><img id="modalMain" src="${esc(main)}" alt="${esc(p.name)}" /></div>` : ''}
     ${imgs.length > 1 ? `<div class="modal-thumbs">${imgs.map((u, i) => `<button class="mthumb ${i === 0 ? 'on' : ''}" data-thumb="${esc(u)}">${`<img src="${esc(u)}" alt="" />`}</button>`).join('')}</div>` : ''}
     <h2>${esc(p.name)}</h2>
+    <span class="avail-badge ${inStock ? 'in' : 'out'}">${inStock ? 'متوفر' : 'غير متوفر'}</span>
     <div class="price">${money(p.price)}</div>
     ${p.description ? `<p>${esc(p.description)}</p>` : ''}
-    <button class="btn btn-primary btn-block" data-add="${p.id}">أضف للسلة</button>`);
+    <button class="btn btn-primary btn-block" data-add="${p.id}" ${inStock ? '' : 'disabled'}>${inStock ? 'أضف للسلة' : 'غير متوفر حالياً'}</button>`);
   document.querySelectorAll('[data-thumb]').forEach((b) => b.addEventListener('click', () => {
     document.querySelectorAll('[data-thumb]').forEach((x) => x.classList.remove('on'));
     b.classList.add('on');
@@ -692,27 +715,290 @@ function showReview(customer, notice = '') {
     <div class="cart-foot"><div class="row"><span>الإجمالي</span><strong>${money(cartTotal())}</strong></div></div>
     <label class="field"><span>كود خصم (اختياري)</span><input id="fDiscount" type="text" dir="ltr" style="text-align:right" placeholder="اكتب الكود لو معاك" value="${esc(discountCode)}" /></label>
     <p style="color:var(--text-soft)">الدفع عند الاستلام</p>
-    <button class="btn btn-primary btn-block" id="confirmOrder">تأكيد الطلب</button>`);
+    <button class="btn btn-primary btn-block" id="confirmOrder">تأكيد الطلب</button>
+    ${whatsappOrderEnabled ? `<button class="btn btn-ghost btn-block" id="waOrder" style="margin-top:10px">اطلب عبر واتساب</button>` : ''}`);
   $('#confirmOrder').addEventListener('click', () => {
     discountCode = ($('#fDiscount').value || '').trim();
     submitOrder(customer);
   });
+  const waBtn = $('#waOrder');
+  if (waBtn) waBtn.addEventListener('click', () => orderViaWhatsApp(customer));
+}
+/* WhatsApp order: no order doc is created — the pre-filled message
+ * (lines + customer + total) opens in WhatsApp for the store to take. */
+function orderViaWhatsApp(customer) {
+  const lines = cartLines();
+  const text = [
+    'طلب جديد من المتجر',
+    ...lines.map((l) => `- ${l.p.name} × ${l.qty} — ${money(l.p.price * l.qty)}`),
+    `الإجمالي: ${money(cartTotal())}`,
+    `الاسم: ${customer.name}`,
+    `الموبايل: ${customer.phone}`,
+    `العنوان: ${customer.addr}`,
+  ].join('\n');
+  window.open(`https://wa.me/${whatsappNumber}?text=${encodeURIComponent(text)}`, '_blank');
 }
 
-/* ---------- order journey: the trusted placeOrder callable creates the
- * order EXACTLY ONCE, then the van drives ----------
- * The client function is named submitOrder (not placeOrder) so it never
- * collides with the callable of the same name. The client sends ONLY
- * product ids + quantities + (optionally) a discount code + the prices
- * it displayed (seenPrices/seenTotal) — never a price or total as a
- * fact. The function recomputes everything from the database. */
+/* ---------- order: ONE client Firestore transaction (no-functions) ----------
+ * Replaces the placeOrder callable (contract §1). The transaction does,
+ * atomically: idempotency by clientOrderId -> read products + inventory
+ * + discount -> validate shape/prices/stock/discount -> total from
+ * DATABASE prices -> reserve stock -> claim the discount -> create the
+ * order (exact createOrderTx field list + auditId) -> movements ->
+ * audit entry. The products.inStock refresh is a SECOND, best-effort
+ * batched write after commit (contract §13) — never inside the tx.
+ * The client sends ONLY product ids + quantities + (optionally) a
+ * discount code + the prices it displayed (seenPrices/seenTotal) —
+ * never a price or total as a fact. */
+class OrderError extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.code = code;
+    this.details = details;
+  }
+}
+/* Milliseconds from a Firestore Timestamp, a Date, an ISO string, or a
+ * plain number. */
+function toMillis(value) {
+  if (value == null) return 0;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') return Date.parse(value) || 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (value instanceof Date) return value.getTime();
+  if (typeof value.seconds === 'number') return value.seconds * 1000;
+  return 0;
+}
+/* Merge duplicate lines by productId, summing quantities. */
+function dedupeItems(items) {
+  const merged = new Map();
+  for (const line of items || []) {
+    const id = String(line.productId || '');
+    if (!id) continue;
+    const qty = Math.floor(Number(line.qty) || 0);
+    if (merged.has(id)) merged.get(id).qty += qty;
+    else merged.set(id, { productId: id, qty });
+  }
+  return [...merged.values()];
+}
+function newAuditId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  return 'au_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+/* The order transaction. Returns { order, created, stockState } —
+ * stockState is [{ productId, inStock }] from the inventory values the
+ * transaction just wrote, for the §13 second write. Throws OrderError
+ * with a structured code on any validation failure. */
+async function placeOrderTx({ clientOrderId: orderId, items, discountCode: code, customer, seenPrices, seenTotal }) {
+  /* Shape validation (client-side, before the transaction). */
+  const shapeError = (() => {
+    if (!customer || typeof customer !== 'object') return 'بيانات العميل ناقصة';
+    if (!customer.name || String(customer.name).trim().length === 0) return 'اكتب الاسم';
+    if (String(customer.phone || '').replace(/\D/g, '').length < 10) return 'اكتب رقم موبايل صحيح';
+    if (!customer.address || String(customer.address).trim().length === 0) return 'اكتب العنوان';
+    if (!Array.isArray(items) || items.length === 0) return 'السلة فارغة';
+    const distinct = new Set(items.map((l) => String(l.productId || ''))).size;
+    if (distinct > 10) return 'ORDER_TOO_LARGE';
+    for (const line of items) {
+      if (!line.productId || String(line.productId).trim() === '') return 'INVALID_INPUT';
+      const qty = Number(line.qty);
+      if (!Number.isInteger(qty) || qty < 1 || qty > 20) return 'INVALID_INPUT';
+    }
+    if (code != null && String(code).trim() === '') return 'INVALID_INPUT';
+    return null;
+  })();
+  if (shapeError === 'ORDER_TOO_LARGE') {
+    throw new OrderError('ORDER_TOO_LARGE', 'الطلب فيه منتجات أكتر من الحد المسموح', { maxProducts: 10 });
+  }
+  if (shapeError) throw new OrderError('INVALID_INPUT', shapeError);
+  const merged = dedupeItems(items);
+  if (merged.length > 10) {
+    throw new OrderError('ORDER_TOO_LARGE', 'الطلب فيه منتجات أكتر من الحد المسموح', { maxProducts: 10 });
+  }
+  const auditId = newAuditId();
+  let result;
+  await runTransaction(db, async (tx) => {
+    const orderRef = doc(db, 'orders', orderId);
+    /* Idempotency FIRST: a retry with the same clientOrderId returns
+     * the existing order — no stock work, no discount work, no
+     * duplicate. */
+    const existing = await tx.get(orderRef);
+    if (existing.exists()) {
+      result = { order: { id: existing.id, ...existing.data() }, created: false, stockState: null };
+      return;
+    }
+    /* Read products + inventory (one read per line). */
+    const lines = [];
+    const dbPrices = {};
+    for (const line of merged) {
+      const productSnap = await tx.get(doc(db, 'products', line.productId));
+      if (!productSnap.exists()) throw new OrderError('INVALID_INPUT', 'منتج مش موجود في المتجر');
+      const product = productSnap.data();
+      const price = Number(product.price);
+      if (!Number.isFinite(price) || price <= 0) throw new OrderError('INVALID_INPUT', 'سعر المنتج مش صحيح');
+      const invSnap = await tx.get(doc(db, 'inventory', line.productId));
+      const inv = invSnap.exists() ? invSnap.data() : { stock: 0, reserved: 0 };
+      const available = (inv.stock || 0) - (inv.reserved || 0);
+      if (line.qty > available) {
+        throw new OrderError('INSUFFICIENT_STOCK', 'الكمية المطلوبة أكبر من المتاح', {
+          productId: line.productId, availableQty: Math.max(available, 0),
+        });
+      }
+      lines.push({ productId: line.productId, name: product.name, price, qty: line.qty, inv });
+      dbPrices[line.productId] = price;
+    }
+    /* Discount: read the trusted record, verify, claim atomically. */
+    let discount = null;
+    if (code) {
+      const discCode = String(code).trim();
+      const discSnap = await tx.get(doc(db, 'discounts', discCode));
+      if (!discSnap.exists()) throw new OrderError('DISCOUNT_INVALID', 'كود الخصم مش صحيح');
+      const record = discSnap.data();
+      if (!record.active) throw new OrderError('DISCOUNT_INVALID', 'كود الخصم مش فعال');
+      if (record.usedBy) throw new OrderError('DISCOUNT_USED', 'كود الخصم ده اتستخدم قبل كده');
+      if (record.expiresAt && toMillis(record.expiresAt) < Date.now()) {
+        throw new OrderError('DISCOUNT_INVALID', 'كود الخصم انتهت صلاحيته');
+      }
+      const percent = Number(record.percent);
+      if (!Number.isInteger(percent) || percent < 1 || percent > 100) {
+        throw new OrderError('DISCOUNT_INVALID', 'كود الخصم مش صحيح');
+      }
+      discount = { code: discCode, percent, ref: doc(db, 'discounts', discCode) };
+    }
+    /* Total from the DATABASE prices, then the seen-price check: a
+     * price or total that changed since the client loaded the page
+     * rejects the order and creates nothing. The client displays the
+     * PRE-DISCOUNT total (it cannot know the code's percent), so the
+     * seen-total check compares against the subtotal whenever a
+     * discount was applied. */
+    const subtotal = lines.reduce((s, l) => s + l.price * l.qty, 0);
+    const discountPercent = discount ? discount.percent : null;
+    const discountAmount = discount ? Math.round((subtotal * discount.percent) / 100) : 0;
+    const total = subtotal - discountAmount;
+    const displayedTotal = discountPercent ? subtotal : total;
+    if (seenPrices && typeof seenPrices === 'object') {
+      for (const [id, price] of Object.entries(dbPrices)) {
+        if (seenPrices[id] !== undefined && Number(seenPrices[id]) !== price) {
+          throw new OrderError('PRICE_CHANGED', 'اتغير سعر منتج من اللي شفتهم', {
+            currentPrices: dbPrices, currentTotal: displayedTotal,
+          });
+        }
+      }
+    }
+    if (seenTotal !== undefined && seenTotal !== null && Number(seenTotal) !== displayedTotal) {
+      throw new OrderError('TOTAL_CHANGED', 'اتغير الإجمالي', {
+        currentPrices: dbPrices, currentTotal: displayedTotal,
+      });
+    }
+    const now = serverTimestamp();
+    const stockState = [];
+    for (const line of lines) {
+      const invRef = doc(db, 'inventory', line.productId);
+      const inv = line.inv;
+      const newReserved = (inv.reserved || 0) + line.qty;
+      const newAvailable = (inv.stock || 0) - newReserved;
+      tx.set(invRef, {
+        productId: line.productId,
+        stock: inv.stock || 0,
+        reserved: newReserved,
+        minStock: inv.minStock != null ? inv.minStock : 5,
+        costPrice: inv.costPrice != null ? inv.costPrice : 0,
+        updatedAt: now,
+      }, { merge: true });
+      tx.set(doc(collection(db, 'movements')), {
+        productId: line.productId,
+        type: 'order_reserve',
+        qty: -line.qty,
+        orderId,
+        source: 'placeOrder',
+        actorUid: null,
+        createdAt: now,
+      });
+      stockState.push({ productId: line.productId, inStock: newAvailable > 0 });
+    }
+    /* Claim the discount (one use only, atomically inside this tx). */
+    if (discount) {
+      tx.set(discount.ref, { usedBy: orderId, usedAt: now }, { merge: true });
+    }
+    /* Create the order (doc id = clientOrderId) — the exact
+     * createOrderTx field list, PLUS auditId. */
+    const order = {
+      id: orderId,
+      clientOrderId: orderId,
+      customerName: String(customer.name).trim(),
+      customerPhone: String(customer.phone).trim(),
+      customerAddress: String(customer.address).trim(),
+      items: lines.map((l) => ({ productId: l.productId, name: l.name, price: l.price, qty: l.qty })),
+      subtotal,
+      discountCode: discount ? discount.code : null,
+      discountPercent,
+      discountAmount,
+      total,
+      status: 'new',
+      paymentStatus: 'cod_pending',
+      source: 'storefront',
+      createdBy: null,
+      shippingCompanyId: null,
+      trackingNumber: null,
+      notes: null,
+      createdAt: now,
+      updatedAt: now,
+      acceptedAt: null,
+      deliveredAt: null,
+      cancelledAt: null,
+      cancelReason: null,
+      auditId,
+    };
+    tx.set(orderRef, order);
+    /* Audit entry inside the same transaction (contract §4). */
+    tx.set(doc(db, 'audit', auditId), {
+      operationId: auditId,
+      actor: 'anonymous',
+      actorName: 'storefront',
+      timestamp: now,
+      collection: 'orders',
+      docId: orderId,
+      operation: 'create',
+      changedFields: ['status', 'total'],
+      oldValues: {},
+      newValues: { status: 'new', total },
+      docIds: { [`orders/${orderId}`]: ['status', 'total'] },
+      newValuesByDoc: { [`orders/${orderId}`]: { status: 'new', total } },
+      documents: [{
+        collection: 'orders', docId: orderId,
+        changedFields: ['status', 'total'], oldValues: {}, newValues: { status: 'new', total },
+      }],
+      source: 'placeOrder',
+    });
+    result = { order, created: true, stockState };
+  });
+  return result;
+}
+/* §13 second write: refresh products.inStock from the inventory values
+ * the transaction just wrote. Batched, up to 3 attempts, best-effort —
+ * a failure only leaves a stale availability flag (logged, corrected
+ * by the next admin sync / lazy sweep). */
+async function refreshInStock(stockState) {
+  if (!stockState || stockState.length === 0) return;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const batch = writeBatch(db);
+      for (const s of stockState) {
+        batch.set(doc(db, 'products', s.productId), { inStock: s.inStock }, { merge: true });
+      }
+      await batch.commit();
+      return;
+    } catch (err) {
+      if (attempt === 3) console.warn('[storefront] inStock refresh failed after 3 attempts', err);
+    }
+  }
+}
 async function submitOrder(customer) {
   if (ordering) return;
   ordering = true;
   const btn = $('#confirmOrder');
   if (btn) btn.disabled = true;
   const lines = cartLines();
-  /* Client-side cap (10 different products, T23): the function enforces
+  /* Client-side cap (10 different products): the transaction enforces
    * it too — this only saves a round trip with a clear message. */
   if (lines.length > 10) {
     ordering = false;
@@ -730,7 +1016,7 @@ async function submitOrder(customer) {
   const seenPrices = {};
   for (const l of lines) seenPrices[l.p.id] = l.p.price;
   try {
-    const res = await placeOrderCallable({
+    const { order, created, stockState } = await placeOrderTx({
       clientOrderId,
       items: lines.map((l) => ({ productId: l.p.id, qty: l.qty })),
       discountCode: discountCode || null,
@@ -738,8 +1024,10 @@ async function submitOrder(customer) {
       seenPrices,
       seenTotal: total,
     });
-    const order = res && res.data && res.data.order;
     if (!order) throw new Error('no order returned');
+    /* §13: refresh the products.inStock display cache AFTER the
+     * transaction commits (best-effort, never blocks the success). */
+    if (created) refreshInStock(stockState).catch(() => {});
     await updateDoc(doc(db, 'analytics', 'attempts', 'items', attemptId), { ordered: true }).catch(() => {});
     recordStep('order');
     cart = {}; discountCode = ''; renderCart();
@@ -752,17 +1040,18 @@ async function submitOrder(customer) {
     showJourney();
   } catch (e) {
     ordering = false;
-    /* Structured errors from the function (e.details.code). Real error,
+    /* Structured errors from the transaction (OrderError.code) or a
+     * Firestore denial (e.code, e.g. 'permission-denied'). Real error,
      * NO animation — never a fake success. The clientOrderId is
      * deliberately KEPT (sp-checkout untouched), so a retry reuses the
      * same id instead of creating a duplicate. */
-    const code = (e && e.details && e.details.code) || '';
+    const code = (e && e.code) || (e && e.details && e.details.code) || '';
     const details = (e && e.details) || {};
     if (code === 'PRICE_CHANGED' || code === 'TOTAL_CHANGED') {
       /* Prices/total changed since the review loaded: update the loaded
-       * prices from the function's current values and re-render the
+       * prices from the transaction's current values and re-render the
        * review — the customer confirms the NEW total before any order
-       * is created (T15). */
+       * is created. */
       const current = details.currentPrices || {};
       for (const [id, price] of Object.entries(current)) {
         const p = products.find((x) => x.id === id);
@@ -785,19 +1074,32 @@ async function submitOrder(customer) {
       $('#adjustQty').addEventListener('click', () => { closeModal(); openCart(true); });
       return;
     }
+    if (code === 'permission-denied') {
+      /* The rules denied the reservation (an over-reservation): re-read
+       * inventory and show the available count only. */
+      try {
+        let short = null;
+        for (const l of lines) {
+          const invSnap = await getDoc(doc(db, 'inventory', l.p.id));
+          const inv = invSnap.exists() ? invSnap.data() : { stock: 0, reserved: 0 };
+          const avail = Math.max((inv.stock || 0) - (inv.reserved || 0), 0);
+          if (l.qty > avail) { short = { name: l.p.name, avail }; break; }
+        }
+        if (short) {
+          openModal(`
+            <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
+            <h2>الكمية مش متاحة</h2>
+            <p style="color:var(--text-soft)">المتاح دلوقتي من "${esc(short.name)}" ${short.avail} بس — عدّل الكمية في السلة وحاول تاني.</p>
+            <button class="btn btn-primary btn-block" id="adjustQty">تعديل الكمية</button>`);
+          $('#adjustQty').addEventListener('click', () => { closeModal(); openCart(true); });
+          return;
+        }
+      } catch (_) { /* fall through to the generic error below */ }
+    }
     if (code === 'DISCOUNT_INVALID' || code === 'DISCOUNT_USED') {
       showReview(customer, code === 'DISCOUNT_USED'
         ? 'كود الخصم ده اتستخدم قبل كده — جرّب كود تاني أو كمّل من غيره'
         : 'كود الخصم مش صحيح — اتأكد منه أو كمّل من غيره');
-      return;
-    }
-    if (code === 'RATE_LIMITED') {
-      openModal(`
-        <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
-        <h2>محاولات كتير</h2>
-        <p style="color:var(--text-soft)">حاولت كتير في وقت قصير — استنى شوية وحاول تاني.</p>
-        <button class="btn btn-primary btn-block" id="retryOrder">حاول تاني</button>`);
-      $('#retryOrder').addEventListener('click', () => showReview(customer));
       return;
     }
     openModal(`
@@ -928,22 +1230,38 @@ $('#searchInput').addEventListener('input', (e) => {
   gridExpanded = false;
   renderProducts();
 });
+/* Price filter (min/max) + sort by price. An empty or invalid bound
+ * means "no limit". */
+const priceMinInput = $('#priceMin');
+if (priceMinInput) priceMinInput.addEventListener('input', (e) => {
+  const v = Number(e.target.value);
+  priceMin = (e.target.value === '' || !Number.isFinite(v) || v < 0) ? null : v;
+  gridExpanded = false;
+  renderProducts();
+});
+const priceMaxInput = $('#priceMax');
+if (priceMaxInput) priceMaxInput.addEventListener('input', (e) => {
+  const v = Number(e.target.value);
+  priceMax = (e.target.value === '' || !Number.isFinite(v) || v < 0) ? null : v;
+  gridExpanded = false;
+  renderProducts();
+});
+const sortSelect = $('#sortSelect');
+if (sortSelect) sortSelect.addEventListener('change', (e) => {
+  sortMode = ['price-asc', 'price-desc'].includes(e.target.value) ? e.target.value : 'none';
+  gridExpanded = false;
+  renderProducts();
+});
 $('#themeToggle').addEventListener('click', () => {
   theme = theme === 'dark' ? 'light' : 'dark';
   applyTheme();
 });
 
-/* ---------- feedback: "Contact us" (CUJ 6) ---------- */
-/* The storefront form calls the submitFeedback callable (rate-limited,
- * duplicate-checked server-side, returns a tracking code) and the
- * lookup calls getFeedbackStatus (tracking code + phone). The
- * function never says which part failed — the lookup shows one
- * generic "not found" message either way. */
-const FEEDBACK_STATUS_LABELS = { new: 'جديدة', in_review: 'قيد المراجعة', awaiting_customer: 'بانتظار العميل', resolved: 'تم الحل', closed: 'مغلقة', rejected: 'مرفوضة', spam: 'سبام' };
-function newSubmissionId() {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
-  return 'fb_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-}
+/* ---------- feedback: "Contact us" — one-way complaint cards ----------
+ * No functions, no tracking code, no lookup. The form writes directly
+ * to the feedback collection (contract §6, shape §3): name, email,
+ * address, message, createdAt. Admin reads the cards; spam is deleted
+ * from the admin apps. */
 async function submitFeedbackForm(e) {
   if (e && e.preventDefault) e.preventDefault();
   const resultEl = $('#fbResult');
@@ -953,67 +1271,32 @@ async function submitFeedbackForm(e) {
     resultEl.textContent = msg;
     resultEl.style.color = ok ? 'var(--accent)' : '#c0392b';
   };
-  const type = (($('#fbType') || {}).value || 'complaint');
-  const category = (($('#fbCategory') || {}).value || 'other');
-  const title = (($('#fbTitle') || {}).value || '').trim();
+  const name = (($('#fbName') || {}).value || '').trim();
+  const email = (($('#fbEmail') || {}).value || '').trim();
+  const address = (($('#fbAddress') || {}).value || '').trim();
   const message = (($('#fbMessage') || {}).value || '').trim();
-  const orderId = (($('#fbOrderId') || {}).value || '').trim();
-  const phone = (($('#fbPhone') || {}).value || '').trim();
-  if (title.length === 0 || title.length > 100) return showResult('اكتب عنوان من سطر واحد (لحد 100 حرف)');
+  if (name.length === 0 || name.length > 100) return showResult('اكتب الاسم (لحد 100 حرف)');
+  if (!email.includes('@') || email.length > 100) return showResult('اكتب إيميل صحيح');
+  if (address.length === 0 || address.length > 300) return showResult('اكتب العنوان (لحد 300 حرف)');
   if (message.length < 10 || message.length > 2000) return showResult('اكتب رسالتك (من 10 لـ 2000 حرف)');
-  if (phone.replace(/\D/g, '').length < 10) return showResult('اكتب رقم موبايل صحيح — هنحتاجه عشان تتابع الشكوى');
   const btn = $('#fbSubmit');
   if (btn) btn.disabled = true;
   try {
-    const res = await submitFeedbackCallable({
-      submissionId: newSubmissionId(),
-      type, category, title, message,
-      orderId: orderId || null,
-      phone,
+    await setDoc(doc(collection(db, 'feedback')), {
+      name, email, address, message,
+      createdAt: serverTimestamp(),
     });
-    const data = (res && res.data) || {};
-    if (data.trackingCode) {
-      showResult(data.duplicate
-        ? `الشكوى دي اتبعتت قبل كده — كود التتبع بتاعها: ${data.trackingCode}`
-        : `تم استلام رسالتك! كود التتبع بتاعك: ${data.trackingCode} — احتفظ بيه عشان تتابع الحالة`, true);
-      const form = $('#fbForm');
-      if (form && form.reset) form.reset();
-    } else {
-      showResult('حصلت مشكلة — حاول تاني');
-    }
-  } catch (err) {
-    const code = (err && err.details && err.details.code) || '';
-    showResult(code === 'RATE_LIMITED' ? 'محاولات كتير — استنى شوية وحاول تاني'
-      : code === 'BLOCKED' ? 'الإرسال من الرقم ده موقوف مؤقتاً'
-      : 'حصلت مشكلة — حاول تاني');
+    showResult('تم استلام شكواك — شكراً', true);
+    const form = $('#fbForm');
+    if (form && form.reset) form.reset();
+  } catch (_) {
+    showResult('حصلت مشكلة — حاول تاني');
   } finally {
     if (btn) btn.disabled = false;
   }
 }
-async function lookupFeedback() {
-  const resultEl = $('#fbLookupResult');
-  const showResult = (msg, ok) => {
-    if (!resultEl) return;
-    resultEl.hidden = false;
-    resultEl.textContent = msg;
-    resultEl.style.color = ok ? 'var(--accent)' : '#c0392b';
-  };
-  const code = (($('#fbLookupCode') || {}).value || '').trim();
-  const phone = (($('#fbLookupPhone') || {}).value || '').trim();
-  if (!code || phone.replace(/\D/g, '').length < 10) return showResult('اكتب كود التتبع ورقم الموبايل');
-  try {
-    const res = await getFeedbackStatusCallable({ trackingCode: code, phone });
-    const data = (res && res.data) || {};
-    const label = FEEDBACK_STATUS_LABELS[data.status] || data.status || '';
-    showResult(`الحالة: ${label}${data.lastReply ? ` — آخر رد: ${data.lastReply}` : ''}`, true);
-  } catch (_) {
-    showResult('مفيش شكوى بالكود ده — اتأكد من الكود ورقم الموبايل');
-  }
-}
 const fbForm = $('#fbForm');
 if (fbForm) fbForm.addEventListener('submit', submitFeedbackForm);
-const fbLookupBtn = $('#fbLookupBtn');
-if (fbLookupBtn) fbLookupBtn.addEventListener('click', lookupFeedback);
 window.addEventListener('scroll', () => {
   $('#topbar').classList.toggle('scrolled', window.scrollY > 20);
 }, { passive: true });
@@ -1043,6 +1326,12 @@ async function boot() {
       if (d.tagline) window.__brandTag = d.tagline;
       // Logo mark: settings logoImageUrl when set (non-empty), else pulse SVG.
       if (typeof d.logoImageUrl === 'string' && d.logoImageUrl.trim()) window.__logoImageUrl = d.logoImageUrl.trim();
+      // WhatsApp ordering: off unless the toggle is true; the number
+      // defaults to the store's WhatsApp line when unset/empty.
+      if (d.whatsappOrderEnabled === true) whatsappOrderEnabled = true;
+      if (typeof d.whatsappNumber === 'string' && d.whatsappNumber.trim()) {
+        whatsappNumber = d.whatsappNumber.trim();
+      }
     }
   } catch (_) {}
   try {
