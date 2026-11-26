@@ -236,6 +236,16 @@ button { cursor: pointer; background: none; border: 0; }
 }
 .pill.active { background: var(--accent); color: #fff; border-color: transparent; }
 
+/* ---------- Price filter + sort (same tokens as the pills) ---------- */
+.filter-controls { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 14px; align-items: flex-end; }
+.filter-field { display: flex; flex-direction: column; gap: 4px; }
+.filter-field span { font-size: 12px; font-weight: 600; color: var(--text-soft); }
+.filter-field input, .filter-field select {
+  padding: 8px 12px; border-radius: 999px; font-size: 14px; font-family: inherit;
+  background: var(--surface-strong); border: 1px solid var(--border); color: var(--text); width: 130px;
+}
+.filter-field select { width: auto; }
+
 /* ---------- Products ---------- */
 .products-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 22px; }
 .product {
@@ -388,7 +398,7 @@ button { cursor: pointer; background: none; border: 0; }
 /* Product images inside the original card/drawer visuals. */
 .product-visual img, .cart-thumb img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
 /* Featured spotlight + delivery band (glass cards, same tokens). */
-#featuredSpot { margin-bottom: 22px; }
+#featuredSpot { margin-bottom: 22px; display: grid; gap: 18px; }
 #featuredSpot:empty { display: none; }
 .featured-card {
   border-radius: 32px; padding: 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: center;
@@ -413,6 +423,16 @@ button { cursor: pointer; background: none; border: 0; }
   border-radius: 28px 28px 0 0; padding: 22px; position: relative;
 }
 .modal-sheet h2 { font-weight: 700; margin-bottom: 8px; }
+/* Availability badge in the product modal (flag only, never a count). */
+.avail-badge {
+  display: inline-block; padding: 4px 12px; border-radius: 999px; font-size: 12px; font-weight: 700;
+  background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); margin: 4px 0 2px;
+}
+.avail-badge.out {
+  background: color-mix(in srgb, #c0392b 10%, transparent); color: #c0392b;
+  border-color: color-mix(in srgb, #c0392b 30%, transparent);
+}
 .modal-close { position: absolute; top: 14px; inset-inline-end: 14px; z-index: 2; }
 .modal-media img { width: 100%; aspect-ratio: 1.1; object-fit: cover; border-radius: 18px; }
 .modal-thumbs { display: flex; gap: 8px; margin-top: 10px; }
@@ -486,3 +506,24 @@ button { cursor: pointer; background: none; border: 0; }
 @media (max-width: 900px) {
   .promo-carousel { margin-inline: auto; }
 }
+
+/* ---------- Contact us / feedback ----------
+ * "Contact us" section: the one-way complaint form. Reuses
+ * .field/.btn/.glass; the template tokens apply through the CSS
+ * variables, so a template re-themes this section with the rest of
+ * the site. */
+.contact-card { padding: 28px; border-radius: var(--radius); }
+.contact-card h3 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+.fb-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+@media (max-width: 700px) { .fb-row { grid-template-columns: 1fr; } }
+.field select {
+  width: 100%; padding: 12px 14px; border-radius: 16px;
+  border: 1px solid var(--border); background: var(--surface-strong);
+  color: var(--text); outline: none;
+}
+.field select:focus { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent); }
+.fb-result { margin-top: 12px; font-weight: 600; }
+
+/* ---------- Template grid "show more" (Phase 3) ---------- */
+.grid-more { text-align: center; margin-top: 22px; }
+.grid-more:empty { display: none; }

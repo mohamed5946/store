@@ -14,7 +14,16 @@
 //     ],
 //     featuredProductId: string,
 //     deliveryBanner: { title, subtitle, imageUrl },
+//     heroImageUrl: string (default ""),
+//     heroTitle: string (default ""),
+//     heroAccent: string (default ""),
+//     heroSubtitle: string (default ""),
 //   }
+//
+// The four hero* fields are the storefront's hero overrides (see
+// storefront/app.js header): the storefront reads them, the editor
+// has no UI for them yet, but they ride through parse + build
+// unchanged so an editor save never wipes them (Decision 27).
 //
 // Pure builders only — no Firebase, no I/O — so the shape is
 // unit-testable and the editor preview can never write anything:
@@ -49,11 +58,18 @@ Map<String, dynamic> promoBannerMap({
 /// Builds the full homepage doc. Hero ids are truncated to the first
 /// [maxHeroProducts] in order — the editor UI also blocks adding a
 /// fifth, so this is a second line of defence, never a surprise.
+/// The four hero* fields default to "" and are always emitted: the
+/// storefront treats "" exactly like missing, and emitting them keeps
+/// the stored shape fixed so an editor save round-trips them.
 Map<String, dynamic> buildHomepageDoc({
   required List<String> heroProductIds,
   required List<Map<String, dynamic>> promoBanners,
   required String featuredProductId,
   required Map<String, dynamic> deliveryBanner,
+  String heroImageUrl = '',
+  String heroTitle = '',
+  String heroAccent = '',
+  String heroSubtitle = '',
 }) {
   return <String, dynamic>{
     'heroProductIds': heroProductIds.take(maxHeroProducts).toList(),
@@ -72,6 +88,10 @@ Map<String, dynamic> buildHomepageDoc({
       'subtitle': (deliveryBanner['subtitle'] ?? '') as String,
       'imageUrl': (deliveryBanner['imageUrl'] ?? '') as String,
     },
+    'heroImageUrl': heroImageUrl,
+    'heroTitle': heroTitle,
+    'heroAccent': heroAccent,
+    'heroSubtitle': heroSubtitle,
   };
 }
 
@@ -103,5 +123,9 @@ Map<String, dynamic> parseHomepageDoc(Map<String, dynamic>? doc) {
       'subtitle': (delivery['subtitle'] ?? '') as String,
       'imageUrl': (delivery['imageUrl'] ?? '') as String,
     },
+    'heroImageUrl': (d['heroImageUrl'] ?? '') as String,
+    'heroTitle': (d['heroTitle'] ?? '') as String,
+    'heroAccent': (d['heroAccent'] ?? '') as String,
+    'heroSubtitle': (d['heroSubtitle'] ?? '') as String,
   };
 }

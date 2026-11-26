@@ -1,20 +1,29 @@
-// Store Admin Flow visual language — v1.1.
+// Store Admin Liquid Glass visual language — Phase 1 redesign.
 //
-// The ENTIRE post-login app uses the Flow dark family (the same world as
-// the sign-in screen), with TWO user-switchable variants, persisted in
-// SharedPreferences and applied immediately with no restart (same
-// pattern as a locale toggle). The LOGIN screen itself is FIXED Flow
-// and never changes with this switch; gate / account-choice /
-// create-account screens follow the selected variant.
+// LONA's Liquid Glass (v4.2 reference): dark navy base, soft color
+// blobs, frosted glass with a 26px blur + gradient border + inset
+// top highlight, gold accent. Two user-switchable variants,
+// persisted in SharedPreferences and applied immediately with no
+// restart (same pattern as a locale toggle):
 //
-//   (a) Liquid Gloss — dark, liquid-blob accents, glossy gradient
-//       surfaces and buttons: the wet, flowing, high-gloss variant.
-//   (b) Gloss Morphism — frosted-glass cards with blur + light borders
-//       over a gradient backdrop: the glass-emphasis, calmer variant.
+//   (a) Liquid Gloss — the full LONA treatment: blobs, 26px shell
+//       blur, glossy navy cards.
+//   (b) Gloss Morphism — the calmer frosted variant: no blobs,
+//       translucent glass cards, 12px shell blur.
 //
-// Default until a preference exists: Liquid Gloss.
-// Interaction ports (Pressable, stagger, bin-eats-label) live in
-// store_design.dart and take their colors from FlowPalette here.
+// Default until a preference exists: Liquid Gloss. The LOGIN screen
+// itself is FIXED (Liquid Gloss tokens) and never changes with this
+// switch; gate / account-choice / create-account screens follow the
+// selected variant.
+//
+// All tokens live in exactly one place — the contract in
+// lib/theme/store_design.dart (StoreGlassTokens). Nothing in this
+// file hard-codes a color; widgets read their variant's set through
+// StoreGlass.of(context), and flowThemeData() builds ThemeData from
+// the same set. The old FlowPalette is gone on purpose: a second
+// palette would be a second source of truth.
+// Interaction ports (Pressable, stagger, bin-eats-label, count-up,
+// grow-bar) live in store_design.dart.
 import 'dart:math' as math;
 import 'dart:ui';
 
@@ -22,32 +31,6 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'store_design.dart';
-
-/// Flow palette — dark navy family, cyan/blue gradients. Semantic
-/// colors survive only where they carry meaning: red = destructive,
-/// green = delete success.
-abstract class FlowPalette {
-  static const Color background = Color(0xFF070B1A);
-  static const Color backgroundTop = Color(0xFF0B1030);
-  static const Color backgroundBottom = Color(0xFF05070F);
-  static const Color card = Color(0xFF101A33);
-  static const Color border = Color(0xFF2A3A66);
-  static const Color borderLight = Color(0x44FFFFFF);
-  static const Color textPrimary = Colors.white;
-  static const Color textSecondary = Color(0xFFB8C2D9);
-  static const Color textMuted = Color(0xFF7E8AA8);
-  static const Color cyan = Color(0xFF22D3EE);
-  static const Color blue = Color(0xFF2563EB);
-  static const Color blueDeep = Color(0xFF1D4ED8);
-  static const LinearGradient brandGradient =
-      LinearGradient(colors: [Color(0xFF38BDF8), Color(0xFF22D3EE)]);
-  static const LinearGradient buttonGradient = LinearGradient(
-    colors: [Color(0xFF2563EB), Color(0xFF22D3EE)],
-  );
-  static const Color danger = Color(0xFFEF4444);
-  static const Color dangerSoft = Color(0xFF3B1218);
-  static const Color success = Color(0xFF22C55E);
-}
 
 /// Radii + paddings, mirroring DeliveryFlow's GlassTokens.
 abstract class FlowTokens {
@@ -66,17 +49,15 @@ extension FlowThemeVariantLabel on FlowThemeVariant {
       this == FlowThemeVariant.liquidGloss ? 'Liquid Gloss' : 'Gloss Morphism';
   String get prefsValue =>
       this == FlowThemeVariant.liquidGloss ? 'liquidGloss' : 'glossMorphism';
-
-  static FlowThemeVariant fromPrefs(String? value) =>
-      value == 'glossMorphism'
-          ? FlowThemeVariant.glossMorphism
-          : FlowThemeVariant.liquidGloss;
 }
 
 const String _kThemePrefsKey = 'flow_theme';
 
 /// Persisted theme selection. Changing [variant] notifies listeners so
 /// the MaterialApp rebuilds its ThemeData immediately — no restart.
+/// Loading applies the migration rule from the token contract
+/// (migrateStoredTheme): the key is unchanged, values map 1:1, and
+/// unknown values fall back to Liquid Gloss.
 class FlowThemeController extends ChangeNotifier {
   FlowThemeController([this._variant = FlowThemeVariant.liquidGloss]);
 
@@ -86,7 +67,7 @@ class FlowThemeController extends ChangeNotifier {
   static Future<FlowThemeController> load() async {
     final prefs = await SharedPreferences.getInstance();
     return FlowThemeController(
-      FlowThemeVariantLabel.fromPrefs(prefs.getString(_kThemePrefsKey)),
+      migrateStoredTheme(prefs.getString(_kThemePrefsKey)),
     );
   }
 
@@ -100,178 +81,152 @@ class FlowThemeController extends ChangeNotifier {
 }
 
 ThemeData flowThemeData(FlowThemeVariant variant) {
-  final isGloss = variant == FlowThemeVariant.liquidGloss;
+  final tokens = StoreGlassTokens.forVariant(variant);
   return ThemeData(
-    brightness: Brightness.dark,
+    brightness: tokens.brightness,
     useMaterial3: true,
     scaffoldBackgroundColor: Colors.transparent,
-    colorScheme: const ColorScheme.dark(
-      primary: FlowPalette.cyan,
-      onPrimary: Colors.white,
-      secondary: FlowPalette.blue,
-      surface: FlowPalette.card,
-      onSurface: FlowPalette.textPrimary,
-      error: FlowPalette.danger,
-      onError: Colors.white,
+    colorScheme: ColorScheme.dark(
+      primary: tokens.accent,
+      onPrimary: tokens.accentText,
+      secondary: StorePalette.orange,
+      surface: tokens.cardTop,
+      onSurface: tokens.textPrimary,
+      error: tokens.danger,
+      onError: tokens.textPrimary,
     ),
-    appBarTheme: const AppBarTheme(
+    appBarTheme: AppBarTheme(
       backgroundColor: Colors.transparent,
-      foregroundColor: FlowPalette.textPrimary,
+      foregroundColor: tokens.textPrimary,
       elevation: 0,
       centerTitle: true,
       titleTextStyle: TextStyle(
-        color: FlowPalette.textPrimary,
+        color: tokens.textPrimary,
         fontSize: 20,
         fontWeight: FontWeight.w800,
       ),
     ),
     cardTheme: CardThemeData(
-      color: isGloss
-          ? FlowPalette.card
-          : FlowPalette.card.withValues(alpha: 0.55),
+      color: variant == FlowThemeVariant.liquidGloss
+          ? tokens.cardTop
+          : tokens.tint.withValues(alpha: 0.55),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(FlowTokens.radiusM),
-        side: BorderSide(
-          color: isGloss ? FlowPalette.border : FlowPalette.borderLight,
-        ),
+        side: BorderSide(color: tokens.cardBorder),
       ),
     ),
     dialogTheme: DialogThemeData(
-      backgroundColor: FlowPalette.card,
+      backgroundColor: tokens.cardTop,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(FlowTokens.radiusL),
-        side: const BorderSide(color: FlowPalette.borderLight),
+        side: BorderSide(color: tokens.glassBorder),
       ),
     ),
-    textTheme: const TextTheme(
-      titleLarge: TextStyle(
-          color: FlowPalette.textPrimary, fontWeight: FontWeight.w800),
-      titleMedium: TextStyle(
-          color: FlowPalette.textPrimary, fontWeight: FontWeight.w800),
-      bodyLarge: TextStyle(color: FlowPalette.textPrimary),
-      bodyMedium: TextStyle(color: FlowPalette.textPrimary),
-      bodySmall: TextStyle(color: FlowPalette.textSecondary),
-      labelLarge: TextStyle(
-          color: FlowPalette.textPrimary, fontWeight: FontWeight.w700),
+    textTheme: TextTheme(
+      titleLarge:
+          TextStyle(color: tokens.textPrimary, fontWeight: FontWeight.w800),
+      titleMedium:
+          TextStyle(color: tokens.textPrimary, fontWeight: FontWeight.w800),
+      bodyLarge: TextStyle(color: tokens.textPrimary),
+      bodyMedium: TextStyle(color: tokens.textPrimary),
+      bodySmall: TextStyle(color: tokens.textSecondary),
+      labelLarge:
+          TextStyle(color: tokens.textPrimary, fontWeight: FontWeight.w700),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: Colors.white.withValues(alpha: 0.07),
-      labelStyle: const TextStyle(color: FlowPalette.textSecondary),
-      hintStyle: const TextStyle(color: FlowPalette.textMuted),
+      labelStyle: TextStyle(color: tokens.textSecondary),
+      hintStyle: TextStyle(color: tokens.textMuted),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(FlowTokens.radiusS),
-        borderSide: const BorderSide(color: FlowPalette.borderLight),
+        borderSide: BorderSide(color: tokens.glassBorder),
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(FlowTokens.radiusS),
-        borderSide: const BorderSide(color: FlowPalette.borderLight),
+        borderSide: BorderSide(color: tokens.glassBorder),
       ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(FlowTokens.radiusS),
-        borderSide: const BorderSide(color: FlowPalette.cyan, width: 1.5),
+        borderSide: BorderSide(color: tokens.accent, width: 1.5),
       ),
     ),
-    snackBarTheme: const SnackBarThemeData(
-      backgroundColor: FlowPalette.card,
-      contentTextStyle: TextStyle(color: Colors.white),
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: tokens.cardTop,
+      contentTextStyle: TextStyle(color: tokens.textPrimary),
     ),
-    floatingActionButtonTheme: const FloatingActionButtonThemeData(
-      backgroundColor: FlowPalette.blue,
-      foregroundColor: Colors.white,
+    floatingActionButtonTheme: FloatingActionButtonThemeData(
+      backgroundColor: tokens.accent,
+      foregroundColor: tokens.accentText,
     ),
   );
 }
 
-/// The liquid metaball blob: overlapping circles merging/splitting with
-/// a glow, a small white highlight dot, and a tiny satellite droplet
-/// that detaches and rejoins. [t] is a looping 0..1 phase; [drift] is a
-/// slow autonomous offset (no cursor on mobile).
+/// LONA's color blobs: three soft radial-gradient circles (blue
+/// top-right, orange bottom-left, purple center) that slowly wobble
+/// with [t] and drift with [drift]. No metaball shading, no glow
+/// layer — the softness comes from the radial falloff itself, so the
+/// painter is one cheap CustomPaint with no BackdropFilter. The
+/// scaffold paints it once, static (t: 0.15); the sign-in screen
+/// drives [t] on a 12s loop for the forever-morphing beat.
 class FlowBlobPainter extends CustomPainter {
-  FlowBlobPainter({required this.t, this.drift = Offset.zero});
+  FlowBlobPainter({required this.t, this.drift = Offset.zero, required this.colors});
   final double t;
   final Offset drift;
+  final List<Color> colors;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2) + drift;
     final base = math.min(size.width, size.height);
     double wobble(double phase) => math.sin((t * 2 * math.pi) + phase);
-    // Soft glow beneath the blob, so it floats above the background.
-    final glowRect = Rect.fromCenter(
-      center: Offset(center.dx, center.dy + base * 0.30),
-      width: base * 0.9,
-      height: base * 0.45,
-    );
-    canvas.drawOval(
-      glowRect,
-      Paint()
-        ..shader = const RadialGradient(
-          colors: [Color(0x552563EB), Color(0x002563EB)],
-        ).createShader(glowRect),
-    );
-    final blobs = [
-      (Offset(center.dx + wobble(0) * base * 0.10, center.dy), base * 0.34),
+    final blobs = <(Offset, double, Color)>[
       (
-        Offset(center.dx + wobble(2.1) * base * 0.14,
-            center.dy + wobble(1.3) * base * 0.08),
-        base * 0.26
+        Offset(
+          size.width * 0.82 + wobble(0) * base * 0.06,
+          size.height * 0.12 + wobble(1.3) * base * 0.04,
+        ),
+        base * 0.42,
+        colors[0],
       ),
       (
-        Offset(center.dx - wobble(4.2) * base * 0.12,
-            center.dy + wobble(0.7) * base * 0.10),
-        base * 0.22
+        Offset(
+          size.width * 0.14 + wobble(2.1) * base * 0.06,
+          size.height * 0.88 + wobble(0.7) * base * 0.04,
+        ),
+        base * 0.38,
+        colors[1],
+      ),
+      (
+        Offset(
+          size.width * 0.62 + wobble(4.2) * base * 0.05,
+          size.height * 0.45 + wobble(2.8) * base * 0.05,
+        ),
+        base * 0.30,
+        colors[2 % colors.length],
       ),
     ];
-    // Volumetric sphere shading: bright highlight offset toward the
-    // top-left (focal), bright mid, darker limb at the edge.
-    for (final (c, r) in blobs) {
-      final paint = Paint()
-        ..shader = RadialGradient(
-          center: Alignment.center,
-          focal: const Alignment(-0.45, -0.5),
-          focalRadius: 0.05,
-          colors: const [
-            Color(0xFFE0F2FE),
-            Color(0xFF38BDF8),
-            Color(0xFF2563EB),
-            Color(0xFF1E3A8A),
-          ],
-          stops: const [0.0, 0.30, 0.65, 1.0],
-        ).createShader(Rect.fromCircle(center: c, radius: r));
-      canvas.drawCircle(c, r, paint);
+    for (final (c, r, color) in blobs) {
+      canvas.drawCircle(
+        c,
+        r,
+        Paint()
+          ..shader = RadialGradient(
+            colors: [color.withValues(alpha: 0.85), color.withValues(alpha: 0)],
+          ).createShader(Rect.fromCircle(center: c, radius: r)),
+      );
     }
-    // White highlight dot on the main blob.
-    canvas.drawCircle(
-      Offset(center.dx - base * 0.10, center.dy - base * 0.12),
-      base * 0.035,
-      Paint()..color = Colors.white.withValues(alpha: 0.9),
-    );
-    // Satellite droplet: orbits out and back as t loops.
-    final angle = t * 2 * math.pi;
-    final dist = base * (0.42 + 0.10 * math.sin(angle * 2));
-    final droplet = Offset(
-      center.dx + math.cos(angle) * dist,
-      center.dy + math.sin(angle) * dist * 0.6,
-    );
-    canvas.drawCircle(
-      droplet,
-      base * 0.045,
-      Paint()
-        ..shader = const RadialGradient(
-          colors: [Color(0xFF7DD3FC), Color(0xFF2563EB)],
-        ).createShader(
-            Rect.fromCircle(center: droplet, radius: base * 0.045)),
-    );
   }
 
   @override
   bool shouldRepaint(FlowBlobPainter old) =>
-      old.t != t || old.drift != drift;
+      old.t != t || old.drift != drift || old.colors != colors;
 }
 
-/// Gradient backdrop for the whole app. Liquid Gloss adds drifting blob
-/// accents; Gloss Morphism keeps the gradient calmer (no blobs).
+/// Gradient backdrop for the whole app — the ONE shared backdrop
+/// layer. The gradient + blobs are painted once here; dense lists
+/// use translucent fills over it instead of a BackdropFilter per
+/// card (adaptive glass). Liquid Gloss shows the blobs; Gloss
+/// Morphism keeps the gradient calmer (no blobs).
 /// Subtle parallax: the blob layer moves at 0.3x the foreground scroll
 /// (ScrollNotifications bubble up from any scrolling body), so the
 /// background lags behind the content — cheap, no sensors.
@@ -309,25 +264,28 @@ class _FlowScaffoldState extends State<FlowScaffold> {
 
   @override
   Widget build(BuildContext context) {
+    final tokens = StoreGlassTokens.forVariant(widget.variant);
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [FlowPalette.backgroundTop, FlowPalette.backgroundBottom],
+          colors: [tokens.backgroundTop, tokens.backgroundBottom],
         ),
       ),
       child: Stack(
         children: [
-          if (widget.variant == FlowThemeVariant.liquidGloss)
-            Positioned(
-              top: -60 - _scrollOffset * 0.3,
-              right: -40,
-              child: Opacity(
-                opacity: 0.35,
-                child: CustomPaint(
-                  size: const Size(220, 220),
-                  painter: FlowBlobPainter(t: 0.15),
+          if (tokens.showBlobs)
+            Positioned.fill(
+              child: CustomPaint(
+                painter: FlowBlobPainter(
+                  t: 0.15,
+                  drift: Offset(0, -_scrollOffset * 0.3),
+                  colors: [
+                    tokens.blobBlue,
+                    tokens.blobOrange,
+                    tokens.blobPurple,
+                  ],
                 ),
               ),
             ),
@@ -335,6 +293,13 @@ class _FlowScaffoldState extends State<FlowScaffold> {
             onNotification: _onScroll,
             child: Scaffold(
               backgroundColor: Colors.transparent,
+              // The body extends under the floating nav pill, so the
+              // screen behind the pill's rounded ends stays visible
+              // (transparent corners) and content scrolls under the
+              // glass instead of stopping above it. Root lists end
+              // with StoreTokens.navPillClearance so the last item
+              // never hides under the pill.
+              extendBody: true,
               appBar: widget.appBar,
               body: widget.body,
               bottomNavigationBar: widget.bottomNavigationBar,
@@ -347,8 +312,12 @@ class _FlowScaffoldState extends State<FlowScaffold> {
   }
 }
 
-/// Flow card: Liquid Gloss = glossy gradient surface; Gloss Morphism =
-/// frosted glass (blur + light border) over the gradient backdrop.
+/// Liquid Glass card (LONA `.glass`): gradient fill, gradient
+/// border, inset top highlight, deep shadow. Adaptive glass: dense
+/// lists use a translucent fill over the scaffold's shared backdrop
+/// — NO BackdropFilter per card (one blur per card is the slow path).
+/// The full 26px blur lives only on shell surfaces (nav pill,
+/// dialog, sign-in card).
 class FlowCard extends StatelessWidget {
   final Widget child;
   final EdgeInsetsGeometry padding;
@@ -365,38 +334,27 @@ class FlowCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final variant = FlowThemeControllerScope.maybeOf(context)?.variant ??
-        FlowThemeVariant.liquidGloss;
-    final isGloss = variant == FlowThemeVariant.liquidGloss;
+    final tokens = StoreGlass.of(context);
     // 3D depth, shared by both variants: multi-layer soft shadows
     // (ambient + key), a top-edge highlight and a darker bottom edge
-    // for a beveled/embossed feel. Gloss Morphism adds inner glow.
+    // for a beveled/embossed feel, plus LONA's inset sheen.
     Widget card = Container(
       padding: padding,
       decoration: BoxDecoration(
-        gradient: isGloss
-            ? const LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Color(0xFF1B2A56), Color(0xFF0D1530)],
-              )
-            : LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  Colors.white.withValues(alpha: 0.16),
-                  Colors.white.withValues(alpha: 0.04),
-                ],
-              ),
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [tokens.cardTop, tokens.cardBottom],
+        ),
         borderRadius: BorderRadius.circular(borderRadius),
         border: Border.all(
-          color: isGloss ? FlowPalette.border : FlowPalette.borderLight,
+          color: tokens.cardBorder,
           width: 1,
         ),
         boxShadow: [
           // Ambient shadow: wide, soft, lifts the card off the bg.
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.28),
+            color: tokens.shadowColor,
             blurRadius: 32,
             spreadRadius: 2,
             offset: const Offset(0, 16),
@@ -407,26 +365,10 @@ class FlowCard extends StatelessWidget {
             blurRadius: 12,
             offset: const Offset(0, 6),
           ),
-          if (!isGloss)
-            // Inner glow for glass: a faint cyan halo.
-            BoxShadow(
-              color: FlowPalette.cyan.withValues(alpha: 0.12),
-              blurRadius: 24,
-              offset: const Offset(0, 0),
-            ),
         ],
       ),
       child: child,
     );
-    if (!isGloss) {
-      card = ClipRRect(
-        borderRadius: BorderRadius.circular(borderRadius),
-        child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-          child: card,
-        ),
-      );
-    }
     if (onTap == null) return card;
     return Pressable(
       scaleOnly: true,
@@ -461,7 +403,8 @@ class FlowThemeControllerScope extends InheritedWidget {
 }
 
 /// Glossy gradient pill button (primary) or dark translucent pill
-/// (secondary) — the Flow button language.
+/// (secondary) — the Flow button language. Primary is LONA's gold
+/// action (`.act`): gold-to-orange gradient, dark text.
 class FlowButton extends StatelessWidget {
   final String label;
   final VoidCallback? onPressed;
@@ -480,6 +423,7 @@ class FlowButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tokens = StoreGlass.of(context);
     final child = AnimatedContainer(
       duration: const Duration(milliseconds: 220),
       curve: Curves.easeOut,
@@ -488,12 +432,7 @@ class FlowButton extends StatelessWidget {
         // Raised pill: gradient lightens toward the top (highlight)
         // and deepens toward the bottom (shade) — real depth.
         gradient: primary
-            ? const LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Color(0xFF60A5FA), Color(0xFF2563EB), Color(0xFF22D3EE)],
-                stops: [0.0, 0.45, 1.0],
-              )
+            ? tokens.buttonGradient
             : LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
@@ -503,14 +442,14 @@ class FlowButton extends StatelessWidget {
                 ],
               ),
         border: Border.all(
-          color: primary ? Colors.transparent : FlowPalette.borderLight,
+          color: primary ? Colors.transparent : tokens.glassBorder,
           width: 1,
         ),
         // Multi-layer shadows; the Pressable dip sinks the pill
         // (depth decreases) while pressed.
         boxShadow: [
           BoxShadow(
-            color: (primary ? FlowPalette.blue : Colors.black)
+            color: (primary ? tokens.accent : Colors.black)
                 .withValues(alpha: primary ? 0.45 : 0.25),
             blurRadius: primary ? 20 : 12,
             offset: const Offset(0, 6),
@@ -534,17 +473,21 @@ class FlowButton extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 if (busy)
-                  const SizedBox(
+                  SizedBox(
                     width: 20,
                     height: 20,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      color: Colors.white,
+                      color: primary ? tokens.accentText : tokens.textPrimary,
                     ),
                   )
                 else ...[
                   if (icon != null) ...[
-                    Icon(icon, size: 20, color: Colors.white),
+                    Icon(
+                      icon,
+                      size: 20,
+                      color: primary ? tokens.accentText : tokens.textPrimary,
+                    ),
                     const SizedBox(width: 8),
                   ],
                   Flexible(
@@ -553,10 +496,12 @@ class FlowButton extends StatelessWidget {
                       child: Text(
                         label,
                         maxLines: 1,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w700,
-                          color: Colors.white,
+                          color: primary
+                              ? tokens.accentText
+                              : tokens.textPrimary,
                         ),
                       ),
                     ),
@@ -573,7 +518,9 @@ class FlowButton extends StatelessWidget {
   }
 }
 
-/// Frosted-glass dialog (both variants): dark glass, light border, glow.
+/// Frosted-glass dialog: LONA glass, light border, glow. Shell
+/// surface, so it keeps one BackdropFilter at the variant's shell
+/// blur — dialogs are one per screen, never one per list item.
 class FlowDialog extends StatelessWidget {
   final Widget? title;
   final Widget content;
@@ -588,19 +535,23 @@ class FlowDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tokens = StoreGlass.of(context);
     return Dialog(
       backgroundColor: Colors.transparent,
       insetPadding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(FlowTokens.radiusL),
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+          filter: ImageFilter.blur(
+            sigmaX: tokens.blurShell,
+            sigmaY: tokens.blurShell,
+          ),
           child: Container(
             padding: const EdgeInsets.fromLTRB(22, 20, 22, 14),
             decoration: BoxDecoration(
-              color: FlowPalette.card.withValues(alpha: 0.92),
+              color: tokens.cardTop.withValues(alpha: 0.92),
               borderRadius: BorderRadius.circular(FlowTokens.radiusL),
-              border: Border.all(color: FlowPalette.borderLight, width: 1),
+              border: Border.all(color: tokens.glassBorder, width: 1),
               boxShadow: [
                 BoxShadow(
                   color: Colors.black.withValues(alpha: 0.45),
@@ -615,10 +566,10 @@ class FlowDialog extends StatelessWidget {
               children: [
                 if (title != null) ...[
                   DefaultTextStyle(
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 20,
                       fontWeight: FontWeight.w800,
-                      color: FlowPalette.textPrimary,
+                      color: tokens.textPrimary,
                     ),
                     child: title!,
                   ),
@@ -666,13 +617,15 @@ Future<T?> showFlowDialog<T>({
 }
 
 /// Floating liquid-glass pill nav bar — the app's liquid visual
-/// language, theme-aware (v1.1.2):
-/// - Liquid Gloss: glossy liquid — a blue gradient surface that is
-///   light at the top and deep at the bottom (wet highlight), a
-///   light border, and a cyan glow shadow beneath the pill.
-/// - Gloss Morphism: frosted glass — a translucent card over the
-///   gradient backdrop, blur + light border, calmer glow.
-/// The selected destination keeps its gradient pill in both themes.
+/// language, theme-aware:
+/// - Liquid Gloss: full LONA treatment — navy glass over the blobs,
+///   26px shell blur, gold glow shadow beneath the pill.
+/// - Gloss Morphism: calmer frosted glass — translucent card, 12px
+///   shell blur, softer shadow.
+/// The pill floats: the scaffold extends the body under it
+/// (extendBody), so the screen behind the rounded ends stays
+/// visible — the corners are transparent, never an opaque rectangle.
+/// The selected destination keeps its gold gradient pill.
 class FlowNavPill extends StatelessWidget {
   final int selectedIndex;
   final ValueChanged<int> onDestinationSelected;
@@ -689,42 +642,32 @@ class FlowNavPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final variant = FlowThemeControllerScope.maybeOf(context)?.variant ??
-        FlowThemeVariant.liquidGloss;
-    final isGloss = variant == FlowThemeVariant.liquidGloss;
+    final tokens = StoreGlass.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
       child: ClipRRect(
         borderRadius: BorderRadius.circular(30),
         child: BackdropFilter(
-          filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+          filter: ImageFilter.blur(
+            sigmaX: tokens.blurShell,
+            sigmaY: tokens.blurShell,
+          ),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
             decoration: BoxDecoration(
-              gradient: isGloss
-                  ? LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        const Color(0xFF2A3F7D).withValues(alpha: 0.92),
-                        const Color(0xFF0D1530).withValues(alpha: 0.92),
-                      ],
-                    )
-                  : LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [
-                        Colors.white.withValues(alpha: 0.16),
-                        Colors.white.withValues(alpha: 0.05),
-                      ],
-                    ),
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  tokens.cardTop.withValues(alpha: 0.92),
+                  tokens.cardBottom.withValues(alpha: 0.92),
+                ],
+              ),
               borderRadius: BorderRadius.circular(30),
-              border: Border.all(color: FlowPalette.borderLight, width: 1),
+              border: Border.all(color: tokens.glassBorder, width: 1),
               boxShadow: [
                 BoxShadow(
-                  color: isGloss
-                      ? FlowPalette.cyan.withValues(alpha: 0.22)
-                      : Colors.black.withValues(alpha: 0.4),
+                  color: tokens.accent.withValues(alpha: 0.22),
                   blurRadius: 28,
                   offset: const Offset(0, 10),
                 ),
@@ -735,11 +678,28 @@ class FlowNavPill extends StatelessWidget {
                 ),
               ],
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                for (var i = 0; i < labels.length; i++) _item(context, i),
-              ],
+            // A1 (2026-11-26): the pill scrolls horizontally — with 8
+            // tabs the row overflows a phone screen and the last tab
+            // was cut off. The ConstrainedBox keeps the old spread
+            // look when everything fits (the Row stretches to the
+            // viewport width and spaceAround distributes the tabs);
+            // when the tabs are wider than the viewport the pill
+            // scrolls instead of clipping. The pill look itself
+            // (r30, blur, gradient, gold selected pill) is unchanged.
+            child: LayoutBuilder(
+              builder: (context, constraints) => SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: ConstrainedBox(
+                  constraints:
+                      BoxConstraints(minWidth: constraints.maxWidth),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      for (var i = 0; i < labels.length; i++) _item(context, i),
+                    ],
+                  ),
+                ),
+              ),
             ),
           ),
         ),
@@ -748,6 +708,7 @@ class FlowNavPill extends StatelessWidget {
   }
 
   Widget _item(BuildContext context, int i) {
+    final tokens = StoreGlass.of(context);
     final selected = i == selectedIndex;
     return Pressable(
       onTap: () => onDestinationSelected(i),
@@ -758,14 +719,14 @@ class FlowNavPill extends StatelessWidget {
         padding:
             EdgeInsets.symmetric(horizontal: selected ? 16 : 10, vertical: 8),
         decoration: selected
-            ? const BoxDecoration(
-                borderRadius: BorderRadius.all(Radius.circular(20)),
-                gradient: FlowPalette.buttonGradient,
+            ? BoxDecoration(
+                borderRadius: const BorderRadius.all(Radius.circular(20)),
+                gradient: tokens.buttonGradient,
                 boxShadow: [
                   BoxShadow(
-                    color: Color(0x662563EB),
+                    color: tokens.accent.withValues(alpha: 0.4),
                     blurRadius: 14,
-                    offset: Offset(0, 4),
+                    offset: const Offset(0, 4),
                   ),
                 ],
               )
@@ -776,7 +737,7 @@ class FlowNavPill extends StatelessWidget {
             Icon(
               icons[i],
               size: 24,
-              color: selected ? Colors.white : FlowPalette.textSecondary,
+              color: selected ? tokens.accentText : tokens.textSecondary,
             ),
             const SizedBox(height: 2),
             Text(
@@ -784,7 +745,7 @@ class FlowNavPill extends StatelessWidget {
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                color: selected ? Colors.white : FlowPalette.textSecondary,
+                color: selected ? tokens.accentText : tokens.textSecondary,
               ),
             ),
           ],
@@ -794,9 +755,13 @@ class FlowNavPill extends StatelessWidget {
   }
 }
 
-Widget flowLoading() => const Center(
-      child: CircularProgressIndicator(color: FlowPalette.cyan),
-    );
+Widget flowLoading() {
+  return Builder(
+    builder: (context) => Center(
+      child: CircularProgressIndicator(color: StoreGlass.of(context).accent),
+    ),
+  );
+}
 
 class FlowSectionHeader extends StatelessWidget {
   final String title;
@@ -812,6 +777,7 @@ class FlowSectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tokens = StoreGlass.of(context);
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Row(
@@ -822,10 +788,10 @@ class FlowSectionHeader extends StatelessWidget {
               title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 17,
                 fontWeight: FontWeight.w800,
-                color: FlowPalette.textPrimary,
+                color: tokens.textPrimary,
               ),
             ),
           ),
@@ -839,8 +805,8 @@ class FlowSectionHeader extends StatelessWidget {
               ),
               child: Text(
                 actionLabel!,
-                style: const TextStyle(
-                  color: FlowPalette.cyan,
+                style: TextStyle(
+                  color: tokens.accent,
                   fontWeight: FontWeight.w700,
                   fontSize: 13,
                 ),
@@ -868,6 +834,7 @@ class FlowEmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tokens = StoreGlass.of(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -880,15 +847,15 @@ class FlowEmptyState extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: Colors.white.withValues(alpha: 0.08),
               ),
-              child: Icon(icon, size: 44, color: FlowPalette.cyan),
+              child: Icon(icon, size: 44, color: tokens.accent),
             ),
             const SizedBox(height: 18),
             Text(
               title,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w800,
-                color: FlowPalette.textPrimary,
+                color: tokens.textPrimary,
               ),
               textAlign: TextAlign.center,
             ),

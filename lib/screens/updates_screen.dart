@@ -128,15 +128,16 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
   Widget build(BuildContext context) {
     final variant = FlowThemeControllerScope.maybeOf(context)?.variant ??
         FlowThemeVariant.liquidGloss;
+    final tokens = StoreGlassTokens.forVariant(variant);
     return FlowScaffold(
       variant: variant,
       appBar: AppBar(title: const Text('التحديثات')),
       body: !_ready
           // Near-instant (SharedPreferences + PackageInfo), but a
           // real indicator beats a blank frame every time.
-          ? const Center(
-              key: ValueKey('updates-loading'),
-              child: CircularProgressIndicator(color: FlowPalette.cyan),
+          ? Center(
+              key: const ValueKey('updates-loading'),
+              child: CircularProgressIndicator(color: tokens.accent),
             )
           : SingleChildScrollView(
               padding: FlowTokens.screenPadding,
@@ -147,8 +148,8 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
                     key: const ValueKey('updates-current-version'),
                     child: Row(
                       children: [
-                        const Icon(Icons.info_outline_rounded,
-                            color: FlowPalette.cyan, size: 22),
+                        Icon(Icons.info_outline_rounded,
+                            color: tokens.accent, size: 22),
                         const SizedBox(width: 12),
                         const Expanded(
                           child: Text(
@@ -164,8 +165,8 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
                   FlowCard(
                     child: Row(
                       children: [
-                        const Icon(Icons.system_update_rounded,
-                            color: FlowPalette.cyan, size: 22),
+                        Icon(Icons.system_update_rounded,
+                            color: tokens.accent, size: 22),
                         const SizedBox(width: 12),
                         const Expanded(
                           child: Text(
@@ -190,14 +191,14 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
                   ),
                   if (_checking) ...[
                     const SizedBox(height: 12),
-                    const FlowCard(
-                      key: ValueKey('updates-checking-indicator'),
+                    FlowCard(
+                      key: const ValueKey('updates-checking-indicator'),
                       child: Row(
                         children: [
                           CircularProgressIndicator(
-                              color: FlowPalette.cyan),
-                          SizedBox(width: 16),
-                          Expanded(
+                              color: tokens.accent),
+                          const SizedBox(width: 16),
+                          const Expanded(
                               child: Text('جارٍ التحقق من التحديثات…')),
                         ],
                       ),
@@ -210,12 +211,12 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Row(
+                          Row(
                             children: [
                               Icon(Icons.check_circle_rounded,
-                                  color: FlowPalette.success, size: 22),
-                              SizedBox(width: 12),
-                              Expanded(
+                                  color: tokens.success, size: 22),
+                              const SizedBox(width: 12),
+                              const Expanded(
                                 child: Text(
                                   'أنت على أحدث نسخة',
                                   style: TextStyle(
@@ -231,8 +232,8 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
                             const SizedBox(height: 4),
                             Text(
                               _versionLabel!,
-                              style: const TextStyle(
-                                  color: FlowPalette.textSecondary),
+                              style: TextStyle(
+                                  color: tokens.textSecondary),
                             ),
                           ],
                         ],
@@ -255,19 +256,20 @@ class UpdatesSettingsRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final tokens = StoreGlass.of(context);
     return FlowCard(
       child: Pressable(
         onTap: () => Navigator.of(context).push<void>(
           MaterialPageRoute(builder: (_) => const UpdatesScreen()),
         ),
-        child: const Padding(
-          padding: EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
           child: Row(
             children: [
               Icon(Icons.system_update_rounded,
-                  color: FlowPalette.cyan, size: 22),
-              SizedBox(width: 12),
-              Expanded(
+                  color: tokens.accent, size: 22),
+              const SizedBox(width: 12),
+              const Expanded(
                 child: Text(
                   'التحديثات',
                   style: TextStyle(fontWeight: FontWeight.w600),
@@ -276,7 +278,7 @@ class UpdatesSettingsRow extends StatelessWidget {
               Icon(
                 Icons.chevron_left_rounded,
                 size: 20,
-                color: FlowPalette.textMuted,
+                color: tokens.textMuted,
               ),
             ],
           ),

@@ -1,7 +1,7 @@
 name: storeadmin
 description: "Store admin app — manages the Store storefront (catalog, orders, analytics, team)."
 publish_to: 'none'
-version: 1.1.3+5
+version: 1.1.4+6
 
 environment:
   sdk: ^3.5.0

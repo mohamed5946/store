@@ -12,11 +12,12 @@ import 'package:storeadmin/theme/flow_theme.dart';
 import 'package:storeadmin/theme/store_design.dart';
 
 void main() {
-  test('both Flow themes are dark and share the Flow palette', () {
+  test('both Flow themes are dark and share the LONA token contract', () {
     for (final v in FlowThemeVariant.values) {
       final theme = flowThemeData(v);
       expect(theme.brightness, Brightness.dark);
-      expect(theme.colorScheme.primary, FlowPalette.cyan);
+      expect(theme.colorScheme.primary,
+          StoreGlassTokens.forVariant(v).accent);
     }
     expect(flowThemeData(FlowThemeVariant.liquidGloss).cardTheme.color,
         isNot(flowThemeData(FlowThemeVariant.glossMorphism).cardTheme.color));

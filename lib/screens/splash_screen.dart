@@ -10,7 +10,12 @@
 // carries the exact artwork; this painter is the animated schematic
 // of the same mark: blob outline, then S + T outlines, then the
 // diagonal sweep reveals the filled blob with its carved letters.
+// The blue is LONA's blob blue (#3b5bff family), so the mark already
+// reads as LONA glass; Phase 1 only re-tones the screen background
+// and the name to the token contract.
 import 'package:flutter/material.dart';
+
+import '../theme/store_design.dart';
 
 /// Splash stages in order. Pure function of animation progress so
 /// widget tests can assert the sequence without pumping painters.
@@ -333,8 +338,9 @@ class _StSplashScreenState extends State<StSplashScreen>
   @override
   Widget build(BuildContext context) {
     final reduceMotion = MediaQuery.disableAnimationsOf(context);
+    final tokens = StoreGlassTokens.liquidGloss;
     return Scaffold(
-      backgroundColor: const Color(0xFF0B1730),
+      backgroundColor: tokens.base,
       body: AnimatedBuilder(
         animation: _controller,
         builder: (context, _) {
@@ -358,12 +364,12 @@ class _StSplashScreenState extends State<StSplashScreen>
                   Opacity(
                     key: const Key('stSplashName'),
                     opacity: nameOpacity,
-                    child: const Text(
+                    child: Text(
                       'إدارة المتجر',
                       style: TextStyle(
                         fontSize: 26,
                         fontWeight: FontWeight.w800,
-                        color: Color(0xFFFFFFFF),
+                        color: tokens.textPrimary,
                         letterSpacing: -0.5,
                       ),
                     ),

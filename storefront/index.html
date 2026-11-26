@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>المتجر</title>
   <meta name="description" content="اطلب دلوقتي وادفع عند الاستلام" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://res.cloudinary.com; connect-src 'self' https://firestore.googleapis.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com; frame-src 'none'; object-src 'none'; base-uri 'self'" />
   <meta property="og:title" content="المتجر" />
   <meta property="og:description" content="الدفع عند الاستلام — ادفع لما طلبك يوصلك" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -39,6 +40,7 @@
         <a href="#featured">الأكثر مبيعاً</a>
         <a href="#offers">العروض</a>
         <a href="#about">عن المتجر</a>
+        <a href="#contact">تواصل معنا</a>
       </nav>
 
       <div class="nav-actions">
@@ -113,9 +115,19 @@
       <header class="section-head reveal">
         <h2>الأكثر مبيعاً</h2>
         <div class="filter-pills" id="filterPills" role="tablist"></div>
+        <div class="filter-controls">
+          <label class="filter-field"><span>السعر من</span><input id="priceMin" type="number" min="0" inputmode="numeric" placeholder="0" /></label>
+          <label class="filter-field"><span>إلى</span><input id="priceMax" type="number" min="0" inputmode="numeric" placeholder="الأعلى" /></label>
+          <label class="filter-field"><span>ترتيب</span><select id="sortSelect">
+            <option value="none">الافتراضي</option>
+            <option value="price-asc">السعر: من الأقل للأعلى</option>
+            <option value="price-desc">السعر: من الأعلى للأقل</option>
+          </select></label>
+        </div>
       </header>
       <div id="featuredSpot"></div>
       <div class="products-grid" id="productsGrid"></div>
+      <div class="grid-more" id="gridMoreWrap"></div>
     </section>
 
     <section id="offers" class="container section">
@@ -124,6 +136,25 @@
 
     <section id="delivery" class="container section">
       <div id="deliveryWrap"></div>
+    </section>
+
+    <section id="contact" class="container section">
+      <header class="section-head reveal">
+        <h2>تواصل معنا</h2>
+        <p>عندك شكوى أو اقتراح؟ ابعتهالنا وهنرد عليك.</p>
+      </header>
+      <div class="glass contact-card">
+        <form id="fbForm" novalidate>
+          <div class="fb-row">
+            <label class="field"><span>الاسم</span><input id="fbName" type="text" maxlength="100" placeholder="اسمك" /></label>
+            <label class="field"><span>الإيميل</span><input id="fbEmail" type="email" dir="ltr" style="text-align:right" maxlength="100" placeholder="example@mail.com" /></label>
+          </div>
+          <label class="field"><span>العنوان</span><input id="fbAddress" type="text" maxlength="300" placeholder="عنوانك" /></label>
+          <label class="field"><span>الشكوى</span><textarea id="fbMessage" rows="4" placeholder="اكتب شكواك هنا (من 10 لـ 2000 حرف)"></textarea></label>
+          <button class="btn btn-primary" id="fbSubmit" type="submit">إرسال</button>
+          <p class="fb-result" id="fbResult" hidden></p>
+        </form>
+      </div>
     </section>
 
     <section id="about" class="container section about reveal">
@@ -148,6 +179,7 @@
         <a href="#categories">الأقسام</a>
         <a href="#featured">المنتجات</a>
         <a href="#about">عن المتجر</a>
+        <a href="#contact">تواصل معنا</a>
       </div>
     </div>
     <p class="copy">© <span id="year"></span> <span id="copyBrand">المتجر</span>. جميع الحقوق محفوظة.</p>

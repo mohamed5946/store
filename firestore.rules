@@ -1,3 +1,127 @@
+// Store Admin — Firestore Security Rules (no-functions build, contract 2026-11-26).
+//
+// RULES-LANGUAGE NOTE (coordinator fix 2026-11-26): the Firestore
+// rules language has NO `if` STATEMENTS inside functions — only
+// `let` bindings + a single `return` expression (ternary `? :` and
+// `&&` / `||` chains do the branching). An `if` inside a function
+// is a COMPILE error ("Unexpected 'if'") and the whole deploy
+// fails. The Phase 2 file used `if` statements throughout and
+// never compiled — it was never deployed, so nobody caught it until
+// this deploy. Do NOT reintroduce `if` inside a function; every
+// helper below is written as a pure expression for this reason.
+// (`allow ... : if ...` on a match line is fine — that `if` is
+// part of the allow syntax, not a statement.)
+//
+// NO Cloud Functions are deployed (Spark, no Blaze). The storefront,
+// Flutter admin and Electron Store Manager write Firestore DIRECTLY
+// from the client, and these rules are the trusted enforcement:
+//   - Orders are created by ONE client transaction (placeOrderTx /
+//     the manual-order transaction): idempotency read, product +
+//     inventory + discount reads, total from DATABASE prices, stock
+//     reservation, discount claim, order + movements + audit entry.
+//     The order rule below re-checks the shape, every line price
+//     against the products doc, the discount record, and the audit
+//     entry (via getAfter) — so a forged price/total/code is denied.
+//   - Stock is reserved by the transaction (inventory.reserved +=
+//     qty, absolute set). The inventory rule enforces reserved <=
+//     stock on the data itself, so an over-reservation is denied and
+//     the client re-reads availability.
+//   - products.inStock is a DISPLAY cache refreshed by a SECOND,
+//     best-effort batched write (contract §13) that sets ONLY
+//     inStock, verified against the inventory doc. It is NOT updated
+//     inside the order transaction (budget — see below).
+//   - Feedback is a one-way card: anonymous create with the exact
+//     5-field shape, no update, admin delete (spam).
+//
+// ANONYMOUS READS (required by the client transaction — the reads
+// inside a transaction are rule-checked like any read):
+//   - inventory + discounts: anonymous get (never list). The
+//     transaction must read inventory (available = stock - reserved)
+//     and the discount record (percent) to compute the total. This
+//     exposes stock counts and discount percents to anyone who knows
+//     a product id / code — the contract §3 note "stock counts stay
+//     hidden" does NOT hold for the transaction reads; only the list
+//     is hidden.
+//   - orders: anonymous get ONLY when the doc does not exist yet
+//     (resource == null) — the idempotency probe. An existing order
+//     (name/phone/address) stays unreadable anonymously. Consequence:
+//     a retry AFTER a successful commit (response lost) is denied at
+//     the probe instead of returning the existing order; retries
+//     after a failed attempt still work (the doc still does not
+//     exist). Order ids are client UUIDs, not enumerable (no list).
+//
+// HOW THE AUDIT ENFORCEMENT WORKS (admin writes — unchanged)
+// - Every admin mutation is a batched write (or a client transaction)
+//   that includes its audit entry: /audit/{operationId}, where
+//   operationId is a fresh UUID the app generates per operation.
+// - The changed document(s) carry the same operationId as a metadata
+//   field (stamped by the app alongside updatedAt), so the rule can
+//   find the audit entry: getAfter(audit/{operationId}).
+// - The audit entry carries a `docIds` index map:
+//     docIds: { '<collection>/<docId>': [changedFields...] }
+//   The rule checks that the audit entry exists in this batch, its
+//   actor == request.auth.uid, its timestamp == request.time, and its
+//   docIds entry for this document COVERS every field this write
+//   actually changed (affectedKeys). Coverage (not exact equality):
+//   the app writes full documents, so a save may list fields whose
+//   values did not change — the attack the rule must stop is an
+//   OMISSION (a changed field missing from the audit), and coverage
+//   denies exactly that (T20). A reused operationId fails the
+//   timestamp check, and the audit create fails because the document
+//   already exists (T20).
+// - The audit entry also carries a `newValuesByDoc` map (same keys as
+//   docIds): { '<collection>/<docId>': {field: newValue...} }. The
+//   rule checks that every CHANGED SENSITIVE field (price, stock,
+//   reserved, status, paymentStatus, inStock, percent) is recorded
+//   there with the value actually written (T20: a fake audit that
+//   lists the field but records a wrong new value is denied). A flat
+//   newValues map cannot hold two different values for the same field
+//   when one operation touches several documents, so the per-doc map
+//   is the checkable one; the flat `newValues` stays as the human
+//   summary of the operation's main values.
+// - Deletes carry no resource data, so the rule cannot read an
+//   operationId from the write. Delete audit entries use the
+//   deterministic id `del_<collection>_<docId>`; the timestamp check
+//   prevents reusing a stale entry, and a second delete of the same
+//   doc id fails the audit create (safe failure — auto-ids make
+//   re-creation with the same id effectively impossible).
+// - The `operationId`/`updatedAt` metadata fields are ignored by
+//   readers (the storefront reads only its contract fields).
+//
+// ACCESS-CALL BUDGET: 10 calls per OPERATION, 20 per multi-doc
+// request (transaction / batch) — the 10-limit applies to EACH
+// operation inside a multi-doc request, not just to the request
+// total (Firebase docs, "Access call limits"). That binds the order
+// create, and the contract's budget math (13 <= 20) only counted the
+// request total — it does NOT hold per operation:
+//   order rule = N price gets + 1 discount get + 1 audit getAfter
+//     (+ 1 admins get for manual orders)
+//   + discount-claim rule 1 getAfter. Per REQUEST the worst case is
+//     14 (manual, 10 lines, code) <= 20 — fine. Per OPERATION the
+//     order create alone costs N + 2 (storefront) / N + 3 (manual),
+//     so the 10-limit caps real orders at 9 lines without a code,
+//     8 with one (storefront); 8 / 7 for manual orders. A 10-line
+//     order is denied by the platform limit. No check was weakened
+//     to fit — this is reported, not silently worked around: the
+//     client caps lines at 10, so a 9th/10th line fails with
+//     permission-denied.
+//   Every other operation in the transaction costs 0-1 calls:
+//     inventory reservation 0, movements 0, audit (anonymous) 0,
+//     audit (admin) 1 cached admins get, discount claim 1.
+//   The §13 inStock refresh is a separate batch: 1 inventory get
+//     per product, 10 max for 10 lines — inside 20.
+//
+// inStock CROSS-CHECKS (contract §3 decision): the products-rule
+// cross-check (productsInStockOk) is DROPPED — with both checks a
+// 10-line stock-moving transaction costs 2N+1 > 20. The
+// inventory-rule cross-check (inventoryInStockOk) is KEPT for
+// authenticated admin/manager writes, and SKIPPED for anonymous
+// writes (correction 2026-11-26): the anonymous order transaction
+// reserves stock without updating products.inStock in the same
+// transaction, so the check would deny reserving the last item
+// (new availability 0 vs the stale inStock true). products.inStock
+// is a display cache; its correctness is enforced indirectly.
+
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -7,38 +131,630 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'admin';
     }
 
-    // Public storefront content: anyone can read, only admins write.
+    function isAdminOrManager() {
+      return request.auth != null
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role in ['admin', 'manager'];
+    }
+
+    /* The audit entry as projected after this request, or null when the
+     * batch contains no such entry. */
+    function auditAfter(opId) {
+      return getAfter(/databases/$(database)/documents/audit/$(opId));
+    }
+
+    /* True when every key in `changed` is listed in the audit entry's
+     * docIds entry for this document (subset coverage — see header). */
+    function covers(changed, auditList) {
+      return auditList != null
+        && changed.intersection(auditList.toSet()).size() == changed.size();
+    }
+
+    /* True when this batch contains a valid audit entry for the change
+     * to (collection, docId) with exactly `changed` keys changed:
+     * actor + timestamp + the docIds index entry covering the change +
+     * the per-document new values matching the written values for
+     * every changed SENSITIVE field (T20: a fake audit that lists the
+     * field but records a wrong new value is denied). The per-doc
+     * values live in `newValuesByDoc` (keyed '<collection>/<docId>'):
+     * a flat newValues map cannot hold two different values for the
+     * same field when one operation touches several documents. */
+    function hasAudit(opId, collection, docId, changed) {
+      let entry = auditAfter(opId);
+      return opId != null
+        && entry != null
+        && entry.data.actor == request.auth.uid
+        && entry.data.timestamp == request.time
+        && entry.data.docIds != null
+        && covers(changed, entry.data.docIds[collection + '/' + docId])
+        && sensitiveValuesOk(changed, entry, collection, docId);
+    }
+
+    /* Sensitive fields whose new value the audit entry must record
+     * correctly (price, stock, reserved, status, paymentStatus,
+     * inStock, percent). A changed sensitive field with a missing or
+     * wrong recorded value denies the write. */
+    function sensitiveValuesOk(changed, entry, collection, docId) {
+      let recorded = entry.data.newValuesByDoc != null
+        ? entry.data.newValuesByDoc[collection + '/' + docId]
+        : null;
+      return (!changed.hasAny(['price']) || (recorded != null && recorded.price == request.resource.data.price))
+        && (!changed.hasAny(['stock']) || (recorded != null && recorded.stock == request.resource.data.stock))
+        && (!changed.hasAny(['reserved']) || (recorded != null && recorded.reserved == request.resource.data.reserved))
+        && (!changed.hasAny(['status']) || (recorded != null && recorded.status == request.resource.data.status))
+        && (!changed.hasAny(['paymentStatus']) || (recorded != null && recorded.paymentStatus == request.resource.data.paymentStatus))
+        && (!changed.hasAny(['inStock']) || (recorded != null && recorded.inStock == request.resource.data.inStock))
+        && (!changed.hasAny(['percent']) || (recorded != null && recorded.percent == request.resource.data.percent));
+    }
+
+    /* Changed keys for an update (diff against the stored doc). */
+    function changedUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+    /* Changed keys for a create (every key of the new doc). */
+    function changedCreate() {
+      return request.resource.data.keys().toSet();
+    }
+
+    /* Delete audit id (deterministic — see header). */
+    function deleteAuditId(collection, docId) {
+      return 'del_' + collection + '_' + docId;
+    }
+    function hasDeleteAudit(collection, docId) {
+      let entry = auditAfter(deleteAuditId(collection, docId));
+      return entry != null
+        && entry.data.actor == request.auth.uid
+        && entry.data.timestamp == request.time
+        && entry.data.operation == 'delete'
+        && entry.data.collection == collection
+        && entry.data.docId == docId;
+    }
+
+    /* inStock must match the projected inventory (kept for
+     * authenticated writes only — see header). Skipped while the
+     * product has no inventory document or no inStock field (the
+     * pre-migration window). */
+    function inventoryInStockOk(productId) {
+      let prod = getAfter(/databases/$(database)/documents/products/$(productId));
+      return prod == null
+        || !('inStock' in prod.data)
+        || prod.data.inStock
+          == ((request.resource.data.stock - request.resource.data.reserved) > 0);
+    }
+
+    /* The unified order state machine (v1.4 Decision 23). */
+    function orderTransitionOk() {
+      let from = resource.data.status;
+      let to = request.resource.data.status;
+      return from == to
+        || (from == 'new' && to in ['accepted', 'cancelled', 'expired'])
+        || (from == 'accepted' && to in ['preparing', 'cancelled'])
+        || (from == 'preparing' && to in ['ready', 'cancelled'])
+        || (from == 'ready' && to in ['in_transit', 'cancelled'])
+        || (from == 'in_transit' && to == 'delivered')
+        || (from == 'cancelled' && to == 'new');
+    }
+
+    /* ---- No-functions order helpers (contract §3) ---- */
+
+    /* One order line: exactly productId/name/price/qty. price is
+     * number, not int (correction 2026-11-26): a stored fractional
+     * price must not deny a legitimate order whose line price
+     * matches the DB exactly. */
+    function orderLineOk(item) {
+      return item is map
+        && item.keys().hasOnly(['productId', 'name', 'price', 'qty'])
+        && item.keys().size() == 4
+        && item.productId is string && item.productId.size() > 0
+        && item.name is string && item.name.size() > 0
+        && item.price is number && item.price > 0
+        && item.qty is int && item.qty >= 1 && item.qty <= 20;
+    }
+
+    /* Line i of the order, if present, passes the shape check. */
+    function orderLineOkAt(i) {
+      let items = request.resource.data.items;
+      return items.size() <= i || orderLineOk(items[i]);
+    }
+
+    function orderLinesOk() {
+      return orderLineOkAt(0) && orderLineOkAt(1) && orderLineOkAt(2)
+        && orderLineOkAt(3) && orderLineOkAt(4) && orderLineOkAt(5)
+        && orderLineOkAt(6) && orderLineOkAt(7) && orderLineOkAt(8)
+        && orderLineOkAt(9);
+    }
+
+    /* price*qty of line i, or 0 when the order has no such line. */
+    function orderLineTotal(i) {
+      let items = request.resource.data.items;
+      return items.size() > i ? items[i].price * items[i].qty : 0;
+    }
+
+    /* subtotal must equal the unrolled sum of price*qty (the rules
+     * cannot loop). Added beyond the contract's letter — the contract
+     * lists the total/discountAmount relations but not the subtotal
+     * sum, and without it a forged low subtotal (with a matching
+     * total) would pass. Costs 0 extra reads. */
+    function orderSubtotalOk() {
+      return request.resource.data.subtotal
+        == orderLineTotal(0) + orderLineTotal(1) + orderLineTotal(2)
+        + orderLineTotal(3) + orderLineTotal(4) + orderLineTotal(5)
+        + orderLineTotal(6) + orderLineTotal(7) + orderLineTotal(8)
+        + orderLineTotal(9);
+    }
+
+    /* discountAmount must be round(subtotal * percent / 100) —
+     * checked without division or a round() builtin (the rules
+     * language has neither for this): d = round(sp/100) iff
+     * d*100-50 <= sp < d*100+50 (sp >= 0). No discount means
+     * amount 0. */
+    function orderDiscountAmountOk() {
+      let d = request.resource.data;
+      return d.discountPercent == null
+        ? d.discountAmount == 0
+        : (d.discountAmount * 100 - 50 <= d.subtotal * d.discountPercent
+          && d.subtotal * d.discountPercent < d.discountAmount * 100 + 50);
+    }
+
+    /* Line i's price must equal the products doc price (one get per
+     * line — rules have no loop; short-circuiting means a 1-line
+     * order costs 1 get). */
+    function orderLinePriceOk(i) {
+      let items = request.resource.data.items;
+      let prod = items.size() <= i ? null : get(/databases/$(database)/documents/products/$(items[i].productId));
+      return items.size() <= i || (prod != null && prod.data.price == items[i].price);
+    }
+
+    function orderPricesOk() {
+      return orderLinePriceOk(0) && orderLinePriceOk(1) && orderLinePriceOk(2)
+        && orderLinePriceOk(3) && orderLinePriceOk(4) && orderLinePriceOk(5)
+        && orderLinePriceOk(6) && orderLinePriceOk(7) && orderLinePriceOk(8)
+        && orderLinePriceOk(9);
+    }
+
+    /* The full order shape (contract §3): exact keys, field types
+     * and ranges, totals consistent, lifecycle fields null,
+     * timestamps == request.time, ids == the doc id, createdBy
+     * matching the source. */
+    function orderShapeOk(doc) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId', 'operationId'])
+        && (d.keys().size() == 25 || d.keys().size() == 26)
+        && (d.operationId == null || d.operationId is string)
+        /* 'operationId' is optional (coordinator fix 2026-11-26):
+         * the PC manual order stamps it on the order doc; the
+         * storefront + Flutter orders have exactly the 25 core
+         * keys. The field is a harmless correlation id. */
+        && d.id == doc && d.clientOrderId == doc
+        && d.customerName is string && d.customerName.size() > 0
+        && d.customerPhone is string && d.customerPhone.size() >= 10
+        && d.customerAddress is string && d.customerAddress.size() > 0
+        && d.items is list && d.items.size() >= 1 && d.items.size() <= 10
+        && orderLinesOk()
+        && d.subtotal is number && d.subtotal >= 0
+        && d.discountAmount is number && d.discountAmount >= 0
+        && d.total is number && d.total >= 0
+        && d.total == d.subtotal - d.discountAmount
+        && (d.discountCode == null) == (d.discountPercent == null)
+        && (d.discountCode == null || (d.discountCode is string && d.discountCode.size() > 0))
+        && (d.discountPercent == null || (d.discountPercent is int && d.discountPercent >= 1 && d.discountPercent <= 100))
+        && orderDiscountAmountOk()
+        && orderSubtotalOk()
+        && d.status == 'new' && d.paymentStatus == 'cod_pending'
+        && d.source in ['storefront', 'admin_manual']
+        && ((d.source == 'storefront' && d.createdBy == null)
+          || (d.source == 'admin_manual' && request.auth != null && d.createdBy == request.auth.uid))
+        && d.acceptedAt == null && d.deliveredAt == null
+        && d.cancelledAt == null && d.cancelReason == null
+        && (d.shippingCompanyId == null || d.shippingCompanyId is string)
+        && (d.trackingNumber == null || d.trackingNumber is string)
+        && (d.notes == null || d.notes is string)
+        && d.createdAt == request.time && d.updatedAt == request.time;
+    }
+
+    /* Discount record check (1 get, only when a code was given):
+     * exists, active, unused, not expired, percent 1-100 and equal
+     * to the order's discountPercent. */
+    function orderDiscountOk() {
+      let d = request.resource.data;
+      let disc = d.discountCode == null ? null : get(/databases/$(database)/documents/discounts/$(d.discountCode));
+      return d.discountCode == null
+        || (disc != null
+          && disc.data.get('active', false) == true
+          && disc.data.get('usedBy', null) == null
+          && (!('expiresAt' in disc.data) || disc.data.expiresAt == null || disc.data.expiresAt > request.time)
+          && disc.data.get('percent', null) is int
+          && disc.data.percent >= 1 && disc.data.percent <= 100
+          && disc.data.percent == d.discountPercent);
+    }
+
+    /* The audit entry for this order, as projected after this
+     * request (1 getAfter): actor + operation match the source,
+     * collection + docId + timestamp match, and its docIds cover
+     * status + total. */
+    function orderAuditOk(doc) {
+      let d = request.resource.data;
+      let hasId = d.auditId is string && d.auditId.size() > 0;
+      let entry = hasId ? getAfter(/databases/$(database)/documents/audit/$(d.auditId)) : null;
+      return entry != null
+        && ((d.source == 'storefront' && entry.data.actor == 'anonymous' && entry.data.operation == 'create')
+          || (d.source == 'admin_manual' && request.auth != null && entry.data.actor == request.auth.uid && entry.data.operation == 'manual_order_create'))
+        && entry.data.collection == 'orders'
+        && entry.data.docId == doc
+        && entry.data.timestamp == request.time
+        && covers(['status', 'total'].toSet(), entry.data.docIds['orders/' + doc]);
+    }
+
+    /* Manual orders: admin, or manager with orders_create_manual.
+     * (1 get, cached with the role checks in the same request.) */
+    function manualOrderAllowed() {
+      let admin = get(/databases/$(database)/documents/admins/$(request.auth.uid));
+      let perms = admin == null ? null : admin.data.get('permissions', null);
+      return admin != null
+        && (admin.data.get('role', null) == 'admin'
+          || (admin.data.get('role', null) == 'manager'
+            && perms != null
+            && perms.get('orders_create_manual', false) == true));
+    }
+
+    /* Pure stock reservation (contract §1): the order transaction
+     * reserves stock without an audit entry and without updating
+     * products.inStock in the same write. The contract §3 says the
+     * inventory rule is "unchanged" (admin/manager + audit), but
+     * that cannot stand as written: the anonymous storefront
+     * transaction and the authenticated manual transaction both
+     * write inventory with no operationId and no audit entry, so
+     * under the old rule every order would be denied. This branch
+     * is the minimal fix: allowed for ANY requester (anonymous
+     * storefront or authenticated manual order) ONLY when the write
+     * strictly increases reserved, leaves stock and the other
+     * fields untouched, keeps reserved <= stock, and stamps
+     * updatedAt. The inStock cross-check is SKIPPED here
+     * (correction 2026-11-26): products.inStock is refreshed by
+     * the §13 second write, so reserving the last item would
+     * otherwise be denied against the stale flag. No audit coverage
+     * is required here (correction 2026-11-26): the storefront's
+     * audit entry covers ONLY the order doc (docIds
+     * {'orders/{id}': ['status','total']}), never the inventory
+     * writes — value/shape validation is the whole check.
+     * Consequence, accepted per contract §12: an anonymous client
+     * can set reserved up to stock on any product (a bounded
+     * stock-DoS, released by the lazy sweep / admin cancel); there
+     * is no rules mechanism for it, so it is not fixed here.
+     * Releases (reserved down) and stock changes still need the
+     * audited admin branch. Costs 0 access calls. */
+    function inventoryReserveOk(doc) {
+      let old = resource == null ? null : resource.data;
+      let d = request.resource.data;
+      let newReserved = d.get('reserved', null);
+      return resource != null
+        && newReserved is int && newReserved >= 0
+        && d.get('stock', 0) == old.get('stock', 0)
+        && d.get('stock', 0) >= 0
+        && newReserved > old.get('reserved', 0)
+        && newReserved <= d.get('stock', 0)
+        && d.get('productId', doc) == old.get('productId', doc)
+        && d.get('minStock', 5) == old.get('minStock', 5)
+        && d.get('costPrice', 0) == old.get('costPrice', 0)
+        && d.get('updatedAt', null) == request.time
+        && changedUpdate().hasOnly(['productId', 'stock', 'reserved', 'minStock', 'costPrice', 'updatedAt', 'operationId']);
+    }
+    /* 'operationId' in the list above (coordinator fix 2026-11-26):
+     * the Flutter + PC manual orders stamp their operation id on
+     * the inventory write; it is a harmless correlation id, and
+     * without it those apps fall back to the audited admin branch
+     * (2 reads/line) and a 6-line manual order breaks the
+     * per-request budget. The value checks above still protect
+     * the stock. */
+
+    /* §13 inStock refresh (correction 2026-11-26): a batched merge
+     * setting ONLY inStock, verified against the inventory doc
+     * (1 get). No audit entry — the value is derived from
+     * inventory, the ground truth. Allowed for any requester: the
+     * anonymous storefront refresh and the authenticated admin-app
+     * refresh are the same verified write (an admin-app refresh
+     * denied for lack of audit would leave the storefront showing
+     * stale availability after a manual order). */
+    function productsRefreshOk(doc) {
+      let flag = request.resource.data.get('inStock', null);
+      let inv = changedUpdate().hasOnly(['inStock']) ? get(/databases/$(database)/documents/inventory/$(doc)) : null;
+      return changedUpdate().hasOnly(['inStock'])
+        && inv != null
+        && flag is bool
+        && flag == ((inv.data.get('stock', 0) - inv.data.get('reserved', 0)) > 0);
+    }
+
+    /* Discount claim (1 getAfter): the update sets exactly usedBy +
+     * usedAt on a doc whose usedBy was null, and the order it names
+     * exists in this same transaction with this discount code. The
+     * getAfter tie makes the claim safe for any requester — an
+     * authenticated manual order claims exactly like the anonymous
+     * storefront order, so the branch is auth-agnostic (the
+     * contract's "anonymous claim ONLY" cannot stand as written:
+     * manual orders claim the same way and their write carries no
+     * audit entry for the admin branch). */
+    /* 'operationId' + 'updatedAt' are tolerated in the changed
+     * keys (coordinator fix 2026-11-26): the PC manual order
+     * stamps both on the claim write; without them the claim falls
+     * back to the audited admin branch, whose docIds do not cover
+     * the extra keys, so the claim is denied outright. The
+     * getAfter tie to a real order below is what makes the claim
+     * safe, and it still applies. */
+    function discountClaimOk(code) {
+      let d = request.resource.data;
+      let usedBy = d.get('usedBy', null);
+      let shapeOk = changedUpdate().hasOnly(['usedBy', 'usedAt', 'operationId', 'updatedAt'])
+        && usedBy is string && usedBy.size() > 0
+        && d.get('usedAt', null) == request.time
+        && resource.data.get('usedBy', null) == null;
+      let order = shapeOk ? getAfter(/databases/$(database)/documents/orders/$(usedBy)) : null;
+      return shapeOk
+        && order != null
+        && order.data.discountCode == code;
+    }
+
+    /* Anonymous stock-movement entry for an order (contract §3):
+     * the exact 7-field shape, reserve types only (negative qty). */
+    function movementReserveOk() {
+      let d = request.resource.data;
+      return request.auth == null
+        && d.keys().hasOnly(['productId', 'type', 'qty', 'orderId', 'source', 'actorUid', 'createdAt'])
+        && d.keys().size() == 7
+        && d.productId is string && d.productId.size() > 0
+        && d.type in ['order_reserve', 'reopen_reserve']
+        && d.qty is int && d.qty < 0
+        && d.orderId is string && d.orderId.size() > 0
+        && d.source in ['placeOrder', 'createManualOrder']
+        && (d.actorUid == null || d.actorUid is string)
+        && d.createdAt == request.time;
+    }
+
+    /* One-way complaint card (contract §3/§6): the exact 5-field
+     * shape. Any requester — the anonymous storefront form and an
+     * admin filing on a customer's behalf write the same fields,
+     * with no audit entry. */
+    function feedbackOneWayOk() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['name', 'email', 'address', 'message', 'createdAt'])
+        && d.keys().size() == 5
+        && d.name is string && d.name.size() > 0 && d.name.size() <= 100
+        && d.email is string && d.email.size() <= 100 && d.email.matches('.*@.*')
+        && d.address is string && d.address.size() > 0 && d.address.size() <= 300
+        && d.message is string && d.message.size() >= 10 && d.message.size() <= 2000
+        && d.createdAt == request.time;
+    }
+
+    /* Anonymous audit entry for a storefront order (contract §3):
+     * shape-only, no get() — a fake entry is noise in an
+     * admin-read-only log, not a money/stock issue. The ORDER
+     * rule's getAfter check is what ties the order to a real
+     * entry. */
+    function auditAnonOk(operationId) {
+      let d = request.resource.data;
+      return request.auth == null
+        && d.actor in ['anonymous', 'storefront']
+        && d.docId is string && d.docId.size() > 0
+        && d.operationId == operationId
+        && d.timestamp == request.time
+        && d.collection == 'orders'
+        && d.operation in ['create', 'manual_order_create']
+        && d.docIds is map && d.docIds.size() == 1
+        && d.docIds.keys().hasOnly(['orders/' + d.docId])
+        && d.newValuesByDoc is map && d.newValuesByDoc.size() == 1
+        && d.newValuesByDoc.keys().hasOnly(['orders/' + d.docId]);
+    }
+
+    // ---- Public storefront content ----
     match /storeSettings/{doc} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow create: if isAdmin()
+        && hasAudit(request.resource.data.operationId, 'storeSettings', doc, changedCreate())
+        && (!('templateId' in request.resource.data)
+          || getAfter(/databases/$(database)/documents/templates/$(request.resource.data.templateId)).data.status == 'active');
+      allow update: if isAdmin()
+        && hasAudit(request.resource.data.operationId, 'storeSettings', doc, changedUpdate())
+        && (!('templateId' in request.resource.data)
+          || getAfter(/databases/$(database)/documents/templates/$(request.resource.data.templateId)).data.status == 'active');
+      allow delete: if isAdmin() && hasDeleteAudit('storeSettings', doc);
     }
+
     match /categories/{doc} {
       allow read: if true;
-      allow create, update, delete: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && hasAudit(request.resource.data.operationId, 'categories', doc, changedCreate());
+      allow update: if isAdmin()
+        && (!('name' in request.resource.data)
+          || (request.resource.data.name is string && request.resource.data.name.size() > 0))
+        && hasAudit(request.resource.data.operationId, 'categories', doc, changedUpdate());
+      allow delete: if isAdmin() && hasDeleteAudit('categories', doc);
     }
+
     match /products/{doc} {
       allow read: if true;
-      allow create, update, delete: if isAdmin();
+      allow create: if isAdminOrManager()
+        && request.resource.data.price is int
+        && request.resource.data.price > 0
+        && hasAudit(request.resource.data.operationId, 'products', doc, changedCreate());
+      // The products-rule inStock cross-check (productsInStockOk) is
+      // DROPPED (contract §3 decision). The second branch is the
+      // §13 anonymous/authenticated inStock refresh (verified
+      // against inventory, no audit); it is checked first so an
+      // audited admin write never pays for it and a refresh never
+      // trips over the missing operationId in the admin branch.
+      allow update: if productsRefreshOk(doc)
+        || (isAdminOrManager()
+          && (!('price' in request.resource.data)
+            || (request.resource.data.price is int && request.resource.data.price > 0))
+          && hasAudit(request.resource.data.operationId, 'products', doc, changedUpdate()));
+      allow delete: if isAdminOrManager() && hasDeleteAudit('products', doc);
     }
 
-    // Orders: anyone can CREATE an order (COD checkout); only admins read
-    // or change status. Customers cannot read each other's orders.
+    // ---- Orders: created by the client order transaction
+    // (storefront anonymous, manual authenticated). Anonymous reads
+    // are the idempotency probe only: get of a doc that does not
+    // exist yet — an existing order stays unreadable anonymously. ----
     match /orders/{doc} {
-      allow create: if true;
-      allow read, update, delete: if isAdmin();
+      allow create: if orderShapeOk(doc)
+        && orderPricesOk()
+        && orderDiscountOk()
+        && orderAuditOk(doc)
+        && (request.resource.data.source == 'storefront' || manualOrderAllowed());
+      allow get: if isAdminOrManager()
+        || (request.auth == null && resource == null);
+      allow list: if isAdminOrManager();
+      allow update: if isAdminOrManager()
+        && orderTransitionOk()
+        && (!('status' in request.resource.data)
+          || request.resource.data.status in ['new', 'accepted', 'preparing', 'ready', 'in_transit', 'delivered', 'cancelled', 'expired'])
+        && (!('paymentStatus' in request.resource.data)
+          || request.resource.data.paymentStatus in ['cod_pending', 'cod_paid', 'cod_refused', 'cod_failed'])
+        && hasAudit(request.resource.data.operationId, 'orders', doc, changedUpdate());
+      allow delete: if isAdmin() && hasDeleteAudit('orders', doc);
     }
 
-    // Admin profiles: an admin can read/write; any signed-in user may
-    // CREATE their own profile doc (bootstrap: the first admin has no
-    // profile yet, so isAdmin() cannot be true for them at that moment).
+    // ---- Inventory: admin/manager audited writes, plus the
+    // unaudited pure-reservation write of the order transaction
+    // (checked first — an authenticated manual-order reservation
+    // must not pay the admin branch's inventoryInStockOk getAfter,
+    // which would break the per-request budget). Anonymous get
+    // (never list): the order transaction reads availability. ----
+    match /inventory/{doc} {
+      allow get: if isAdminOrManager() || request.auth == null;
+      allow list: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.stock is int && request.resource.data.stock >= 0
+        && request.resource.data.reserved is int && request.resource.data.reserved >= 0
+        && request.resource.data.reserved <= request.resource.data.stock
+        && inventoryInStockOk(doc)
+        && hasAudit(request.resource.data.operationId, 'inventory', doc, changedCreate());
+      allow update: if inventoryReserveOk(doc)
+        || (isAdminOrManager()
+          && (!('stock' in request.resource.data)
+            || (request.resource.data.stock is int && request.resource.data.stock >= 0))
+          && (!('reserved' in request.resource.data)
+            || (request.resource.data.reserved is int && request.resource.data.reserved >= 0))
+          && request.resource.data.reserved <= request.resource.data.stock
+          && inventoryInStockOk(doc)
+          && hasAudit(request.resource.data.operationId, 'inventory', doc, changedUpdate()));
+      allow delete: if isAdminOrManager() && hasDeleteAudit('inventory', doc);
+    }
+
+    // ---- Stock movements: append-only. Admin writes (cancel /
+    // deliver / expire) keep the existing admin-only path; the
+    // anonymous branch is the exact reserve shape of the order
+    // transaction. ----
+    match /movements/{doc} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager() || movementReserveOk();
+      allow update, delete: if false;
+    }
+
+    // ---- Discount codes: admin only, except the claim — the
+    // order transaction's usedBy/usedAt update, tied by getAfter
+    // to the order being created (checked first so a claim never
+    // trips over the admin branch's missing operationId). Anonymous
+    // get (never list): the order transaction reads the record to
+    // validate the code. ----
+    match /discounts/{code} {
+      allow get: if isAdmin() || request.auth == null;
+      allow list: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.percent is int
+        && request.resource.data.percent >= 1
+        && request.resource.data.percent <= 100
+        && hasAudit(request.resource.data.operationId, 'discounts', code, changedCreate());
+      allow update: if discountClaimOk(code)
+        || (isAdmin()
+          && (!('percent' in request.resource.data)
+            || (request.resource.data.percent is int
+              && request.resource.data.percent >= 1
+              && request.resource.data.percent <= 100))
+          && hasAudit(request.resource.data.operationId, 'discounts', code, changedUpdate()));
+      allow delete: if isAdmin() && hasDeleteAudit('discounts', code);
+    }
+
+    // ---- Template registry (Phase 3): public reads only the ACTIVE
+    // template's schema, via the pointer — never a list. ----
+    match /templates/{doc} {
+      allow get: if isAdminOrManager()
+        || get(/databases/$(database)/documents/storeSettings/activeTemplate).data.templateId == doc;
+      allow list: if isAdminOrManager();
+      allow create: if isAdmin()
+        && hasAudit(request.resource.data.operationId, 'templates', doc, changedCreate());
+      allow update: if isAdmin()
+        && hasAudit(request.resource.data.operationId, 'templates', doc, changedUpdate());
+      allow delete: if isAdmin() && hasDeleteAudit('templates', doc);
+    }
+
+    match /shippingCompanies/{doc} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdmin()
+        && hasAudit(request.resource.data.operationId, 'shippingCompanies', doc, changedCreate());
+      allow update: if isAdmin()
+        && hasAudit(request.resource.data.operationId, 'shippingCompanies', doc, changedUpdate());
+      allow delete: if isAdmin() && hasDeleteAudit('shippingCompanies', doc);
+    }
+
+    // ---- Audit log: append-only, create-only. The admin branch
+    // checks actor + operationId == doc id + timestamp; the
+    // anonymous branch is the shape-only storefront-order entry
+    // (contract §3) — the per-doc rules above check the entry
+    // covers their change. ----
+    match /audit/{operationId} {
+      allow read: if isAdminOrManager();
+      allow create: if (isAdminOrManager()
+        && request.resource.data.actor == request.auth.uid
+        && request.resource.data.operationId == operationId
+        && request.resource.data.timestamp == request.time
+        && request.resource.data.docIds is map
+        && request.resource.data.docIds.size() > 0
+        && request.resource.data.newValuesByDoc is map)
+        || auditAnonOk(operationId);
+      allow update, delete: if false;
+    }
+
+    // ---- Rate limits: functions only. No client access at all. ----
+    match /rateLimits/{doc} {
+      allow read, write: if false;
+    }
+
+    // ---- Feedback: one-way complaint cards (contract §6). Anonymous
+    // create with the exact 5-field shape; admin filing on a
+    // customer's behalf writes the same shape. No update (no status
+    // / reply any more); admin delete with a delete-audit (spam).
+    // The old state machine (feedbackTransitionOk) is gone. ----
+    match /feedback/{doc} {
+      allow read: if isAdminOrManager();
+      allow create: if feedbackOneWayOk();
+      allow update: if false;
+      allow delete: if isAdmin() && hasDeleteAudit('feedback', doc);
+    }
+
+    match /feedback/{doc}/replies/{replyId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager();
+      allow update, delete: if false;
+    }
+
+    // ---- Spam blocks: functions + admin apps write; nobody reads. ----
+    match /feedbackBlocks/{doc} {
+      allow read: if false;
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // ---- Admin profiles: self-create (bootstrap) + admin manage.
+    // A manager reads their own doc (for the permission check). ----
     match /admins/{uid} {
       allow create: if request.auth != null && request.auth.uid == uid;
-      allow read, update, delete: if isAdmin();
+      allow get: if request.auth != null && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow update, delete: if isAdmin();
     }
 
-    // Phone lookups: get-only by anyone (needed for phone sign-in
-    // resolution); listing all lookups is never allowed. Creation is
-    // allowed for admins, plus self-creation for the bootstrap case.
+    // ---- Phone lookups: get-only by anyone (phone sign-in
+    // resolution); listing all lookups is never allowed. ----
     match /phones/{key} {
       allow get: if true;
       allow list: if false;
@@ -47,13 +763,20 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
-    // Analytics: public create + update (the storefront writes its own
-    // session doc and refreshes its duration with a heartbeat — anonymous
-    // ids are random, so one visitor cannot guess another's); reads and
-    // deletes are admin-only.
+    // ---- Analytics: public create + update (anonymous funnel);
+    // reads and deletes are admin-only. (Decision 19 — the contact
+    // stored in attempts — is still open; no change here.) ----
     match /analytics/{section}/items/{doc} {
       allow create, update: if true;
-      allow read, delete: if isAdmin();
+      allow read, delete: if isAdminOrManager();
+    }
+
+    // ---- Health: written by the scheduled export + Store Manager
+    // health check (admin); read by admins. ----
+    match /health/{doc} {
+      allow read: if isAdminOrManager();
+      allow create, update: if isAdminOrManager();
+      allow delete: if false;
     }
   }
 }

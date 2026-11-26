@@ -37,12 +37,18 @@ import '../core/diagnostics.dart';
 import '../core/identifier.dart';
 import '../services/backend.dart';
 import '../theme/flow_theme.dart';
+import '../theme/store_design.dart';
+
+// The login screen is FIXED: it never follows the theme switch, so
+// it reads the Liquid Gloss (LONA dark) token set directly instead
+// of the variant-aware StoreGlass.of(context).
+const _tokens = StoreGlassTokens.liquidGloss;
 
 void _showMessage(BuildContext context, String message, {bool error = false}) {
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
       content: Text(message),
-      backgroundColor: error ? FlowPalette.danger : FlowPalette.card,
+      backgroundColor: error ? _tokens.danger : _tokens.cardTop,
     ),
   );
 }
@@ -221,7 +227,7 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
       canPop: false,
       onPopInvokedWithResult: (_, __) => _onPop(),
       child: Scaffold(
-        backgroundColor: FlowPalette.background,
+        backgroundColor: _tokens.base,
         body: Stack(
           children: [
             // Beat 0: blob alone behind everything, morphing forever.
@@ -237,6 +243,11 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
                         18 * (t < 0.5 ? t * 2 : (1 - t) * 2) - 9,
                         0,
                       ),
+                      colors: [
+                        _tokens.blobBlue,
+                        _tokens.blobOrange,
+                        _tokens.blobPurple,
+                      ],
                     ),
                     size: Size.infinite,
                   );
@@ -244,13 +255,13 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
               ),
             ),
             Container(
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
                   colors: [
-                    Color(0x66070B1A),
-                    Color(0xCC05070F),
+                    _tokens.base.withValues(alpha: 0.4),
+                    _tokens.base.withValues(alpha: 0.8),
                   ],
                 ),
               ),
@@ -281,8 +292,8 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
                 child: Align(
                   alignment: Alignment.topRight,
                   child: IconButton(
-                    icon: const Icon(Icons.arrow_back,
-                        color: FlowPalette.textSecondary),
+                    icon: Icon(Icons.arrow_back,
+                        color: _tokens.textSecondary),
                     onPressed: () => _onPop(),
                   ),
                 ),
@@ -303,7 +314,7 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(FlowTokens.radiusL),
-            border: Border.all(color: FlowPalette.borderLight, width: 1),
+            border: Border.all(color: _tokens.glassBorder, width: 1),
             // 3D depth: ambient + key shadow, top highlight, bottom shade.
             gradient: LinearGradient(
               begin: Alignment.topCenter,
@@ -326,7 +337,7 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
                 offset: const Offset(0, 6),
               ),
               BoxShadow(
-                color: FlowPalette.blue.withValues(alpha: 0.25),
+                color: _tokens.accent.withValues(alpha: 0.25),
                 blurRadius: 48,
                 offset: const Offset(0, 0),
               ),
@@ -338,11 +349,11 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
             children: [
               _title(),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 'أهلًا بعودتك، كمّل شغل متجرك.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  color: FlowPalette.textSecondary,
+                  color: _tokens.textSecondary,
                   fontSize: 14,
                 ),
               ),
@@ -375,7 +386,7 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
 
   Widget _gradientTitle(String text) {
     return ShaderMask(
-      shaderCallback: (bounds) => FlowPalette.brandGradient.createShader(
+      shaderCallback: (bounds) => StoreGlassTokens.brandGradient.createShader(
         Rect.fromLTWH(0, 0, bounds.width, bounds.height),
       ),
       child: Text(
@@ -403,7 +414,7 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: FlowPalette.borderLight, width: 1),
+            border: Border.all(color: _tokens.glassBorder, width: 1),
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withValues(alpha: 0.35),
@@ -412,20 +423,20 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
               ),
             ],
           ),
-          child: const Row(
+          child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
                 'Log in',
                 style: TextStyle(
-                  color: Colors.white,
+                  color: _tokens.textPrimary,
                   fontWeight: FontWeight.w700,
                   fontSize: 15,
                 ),
               ),
-              SizedBox(width: 6),
+              const SizedBox(width: 6),
               Icon(Icons.keyboard_arrow_down,
-                  size: 20, color: FlowPalette.textSecondary),
+                  size: 20, color: _tokens.textSecondary),
             ],
           ),
         ),
@@ -483,7 +494,7 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
       key: const Key('signin-identifier'),
       controller: _identifier,
       keyboardType: TextInputType.emailAddress,
-      style: const TextStyle(color: Colors.white),
+      style: TextStyle(color: _tokens.textPrimary),
       decoration: const InputDecoration(
         labelText: 'البريد الإلكتروني',
         hintText: 'الإيميل أو رقم الموبايل',
@@ -498,13 +509,13 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
         key: const Key('signin-password'),
         controller: _password,
         obscureText: _obscure,
-        style: const TextStyle(color: Colors.white),
+        style: TextStyle(color: _tokens.textPrimary),
         decoration: InputDecoration(
           labelText: 'كلمة السر',
           suffixIcon: IconButton(
             icon: Icon(
               _obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined,
-              color: FlowPalette.textSecondary,
+              color: _tokens.textSecondary,
             ),
             onPressed: () => setState(() => _obscure = !_obscure),
           ),
@@ -530,7 +541,7 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
                 child: Checkbox(
                   key: const Key('signin-remember'),
                   value: _remember,
-                  activeColor: FlowPalette.cyan,
+                  activeColor: _tokens.accent,
                   onChanged: (v) async {
                     setState(() => _remember = v ?? false);
                     try {
@@ -540,16 +551,16 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
                 ),
               ),
               const SizedBox(width: 4),
-              const Text('تذكرني',
-                  style: TextStyle(color: FlowPalette.textSecondary)),
+              Text('تذكرني',
+                  style: TextStyle(color: _tokens.textSecondary)),
             ],
           ),
           TextButton(
             key: const Key('signin-forgot'),
             onPressed: _forgot,
-            child: const Text(
+            child: Text(
               'نسيت كلمة السر؟',
-              style: TextStyle(color: FlowPalette.cyan),
+              style: TextStyle(color: _tokens.accent),
             ),
           ),
         ],
@@ -598,11 +609,14 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
                     padding: const EdgeInsets.symmetric(vertical: 16),
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(999),
-                      gradient: FlowPalette.buttonGradient,
+                      // Liquid-glass melt button: gold→orange, dark
+                      // text (LONA's .act). White text on gold would
+                      // wash out; accentText (#4a3300) stays readable.
+                      gradient: _tokens.buttonGradient,
                       // Depth decreases while sunk/melting.
                       boxShadow: [
                         BoxShadow(
-                          color: FlowPalette.blue.withValues(
+                          color: _tokens.accent.withValues(
                               alpha: _sunk ? 0.20 : 0.45),
                           blurRadius: _sunk ? 8 : 20,
                           offset: Offset(0, _sunk ? 2 : 6),
@@ -616,18 +630,18 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
                     ),
                     alignment: Alignment.center,
                     child: _busy && meltT >= 1
-                        ? const SizedBox(
+                        ? SizedBox(
                             width: 20,
                             height: 20,
                             child: CircularProgressIndicator(
                               strokeWidth: 2,
-                              color: Colors.white,
+                              color: _tokens.accentText,
                             ),
                           )
-                        : const Text(
+                        : Text(
                             'تسجيل الدخول',
                             style: TextStyle(
-                              color: Colors.white,
+                              color: _tokens.accentText,
                               fontWeight: FontWeight.w800,
                               fontSize: 17,
                             ),
@@ -644,8 +658,8 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
                         child: Container(
                           width: 10 + sag * 4,
                           height: 10 + sag * 10,
-                          decoration: const BoxDecoration(
-                            color: FlowPalette.cyan,
+                          decoration: BoxDecoration(
+                            color: _tokens.accent,
                             shape: BoxShape.circle,
                           ),
                         ),
@@ -660,8 +674,8 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
                         child: Container(
                           width: 7 + sag * 3,
                           height: 7 + sag * 8,
-                          decoration: const BoxDecoration(
-                            color: FlowPalette.blue,
+                          decoration: BoxDecoration(
+                            color: StorePalette.orange,
                             shape: BoxShape.circle,
                           ),
                         ),
@@ -677,19 +691,19 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
   }
 
   Widget _divider() {
-    return const Padding(
-      padding: EdgeInsets.symmetric(vertical: 18),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 18),
       child: Row(
         children: [
-          Expanded(child: Divider(color: FlowPalette.borderLight)),
+          Expanded(child: Divider(color: _tokens.glassBorder)),
           Padding(
-            padding: EdgeInsets.symmetric(horizontal: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 12),
             child: Text(
               'أو تابع باستخدام',
-              style: TextStyle(color: FlowPalette.textMuted, fontSize: 13),
+              style: TextStyle(color: _tokens.textMuted, fontSize: 13),
             ),
           ),
-          Expanded(child: Divider(color: FlowPalette.borderLight)),
+          Expanded(child: Divider(color: _tokens.glassBorder)),
         ],
       ),
     );
@@ -707,7 +721,7 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
         decoration: BoxDecoration(
           color: Colors.white.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(999),
-          border: Border.all(color: FlowPalette.borderLight, width: 1),
+          border: Border.all(color: _tokens.glassBorder, width: 1),
           boxShadow: [
             BoxShadow(
               color: Colors.black.withValues(alpha: 0.30),
@@ -780,9 +794,9 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Text(
+          Text(
             'جديد هنا؟ ',
-            style: TextStyle(color: FlowPalette.textSecondary),
+            style: TextStyle(color: _tokens.textSecondary),
           ),
           GestureDetector(
             key: const Key('signin-create'),
@@ -794,10 +808,10 @@ class _FlowSignInScreenState extends State<FlowSignInScreen>
                 widget.onBack?.call();
               }
             },
-            child: const Text(
+            child: Text(
               'إنشاء حساب',
               style: TextStyle(
-                color: FlowPalette.cyan,
+                color: _tokens.accent,
                 fontWeight: FontWeight.w800,
               ),
             ),
