@@ -717,6 +717,8 @@ test('Phase 2 (T12): the unified state machine allows exactly the legal transiti
   assert.equal(isAllowedTransition('in_transit', 'ready'), false);
   assert.equal(isAllowedTransition('delivered', 'cancelled'), false);
   assert.equal(isAllowedTransition('cancelled', 'accepted'), false);
+  assert.equal(isAllowedTransition('cancelled', 'new'), true);
+  assert.equal(isAllowedTransition('cancelled', 'in_transit'), false);
   assert.equal(isAllowedTransition('expired', 'accepted'), false);
 });
 

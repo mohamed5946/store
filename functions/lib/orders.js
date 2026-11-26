@@ -33,7 +33,7 @@ const ORDER_TRANSITIONS = {
   ready: ['in_transit', 'cancelled'],
   in_transit: ['delivered'],
   delivered: [],
-  cancelled: [],
+  cancelled: ['new'],
   expired: [],
 };
 
