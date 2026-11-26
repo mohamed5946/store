@@ -1260,7 +1260,7 @@ $('#themeToggle').addEventListener('click', () => {
 /* ---------- feedback: "Contact us" — one-way complaint cards ----------
  * No functions, no tracking code, no lookup. The form writes directly
  * to the feedback collection (contract §6, shape §3): name, email,
- * address, message, createdAt. Admin reads the cards; spam is deleted
+ * phone, message, createdAt. Admin reads the cards; spam is deleted
  * from the admin apps. */
 async function submitFeedbackForm(e) {
   if (e && e.preventDefault) e.preventDefault();
@@ -1273,17 +1273,17 @@ async function submitFeedbackForm(e) {
   };
   const name = (($('#fbName') || {}).value || '').trim();
   const email = (($('#fbEmail') || {}).value || '').trim();
-  const address = (($('#fbAddress') || {}).value || '').trim();
+  const phone = (($('#fbPhone') || {}).value || '').replace(/[^0-9]/g, '');
   const message = (($('#fbMessage') || {}).value || '').trim();
   if (name.length === 0 || name.length > 100) return showResult('اكتب الاسم (لحد 100 حرف)');
   if (!email.includes('@') || email.length > 100) return showResult('اكتب إيميل صحيح');
-  if (address.length === 0 || address.length > 300) return showResult('اكتب العنوان (لحد 300 حرف)');
+  if (phone.length < 10 || phone.length > 15) return showResult('اكتب رقم موبايل صحيح');
   if (message.length < 10 || message.length > 2000) return showResult('اكتب رسالتك (من 10 لـ 2000 حرف)');
   const btn = $('#fbSubmit');
   if (btn) btn.disabled = true;
   try {
     await setDoc(doc(collection(db, 'feedback')), {
-      name, email, address, message,
+      name, email, phone, message,
       createdAt: serverTimestamp(),
     });
     showResult('تم استلام شكواك — شكراً', true);

@@ -152,13 +152,13 @@ void main() {
     String? validate({
       String name = 'أحمد',
       String email = 'a@example.com',
-      String address = 'القاهرة، مصر',
+      String phone = '01012345678',
       String message = 'المنتج وصل متأخر جداً',
     }) =>
         Backend.validateFeedbackInput(
           name: name,
           email: email,
-          address: address,
+          phone: phone,
           message: message,
         );
 
@@ -178,9 +178,18 @@ void main() {
       expect(validate(email: '${'x' * 95}@e.com'), isNotNull);
     });
 
-    test('name at most 100 chars, address at most 300', () {
+    test('name at most 100 chars', () {
       expect(validate(name: 'x' * 101), isNotNull);
-      expect(validate(address: 'x' * 301), isNotNull);
+    });
+
+    test('phone must be 10..15 digits (non-digits are stripped)', () {
+      expect(validate(phone: '010123456'), isNotNull); // 9 digits
+      expect(validate(phone: 'abcdefghij'), isNotNull); // no digits
+      expect(validate(phone: '1' * 16), isNotNull); // 16 digits
+      expect(validate(phone: '0101234567'), isNull); // 10 digits
+      expect(validate(phone: '01012345678'), isNull); // 11 digits
+      expect(validate(phone: '1' * 15), isNull); // 15 digits
+      expect(validate(phone: '0101 234-5678'), isNull); // spaces/dashes stripped
     });
   });
 

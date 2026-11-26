@@ -419,11 +419,11 @@ class Backend {
       'المتاح دلوقتي من $productName هو $available بس';
 
   /// Shape validation for a one-way complaint (contract §3/§6:
-  /// exact keys name/email/address/message/createdAt).
+  /// exact keys name/email/phone/message/createdAt).
   static String? validateFeedbackInput({
     required String name,
     required String email,
-    required String address,
+    required String phone,
     required String message,
   }) {
     if (name.trim().isEmpty || name.trim().length > 100) {
@@ -433,8 +433,9 @@ class Backend {
     if (mail.isEmpty || mail.length > 100 || !mail.contains('@')) {
       return 'اكتب إيميل صحيح';
     }
-    if (address.trim().isEmpty || address.trim().length > 300) {
-      return 'اكتب العنوان (بحد أقصى 300 حرف)';
+    final digits = phone.replaceAll(RegExp(r'[^0-9]'), '');
+    if (digits.length < 10 || digits.length > 15) {
+      return 'اكتب رقم موبايل صحيح';
     }
     final msg = message.trim();
     if (msg.length < 10 || msg.length > 2000) {
@@ -1621,7 +1622,7 @@ class Backend {
   // ---- Feedback, one-way cards (contract §6) ----
   //
   // No status, no priority, no replies, no tracking code, no lookup.
-  // A complaint is a direct write of {name, email, address, message,
+  // A complaint is a direct write of {name, email, phone, message,
   // createdAt}; the admin only reads the cards and can delete spam.
 
   /// Creates a complaint on a customer's behalf (same one-way shape
@@ -1629,14 +1630,14 @@ class Backend {
   Future<String> submitFeedback({
     required String name,
     required String email,
-    required String address,
+    required String phone,
     required String message,
   }) async {
     _requireInit();
     final error = validateFeedbackInput(
       name: name,
       email: email,
-      address: address,
+      phone: phone,
       message: message,
     );
     if (error != null) throw BackendException(error);
@@ -1645,7 +1646,7 @@ class Backend {
       await ref.set({
         'name': name.trim(),
         'email': email.trim(),
-        'address': address.trim(),
+        'phone': phone.replaceAll(RegExp(r'[^0-9]'), ''),
         'message': message.trim(),
         'createdAt': FieldValue.serverTimestamp(),
       });
@@ -1670,7 +1671,7 @@ class Backend {
     await _auditedDelete(
       collection: 'feedback',
       docId: id,
-      changedFields: const ['name', 'email', 'address', 'message', 'createdAt'],
+      changedFields: const ['name', 'email', 'phone', 'message', 'createdAt'],
     );
     Diagnostics.instance.log('Feedback deleted: $id');
   }
