@@ -797,7 +797,7 @@ async function placeOrderTx({ clientOrderId: orderId, items, discountCode: code,
     if (!customer.address || String(customer.address).trim().length === 0) return 'اكتب العنوان';
     if (!Array.isArray(items) || items.length === 0) return 'السلة فارغة';
     const distinct = new Set(items.map((l) => String(l.productId || ''))).size;
-    if (distinct > 10) return 'ORDER_TOO_LARGE';
+    if (distinct > 7) return 'ORDER_TOO_LARGE';
     for (const line of items) {
       if (!line.productId || String(line.productId).trim() === '') return 'INVALID_INPUT';
       const qty = Number(line.qty);
@@ -807,12 +807,12 @@ async function placeOrderTx({ clientOrderId: orderId, items, discountCode: code,
     return null;
   })();
   if (shapeError === 'ORDER_TOO_LARGE') {
-    throw new OrderError('ORDER_TOO_LARGE', 'الطلب فيه منتجات أكتر من الحد المسموح', { maxProducts: 10 });
+    throw new OrderError('ORDER_TOO_LARGE', 'الطلب فيه منتجات أكتر من الحد المسموح', { maxProducts: 7 });
   }
   if (shapeError) throw new OrderError('INVALID_INPUT', shapeError);
   const merged = dedupeItems(items);
-  if (merged.length > 10) {
-    throw new OrderError('ORDER_TOO_LARGE', 'الطلب فيه منتجات أكتر من الحد المسموح', { maxProducts: 10 });
+  if (merged.length > 7) {
+    throw new OrderError('ORDER_TOO_LARGE', 'الطلب فيه منتجات أكتر من الحد المسموح', { maxProducts: 7 });
   }
   const auditId = newAuditId();
   let result;
@@ -1000,9 +1000,9 @@ async function submitOrder(customer) {
   const lines = cartLines();
   /* Client-side cap (10 different products): the transaction enforces
    * it too — this only saves a round trip with a clear message. */
-  if (lines.length > 10) {
+  if (lines.length > 7) {
     ordering = false;
-    showReview(customer, 'الطلب فيه أكتر من 10 منتجات — قلل المنتجات الأول');
+    showReview(customer, 'الطلب فيه أكتر من 7 منتجات — قلل المنتجات الأول');
     return;
   }
   const total = cartTotal();

@@ -305,8 +305,13 @@ service cloud.firestore {
      * matching the source. */
     function orderShapeOk(doc) {
       let d = request.resource.data;
-      return d.keys().hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId'])
-        && d.keys().size() == 25
+      return d.keys().hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId', 'operationId'])
+        && (d.keys().size() == 25 || d.keys().size() == 26)
+        && (d.operationId == null || d.operationId is string)
+        /* 'operationId' is optional (coordinator fix 2026-11-26):
+         * the PC manual order stamps it on the order doc; the
+         * storefront + Flutter orders have exactly the 25 core
+         * keys. The field is a harmless correlation id. */
         && d.id == doc && d.clientOrderId == doc
         && d.customerName is string && d.customerName.size() > 0
         && d.customerPhone is string && d.customerPhone.size() >= 10
@@ -419,8 +424,15 @@ service cloud.firestore {
         && d.get('minStock', 5) == old.get('minStock', 5)
         && d.get('costPrice', 0) == old.get('costPrice', 0)
         && d.get('updatedAt', null) == request.time
-        && changedUpdate().hasOnly(['productId', 'stock', 'reserved', 'minStock', 'costPrice', 'updatedAt']);
+        && changedUpdate().hasOnly(['productId', 'stock', 'reserved', 'minStock', 'costPrice', 'updatedAt', 'operationId']);
     }
+    /* 'operationId' in the list above (coordinator fix 2026-11-26):
+     * the Flutter + PC manual orders stamp their operation id on
+     * the inventory write; it is a harmless correlation id, and
+     * without it those apps fall back to the audited admin branch
+     * (2 reads/line) and a 6-line manual order breaks the
+     * per-request budget. The value checks above still protect
+     * the stock. */
 
     /* §13 inStock refresh (correction 2026-11-26): a batched merge
      * setting ONLY inStock, verified against the inventory doc
@@ -449,7 +461,14 @@ service cloud.firestore {
      * manual orders claim the same way and their write carries no
      * audit entry for the admin branch). */
     function discountClaimOk(code) {
-      if (!changedUpdate().hasOnly(['usedBy', 'usedAt'])) return false;
+      if (!changedUpdate().hasOnly(['usedBy', 'usedAt', 'operationId', 'updatedAt'])) return false;
+      /* 'operationId' + 'updatedAt' tolerated (coordinator fix
+       * 2026-11-26): the PC manual order stamps both on the claim
+       * write; without them the claim falls back to the audited
+       * admin branch, whose docIds do not cover the extra keys, so
+       * the claim is denied outright. The getAfter tie to a real
+       * order below is what makes the claim safe, and it still
+       * applies. */
       let d = request.resource.data;
       let usedBy = d.get('usedBy', null);
       if (!(usedBy is string) || usedBy.size() == 0) return false;

@@ -256,6 +256,12 @@ async function placeOrderTx(db, {
   source = 'storefront', createdBy = null,
   actor = 'anonymous', actorName = 'storefront', operation = 'create',
   movementSource = 'placeOrder',
+  /* stampOperationId: the PC (Electron) manual-order shape —
+   * operationId stamped on the inventory write, the discount
+   * claim and the order doc (coordinator fix 2026-11-26: the
+   * rules tolerate it in the reservation / claim / order-shape
+   * branches). */
+  stampOperationId = false,
 }) {
   const auditId = `audit-${orderId}`;
   await runTransaction(db, async (tx) => {
@@ -277,16 +283,20 @@ async function placeOrderTx(db, {
     const discountAmount = discount ? Math.round((subtotal * discount.percent) / 100) : 0;
     const total = totalOverride != null ? totalOverride : subtotal - discountAmount;
     const now = serverTimestamp();
-    tx.set(doc(db, 'inventory', productId), {
+    const invWrite = {
       productId, stock: inv.stock, reserved: inv.reserved + qty,
       minStock: inv.minStock, costPrice: inv.costPrice, updatedAt: now,
-    }, { merge: true });
+    };
+    if (stampOperationId) invWrite.operationId = auditId;
+    tx.set(doc(db, 'inventory', productId), invWrite, { merge: true });
     tx.set(doc(collection(db, 'movements')), {
       productId, type: 'order_reserve', qty: -qty, orderId,
       source: movementSource, actorUid: createdBy, createdAt: now,
     });
     if (discount) {
-      tx.set(doc(db, 'discounts', discount.code), { usedBy: orderId, usedAt: now }, { merge: true });
+      const claim = { usedBy: orderId, usedAt: now };
+      if (stampOperationId) { claim.operationId = auditId; claim.updatedAt = now; }
+      tx.set(doc(db, 'discounts', discount.code), claim, { merge: true });
     }
     tx.set(doc(db, 'orders', orderId), {
       id: orderId, clientOrderId: orderId,
@@ -299,6 +309,7 @@ async function placeOrderTx(db, {
       createdAt: now, updatedAt: now,
       acceptedAt: null, deliveredAt: null, cancelledAt: null, cancelReason: null,
       auditId,
+      ...(stampOperationId ? { operationId: auditId } : {}),
     });
     tx.set(doc(db, 'audit', auditId), {
       operationId: auditId, actor, actorName,
@@ -569,6 +580,46 @@ test('No-functions: a manager WITH orders_create_manual may place a manual order
   }));
   assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-nf-manual-2'))).data().source, 'admin_manual');
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, 2);
+});
+
+/* Coordinator fix 2026-11-26: the PC manual order stamps
+ * operationId on the inventory write, the discount claim and the
+ * order doc. Before the fix the reservation branch denied the
+ * inventory write (operationId not in its changed-keys list), the
+ * claim branch denied the discount write, and the order shape
+ * (25 keys) denied the 26-key order — the whole manual order
+ * failed. The rules now tolerate the correlation id in all three
+ * branches, and this test pins that shape (with a discount code,
+ * so the claim branch is exercised too). */
+test('No-functions: a manual order stamping operationId (PC shape) succeeds, including the discount claim', async () => {
+  const db = adminDb();
+  await setDoc(doc(db, 'discounts', 'OPID10'), {
+    percent: 10, active: true, usedBy: null, expiresAt: null,
+  });
+  await assertSucceeds(placeOrderTx(db, {
+    orderId: 'order-nf-manual-opid', productId: 'prod-5', qty: 1,
+    discountCode: 'OPID10',
+    source: 'admin_manual', createdBy: ADMIN_UID,
+    actor: ADMIN_UID, actorName: 'Admin', operation: 'manual_order_create',
+    movementSource: 'createManualOrder', stampOperationId: true,
+  }));
+  const order = (await getDoc(doc(db, 'orders', 'order-nf-manual-opid'))).data();
+  assert.equal(order.operationId, 'audit-order-nf-manual-opid');
+  assert.equal(order.discountCode, 'OPID10');
+  assert.equal(order.total, 270);
+  assert.equal((await getDoc(doc(db, 'discounts', 'OPID10'))).data().usedBy, 'order-nf-manual-opid');
+  assert.equal((await getDoc(doc(db, 'inventory', 'prod-5'))).data().reserved, 3);
+});
+
+/* The reservation branch on its own: an admin inventory update
+ * that ONLY raises reserved (and stamps operationId + updatedAt)
+ * passes without any audit entry. */
+test('No-functions: an inventory reservation stamping operationId passes with no audit entry', async () => {
+  const db = adminDb();
+  await assertSucceeds(updateDoc(doc(db, 'inventory', 'prod-5'), {
+    reserved: 4, operationId: 'op-reserve-test', updatedAt: serverTimestamp(),
+  }));
+  assert.equal((await getDoc(doc(db, 'inventory', 'prod-5'))).data().reserved, 4);
 });
 
 /* ---------- audit enforcement (T19/T20) ---------- */
