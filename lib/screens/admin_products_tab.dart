@@ -33,7 +33,7 @@ class _ProductsTabState extends State<_ProductsTab> {
               ? const Center(child: Text('مفيش منتجات — ضيف أول منتج'))
               : StaggeredScope(
                   child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, StoreTokens.navPillClearance),
                     itemCount: docs.length,
                     itemBuilder: (context, i) {
                       final p = ProductData.fromDoc(docs[i]);
@@ -87,8 +87,8 @@ class _ProductsTabState extends State<_ProductsTab> {
                                       }
                                     }
                                   },
-                                  child: const Icon(Icons.delete_outline,
-                                      color: Colors.red),
+                                  child: Icon(Icons.delete_outline,
+                                      color: StoreGlass.of(context).danger),
                                 ),
                               ],
                             ),
@@ -147,7 +147,7 @@ class _ProductsTabState extends State<_ProductsTab> {
                   ),
                   const SizedBox(height: 8),
                   if (images.isEmpty)
-                    const Text('مفيش صور لسه', style: TextStyle(color: Colors.grey)),
+                    Text('مفيش صور لسه', style: TextStyle(color: StoreGlass.of(c).textMuted)),
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
@@ -171,8 +171,8 @@ class _ProductsTabState extends State<_ProductsTab> {
                               onTap: () => setState(
                                   () => images.removeWhere((x) => x.url == img.url)),
                               child: Container(
-                                decoration: const BoxDecoration(
-                                  color: Colors.red,
+                                decoration: BoxDecoration(
+                                  color: StoreGlass.of(c).danger,
                                   shape: BoxShape.circle,
                                 ),
                                 child: const Icon(Icons.close, size: 16, color: Colors.white),
@@ -254,7 +254,7 @@ class _ProductsTabState extends State<_ProductsTab> {
                   if (errorText.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
-                      child: Text(errorText, style: const TextStyle(color: Colors.red)),
+                      child: Text(errorText, style: TextStyle(color: StoreGlass.of(c).danger)),
                     ),
                   const SizedBox(height: 8),
                   StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -357,17 +357,21 @@ class _ProductThumb extends StatelessWidget {
     return _fallback();
   }
 
-  Widget _fallback() => Container(
-        width: 48,
-        height: 48,
-        decoration: BoxDecoration(
-          gradient: FlowPalette.brandGradient,
-          borderRadius: BorderRadius.circular(8),
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          product.name.isEmpty ? '؟' : product.name.characters.first,
-          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-        ),
-      );
+  Widget _fallback() {
+    final tokens = StoreGlassTokens.liquidGloss;
+    return Container(
+      width: 48,
+      height: 48,
+      decoration: BoxDecoration(
+        gradient: StoreGlassTokens.brandGradient,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        product.name.isEmpty ? '؟' : product.name.characters.first,
+        style: TextStyle(
+            color: tokens.accentText, fontWeight: FontWeight.bold),
+      ),
+    );
+  }
 }

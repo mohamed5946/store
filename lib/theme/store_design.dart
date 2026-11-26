@@ -1,8 +1,11 @@
 // Store Admin interaction ports — DeliveryFlow patterns restyled
-// under the Flow dark visual language (see lib/theme/flow_theme.dart):
-// tactile Pressable, staggered entrance, and the bin-eats-label
-// delete confirmation. Colors come from FlowPalette; this file holds
-// no theme of its own anymore (the white/gray era is gone).
+// under the LONA Liquid Glass visual language (see the v4.2
+// reference): frosted glass, gradient borders, gold accent. The
+// token contract lives in exactly one place — this file — and every
+// surface reads its tokens from it (see StoreGlassTokens below).
+// Colors come from the LONA tokens + the store's 60-30-10 palette
+// (cream #F7F2EA / navy #1C285A / orange #FF7A1A); this file holds
+// no second theme of its own.
 
 import 'dart:async';
 
@@ -19,6 +22,213 @@ abstract class StoreTokens {
   static const EdgeInsets cardPadding =
       EdgeInsets.symmetric(horizontal: 18, vertical: 16);
   static const EdgeInsets screenPadding = EdgeInsets.all(16);
+
+  /// Clearance under the floating nav pill: root lists end this far
+  /// above the screen bottom so the last item never hides under it.
+  static const double navPillClearance = 96;
+}
+
+/// LONA Liquid Glass tokens, taken from the approved v4.2 preview
+/// (`~/workspace/your_files/lona-liquid-glass-v4.2.html`): dark navy
+/// base, blue/orange/purple blobs, gold accent, frosted glass with a
+/// 26px blur, saturate + brightness lift, gradient border and inset
+/// top highlight.
+abstract class LonaTokens {
+  static const Color gold = Color(0xFFF0C75E);
+  static const Color goldSoft = Color(0xFFFFE9A8);
+  static const Color base = Color(0xFF0B1430);
+  static const Color tint = Color(0xFF0E163C);
+  static const Color blobBlue = Color(0xFF3B5BFF);
+  static const Color blobOrange = Color(0xFFFF8A3D);
+  static const Color blobPurple = Color(0xFFB04BFF);
+  static const Color ink = Color(0xFFFFFFFF);
+  static const double glassBlur = 26;
+  static const double glassSaturate = 1.85;
+  static const double glassBrightness = 1.08;
+}
+
+/// The store's 60-30-10 palette: cream 60%, navy 30%, orange 10%.
+/// In the dark LONA admin it maps as: cream is the ink (primary
+/// text), navy is the surface tone, orange is the warm accent next
+/// to LONA's gold.
+abstract class StorePalette {
+  static const Color cream = Color(0xFFF7F2EA);
+  static const Color navy = Color(0xFF1C285A);
+  static const Color orange = Color(0xFFFF7A1A);
+}
+
+/// One variant's full token set. The contract is owned here and only
+/// here; surfaces read it through [StoreGlass.of] (variant-aware) or
+/// the two const instances (fixed screens, e.g. sign-in).
+class StoreGlassTokens {
+  const StoreGlassTokens({
+    required this.brightness,
+    required this.backgroundTop,
+    required this.backgroundBottom,
+    required this.base,
+    required this.tint,
+    required this.cardTop,
+    required this.cardBottom,
+    required this.cardBorder,
+    required this.glassFillTop,
+    required this.glassFillBottom,
+    required this.glassBorder,
+    required this.textPrimary,
+    required this.textSecondary,
+    required this.textMuted,
+    required this.accent,
+    required this.accentSoft,
+    required this.accentText,
+    required this.danger,
+    required this.dangerSoft,
+    required this.success,
+    required this.blobBlue,
+    required this.blobOrange,
+    required this.blobPurple,
+    required this.showBlobs,
+    required this.blurShell,
+    required this.shadowColor,
+  });
+
+  final Brightness brightness;
+  final Color backgroundTop;
+  final Color backgroundBottom;
+  final Color base;
+  final Color tint;
+  final Color cardTop;
+  final Color cardBottom;
+  final Color cardBorder;
+  final Color glassFillTop;
+  final Color glassFillBottom;
+  final Color glassBorder;
+  final Color textPrimary;
+  final Color textSecondary;
+  final Color textMuted;
+  final Color accent;
+  final Color accentSoft;
+  final Color accentText;
+  final Color danger;
+  final Color dangerSoft;
+  final Color success;
+  final Color blobBlue;
+  final Color blobOrange;
+  final Color blobPurple;
+  final bool showBlobs;
+  final double blurShell;
+  final Color shadowColor;
+
+  /// Primary button gradient: LONA gold into the store orange.
+  LinearGradient get buttonGradient => LinearGradient(
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
+        colors: [accentSoft, accent, StorePalette.orange],
+        stops: const [0.0, 0.45, 1.0],
+      );
+
+  /// Brand gradient (sign-in title, product fallback): LONA gold.
+  static const LinearGradient brandGradient = LinearGradient(
+    colors: [LonaTokens.goldSoft, LonaTokens.gold],
+  );
+
+  /// Liquid Gloss — the full LONA treatment: dark navy base, three
+  /// color blobs, 26px glass blur, gold accent, cream ink.
+  static const StoreGlassTokens liquidGloss = StoreGlassTokens(
+    brightness: Brightness.dark,
+    backgroundTop: LonaTokens.tint,
+    backgroundBottom: LonaTokens.base,
+    base: LonaTokens.base,
+    tint: LonaTokens.tint,
+    cardTop: StorePalette.navy,
+    cardBottom: Color(0xFF0D1530),
+    cardBorder: Color(0xFF2A3A66),
+    glassFillTop: Color(0x38FFFFFF),
+    glassFillBottom: Color(0x12FFFFFF),
+    glassBorder: Color(0x8CFFFFFF),
+    textPrimary: StorePalette.cream,
+    textSecondary: Color(0xADF7F2EA),
+    textMuted: Color(0x6BF7F2EA),
+    accent: LonaTokens.gold,
+    accentSoft: LonaTokens.goldSoft,
+    accentText: Color(0xFF4A3300),
+    danger: Color(0xFFEF4444),
+    dangerSoft: Color(0xFF3B1218),
+    success: Color(0xFF22C55E),
+    blobBlue: LonaTokens.blobBlue,
+    blobOrange: LonaTokens.blobOrange,
+    blobPurple: LonaTokens.blobPurple,
+    showBlobs: true,
+    blurShell: LonaTokens.glassBlur,
+    shadowColor: Color(0x61080E28),
+  );
+
+  /// Gloss Morphism — the calmer frosted variant: same dark base and
+  /// gold accent, no blobs, translucent glass cards, 12px shell blur.
+  static const StoreGlassTokens glossMorphism = StoreGlassTokens(
+    brightness: Brightness.dark,
+    backgroundTop: Color(0xFF0B1030),
+    backgroundBottom: Color(0xFF05070F),
+    base: Color(0xFF070B1A),
+    tint: Color(0xFF101A33),
+    cardTop: Color(0x29FFFFFF),
+    cardBottom: Color(0x0AFFFFFF),
+    cardBorder: Color(0x1FFFFFFF),
+    glassFillTop: Color(0x29FFFFFF),
+    glassFillBottom: Color(0x0AFFFFFF),
+    glassBorder: Color(0x8CFFFFFF),
+    textPrimary: StorePalette.cream,
+    textSecondary: Color(0xADF7F2EA),
+    textMuted: Color(0x6BF7F2EA),
+    accent: LonaTokens.gold,
+    accentSoft: LonaTokens.goldSoft,
+    accentText: Color(0xFF4A3300),
+    danger: Color(0xFFEF4444),
+    dangerSoft: Color(0xFF3B1218),
+    success: Color(0xFF22C55E),
+    blobBlue: LonaTokens.blobBlue,
+    blobOrange: LonaTokens.blobOrange,
+    blobPurple: LonaTokens.blobPurple,
+    showBlobs: false,
+    blurShell: 12,
+    shadowColor: Color(0x66000000),
+  );
+
+  /// Explicit per-variant lookup — no boolean `isGloss` branching
+  /// anywhere; every surface asks for its variant's set.
+  static StoreGlassTokens forVariant(FlowThemeVariant variant) {
+    switch (variant) {
+      case FlowThemeVariant.liquidGloss:
+        return liquidGloss;
+      case FlowThemeVariant.glossMorphism:
+        return glossMorphism;
+    }
+  }
+}
+
+/// Migration rule for the stored `flow_theme` preference. The key is
+/// unchanged, so an existing preference carries over; the values map
+/// 1:1. What changed in the redesign is what Gloss Morphism MEANS:
+/// it is now the calmer frosted variant (no blobs, translucent
+/// cards, 12px shell blur) instead of the old dark frosted look.
+/// Unknown or missing values fall back to Liquid Gloss (the default).
+FlowThemeVariant migrateStoredTheme(String? stored) {
+  switch (stored) {
+    case 'glossMorphism':
+      return FlowThemeVariant.glossMorphism;
+    case 'liquidGloss':
+    default:
+      return FlowThemeVariant.liquidGloss;
+  }
+}
+
+/// Variant-aware access to the token contract for theme-aware widgets.
+class StoreGlass {
+  StoreGlass._();
+
+  static StoreGlassTokens of(BuildContext context) {
+    final variant = FlowThemeControllerScope.maybeOf(context)?.variant ??
+        FlowThemeVariant.liquidGloss;
+    return StoreGlassTokens.forVariant(variant);
+  }
 }
 
 /// Tactile press wrapper, ported from DeliveryFlow's Pressable: the
@@ -93,9 +303,17 @@ class _PressableState extends State<Pressable> {
 
 /// Staggered list entrance, ported from DeliveryFlow's staggered
 /// system: items fade in and slide up from 20% of their height, 80ms
-/// stagger, capped at index 7, 300ms per item. Entry-only per mount;
-/// a fresh mount (e.g. tab switch via the shell's keyed subtree)
-/// replays it. Reduce-motion: items appear immediately.
+/// stagger, capped at index 7, 300ms per item.
+///
+/// Visibility-driven replay (Phase 1): an item plays when it enters
+/// the viewport and resets when it leaves, so the entrance replays
+/// every time the item scrolls into view — scrolling down AND
+/// scrolling up. A fresh mount (e.g. tab switch via the shell's
+/// keyed subtree) replays it too. The scope listens to scroll
+/// notifications from the list it wraps and asks each item to
+/// re-check its visibility once per frame (coalesced). Items used
+/// without a scope keep the old mount-once behaviour.
+/// Reduce-motion: items appear immediately.
 class StaggeredScope extends StatefulWidget {
   const StaggeredScope({super.key, required this.child});
   final Widget child;
@@ -111,13 +329,38 @@ class StaggeredScope extends StatefulWidget {
 }
 
 class StaggeredScopeState extends State<StaggeredScope> {
-  final Set<int> _seen = {};
-  bool isSeen(int index) => _seen.contains(index);
-  void markSeen(int index) => _seen.add(index);
+  final Set<_StaggeredItemState> _items = {};
+  bool _checkScheduled = false;
+
+  void _register(_StaggeredItemState item) => _items.add(item);
+  void _unregister(_StaggeredItemState item) => _items.remove(item);
+
+  void _scheduleCheck() {
+    if (_checkScheduled) return;
+    _checkScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkScheduled = false;
+      if (!mounted) return;
+      for (final item in List<_StaggeredItemState>.of(_items)) {
+        item.checkVisibility();
+      }
+    });
+  }
+
+  bool _onScroll(ScrollNotification notification) {
+    _scheduleCheck();
+    return false;
+  }
 
   @override
   Widget build(BuildContext context) {
-    return _StaggeredInherited(state: this, child: widget.child);
+    return _StaggeredInherited(
+      state: this,
+      child: NotificationListener<ScrollNotification>(
+        onNotification: _onScroll,
+        child: widget.child,
+      ),
+    );
   }
 }
 
@@ -151,7 +394,8 @@ class _StaggeredItemState extends State<StaggeredItem>
   late final Animation<double> _progress;
   Timer? _timer;
   bool _immediate = false;
-  bool _played = false;
+  bool _visible = false;
+  StaggeredScopeState? _scope;
 
   @override
   void initState() {
@@ -166,25 +410,74 @@ class _StaggeredItemState extends State<StaggeredItem>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (_played) return;
-    _played = true;
     if (MediaQuery.disableAnimationsOf(context)) {
       _immediate = true;
       return;
     }
     final scope = StaggeredScope.maybeOf(context);
-    if (scope != null && scope.isSeen(widget.index)) {
-      _immediate = true;
+    if (scope != _scope) {
+      _scope?._unregister(this);
+      _scope = scope;
+      _scope?._register(this);
+    }
+    if (scope == null) {
+      // No scope above: keep the mount-once behaviour.
+      _play();
       return;
     }
-    scope?.markSeen(widget.index);
+    // First check after layout, so initially-visible items play
+    // with their stagger and off-screen items wait for their turn.
+    WidgetsBinding.instance.addPostFrameCallback((_) => checkVisibility());
+  }
+
+  /// Called by the scope after scrolls and on mount. Plays the
+  /// entrance when the item is in the viewport; resets it when it
+  /// leaves, so the next entry replays from the start.
+  void checkVisibility() {
+    if (!mounted || _immediate) return;
+    final renderObject = context.findRenderObject();
+    if (renderObject is! RenderBox || !renderObject.hasSize) return;
+    final itemTop = renderObject.localToGlobal(Offset.zero).dy;
+    final itemBottom = itemTop + renderObject.size.height;
+    final scrollable = Scrollable.of(context);
+    final viewportBox =
+        scrollable.context.findRenderObject() as RenderBox?;
+    double viewTop;
+    double viewBottom;
+    if (viewportBox != null && viewportBox.hasSize) {
+      viewTop = viewportBox.localToGlobal(Offset.zero).dy;
+      viewBottom = viewTop + viewportBox.size.height;
+    } else {
+      viewTop = 0;
+      viewBottom = MediaQuery.sizeOf(context).height;
+    }
+    final visible = itemBottom > viewTop && itemTop < viewBottom;
+    if (visible) {
+      _play();
+    } else {
+      _reset();
+    }
+  }
+
+  void _play() {
+    if (_visible) return;
+    _visible = true;
+    _timer?.cancel();
     _timer = Timer(StaggeredItem.delayFor(widget.index), () {
       if (mounted) _controller.forward();
     });
   }
 
+  void _reset() {
+    if (!_visible && _controller.value == 0) return;
+    _visible = false;
+    _timer?.cancel();
+    _controller.reset();
+  }
+
   @override
   void dispose() {
+    _scope?._unregister(this);
     _timer?.cancel();
     _controller.dispose();
     super.dispose();
@@ -206,6 +499,195 @@ class _StaggeredItemState extends State<StaggeredItem>
         );
       },
       child: widget.child,
+    );
+  }
+}
+
+/// Number that counts up to its target on entry (LONA's `.num`:
+/// 1100ms, ease-out cubic). Re-runs from zero when the target
+/// changes, so a live update counts again instead of jumping.
+class CountUpText extends StatefulWidget {
+  const CountUpText({
+    super.key,
+    required this.target,
+    this.format,
+    this.duration = const Duration(milliseconds: 1100),
+    this.style,
+  });
+
+  final num target;
+  final String Function(num value)? format;
+  final Duration duration;
+  final TextStyle? style;
+
+  @override
+  State<CountUpText> createState() => _CountUpTextState();
+}
+
+class _CountUpTextState extends State<CountUpText>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late Animation<double> _animation;
+  double _from = 0;
+  bool _started = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: widget.duration);
+    _animation = Tween<double>(begin: 0, end: widget.target.toDouble())
+        .animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic));
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Reduce-motion is read here, not in initState: initState may
+    // not touch inherited widgets (MediaQuery).
+    if (_started) return;
+    _started = true;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.value = 1;
+    } else {
+      _controller.forward();
+    }
+  }
+
+  @override
+  void didUpdateWidget(CountUpText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.target != oldWidget.target) {
+      _from = _animation.value;
+      _animation =
+          Tween<double>(begin: _from, end: widget.target.toDouble()).animate(
+        CurvedAnimation(parent: _controller, curve: Curves.easeOutCubic),
+      );
+      _controller
+        ..reset()
+        ..forward();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _animation,
+      builder: (context, _) {
+        final value = _animation.value;
+        final text = widget.format != null
+            ? widget.format!(value)
+            : (widget.target is int
+                ? value.toStringAsFixed(0)
+                : value.toStringAsFixed(1));
+        return Text(text, style: widget.style);
+      },
+    );
+  }
+}
+
+/// Horizontal bar that grows from zero to [fraction] on entry
+/// (LONA's `.barx`: 6px, gold gradient, 1s ease-out). Grows from
+/// the inline-start side, so it reads right-to-left in RTL.
+class GrowBar extends StatefulWidget {
+  const GrowBar({
+    super.key,
+    required this.fraction,
+    this.height = 6,
+    this.duration = const Duration(milliseconds: 1000),
+  });
+
+  final double fraction;
+  final double height;
+  final Duration duration;
+
+  @override
+  State<GrowBar> createState() => _GrowBarState();
+}
+
+class _GrowBarState extends State<GrowBar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late Animation<double> _animation;
+  bool _started = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(vsync: this, duration: widget.duration);
+    _animation = Tween<double>(begin: 0, end: widget.fraction.clamp(0.0, 1.0))
+        .animate(CurvedAnimation(parent: _controller, curve: Curves.easeOut));
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Reduce-motion is read here, not in initState: initState may
+    // not touch inherited widgets (MediaQuery).
+    if (_started) return;
+    _started = true;
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.value = 1;
+    } else {
+      _controller.forward();
+    }
+  }
+
+  @override
+  void didUpdateWidget(GrowBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.fraction != oldWidget.fraction) {
+      final from = _animation.value;
+      _animation = Tween<double>(
+        begin: from,
+        end: widget.fraction.clamp(0.0, 1.0),
+      ).animate(
+        CurvedAnimation(parent: _controller, curve: Curves.easeOut),
+      );
+      _controller
+        ..reset()
+        ..forward();
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = StoreGlass.of(context);
+    return AnimatedBuilder(
+      animation: _animation,
+      builder: (context, _) {
+        return Container(
+          height: widget.height,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(widget.height / 2),
+          ),
+          alignment: AlignmentDirectional.centerStart,
+          child: FractionallySizedBox(
+            widthFactor: _animation.value,
+            alignment: AlignmentDirectional.centerStart,
+            child: Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [tokens.accentSoft, tokens.accent],
+                ),
+                borderRadius: BorderRadius.circular(widget.height / 2),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -334,7 +816,8 @@ class _BinEatingDeleteButtonState extends State<BinEatingDeleteButton>
 
   @override
   Widget build(BuildContext context) {
-    const error = FlowPalette.danger;
+    final tokens = StoreGlass.of(context);
+    final error = tokens.danger;
     final chars = widget.label.characters.toList();
     final widths = _letterWidths(context);
     final rtl = Directionality.of(context) == TextDirection.rtl;
@@ -359,7 +842,7 @@ class _BinEatingDeleteButtonState extends State<BinEatingDeleteButton>
         height: 48,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: _showCheck ? FlowPalette.success : FlowPalette.dangerSoft,
+          color: _showCheck ? tokens.success : tokens.dangerSoft,
           borderRadius: BorderRadius.circular(_showCheck ? 24 : 12),
         ),
         child: _showCheck

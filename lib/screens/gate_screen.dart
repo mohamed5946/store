@@ -7,6 +7,7 @@ import 'package:pinput/pinput.dart';
 
 import '../core/diagnostics.dart';
 import '../theme/flow_theme.dart';
+import '../theme/store_design.dart';
 
 /// The invite code. Referenced by tests through this const only.
 const String kInviteCode = '037204';
@@ -61,35 +62,32 @@ class _GateScreenState extends State<GateScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final variant = FlowThemeControllerScope.maybeOf(context)?.variant ??
-        FlowThemeVariant.liquidGloss;
-    final isGloss = variant == FlowThemeVariant.liquidGloss;
-    final defaultFill =
-        isGloss ? FlowPalette.card : Colors.white.withValues(alpha: 0.08);
-    final defaultBorder =
-        isGloss ? FlowPalette.border : FlowPalette.borderLight;
-    final focusedShadow = isGloss
-        ? [
-            BoxShadow(
-              color: FlowPalette.cyan.withValues(alpha: 0.35),
-              blurRadius: 12,
-              spreadRadius: 1,
-            ),
-          ]
-        : null;
+    final tokens = StoreGlass.of(context);
+    final defaultFill = tokens.cardTop;
+    final defaultBorder = tokens.cardBorder;
+    final focusedShadow = [
+      BoxShadow(
+        color: tokens.accent.withValues(alpha: 0.35),
+        blurRadius: 12,
+        spreadRadius: 1,
+      ),
+    ];
     return FlowScaffold(
-      variant: variant,
+      variant: FlowThemeControllerScope.maybeOf(context)?.variant ??
+          FlowThemeVariant.liquidGloss,
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.storefront_rounded, size: 64, color: FlowPalette.cyan),
+              Icon(Icons.storefront_rounded,
+                  size: 64, color: tokens.accent),
               const SizedBox(height: 16),
               const Text('إدارة المتجر', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              const Text('اكتب كود الدعوة عشان تفتح البرنامج', style: TextStyle(color: FlowPalette.textSecondary)),
+              Text('اكتب كود الدعوة عشان تفتح البرنامج',
+                  style: TextStyle(color: tokens.textSecondary)),
               const SizedBox(height: 24),
               Directionality(
                 textDirection: TextDirection.ltr,
@@ -108,17 +106,17 @@ class _GateScreenState extends State<GateScreen> {
                     fill: defaultFill,
                   ),
                   focusedPinTheme: _box(
-                    border: FlowPalette.cyan,
+                    border: tokens.accent,
                     fill: defaultFill,
                     shadow: focusedShadow,
                   ),
                   submittedPinTheme: _box(
-                    border: FlowPalette.blue,
-                    fill: FlowPalette.blue.withValues(alpha: 0.15),
+                    border: tokens.accent,
+                    fill: tokens.accent.withValues(alpha: 0.15),
                   ),
                   errorPinTheme: _box(
-                    border: FlowPalette.danger,
-                    fill: FlowPalette.dangerSoft,
+                    border: tokens.danger,
+                    fill: tokens.dangerSoft,
                   ),
                   forceErrorState: _error != null,
                   onChanged: (_) {
@@ -131,7 +129,7 @@ class _GateScreenState extends State<GateScreen> {
                 const SizedBox(height: 12),
                 Text(
                   _error!,
-                  style: const TextStyle(color: FlowPalette.danger),
+                  style: TextStyle(color: tokens.danger),
                 ),
               ],
               const SizedBox(height: 16),

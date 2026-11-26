@@ -2,13 +2,15 @@ part of 'admin_shell.dart';
 
 Widget _loading() => flowLoading();
 
-Widget _streamError(Object error) => Center(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Text(
-          'تعذر تحميل البيانات: $error',
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: FlowPalette.danger),
+Widget _streamError(Object error) => Builder(
+      builder: (context) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'تعذر تحميل البيانات: $error',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: StoreGlass.of(context).danger),
+          ),
         ),
       ),
     );
@@ -30,7 +32,7 @@ void _snack(BuildContext context, String message, {bool error = false}) {
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
       content: Text(message),
-      backgroundColor: error ? FlowPalette.danger : null,
+      backgroundColor: error ? StoreGlass.of(context).danger : null,
     ),
   );
 }

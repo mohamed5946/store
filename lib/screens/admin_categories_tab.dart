@@ -31,7 +31,7 @@ class _CategoriesTabState extends State<_CategoriesTab> {
               ? const Center(child: Text('مفيش أقسام — ضيف أول قسم'))
               : StaggeredScope(
                   child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, StoreTokens.navPillClearance),
                     itemCount: docs.length,
                     itemBuilder: (context, i) {
                       final d = docs[i];
@@ -83,8 +83,8 @@ class _CategoriesTabState extends State<_CategoriesTab> {
                                       }
                                     }
                                   },
-                                  child: const Icon(Icons.delete_outline,
-                                      color: Colors.red),
+                                  child: Icon(Icons.delete_outline,
+                                      color: StoreGlass.of(context).danger),
                                 ),
                               ],
                             ),

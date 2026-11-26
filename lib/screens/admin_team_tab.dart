@@ -32,7 +32,7 @@ class _TeamTabState extends State<_TeamTab> {
               ? const Center(child: Text('مفيش أعضاء فريق لسه'))
               : StaggeredScope(
                   child: ListView.builder(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, StoreTokens.navPillClearance),
                     itemCount: docs.length,
                     itemBuilder: (context, i) {
                       final doc = docs[i];
@@ -86,8 +86,8 @@ class _TeamTabState extends State<_TeamTab> {
                                         }
                                       }
                                     },
-                                    child: const Icon(Icons.delete_outline,
-                                        color: Colors.red),
+                                    child: Icon(Icons.delete_outline,
+                                        color: StoreGlass.of(context).danger),
                                   ),
                           ),
                         ),
@@ -120,9 +120,9 @@ class _TeamTabState extends State<_TeamTab> {
                 decoration: const InputDecoration(labelText: 'كلمة السر'),
               ),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 'العضو هيدخل من موبايله باختيار "لدي حساب بالفعل" بالإيميل أو الرقم وكلمة السر دي.',
-                style: TextStyle(color: Colors.grey, fontSize: 13),
+                style: TextStyle(color: StoreGlass.of(c).textMuted, fontSize: 13),
               ),
             ],
           ),

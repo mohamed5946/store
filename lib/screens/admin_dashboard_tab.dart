@@ -9,7 +9,7 @@ class _DashboardTab extends StatelessWidget {
   Widget build(BuildContext context) {
     return StaggeredScope(
       child: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, StoreTokens.navPillClearance),
         children: [
           const StaggeredItem(index: 0, child: _DashboardKpis()),
           const SizedBox(height: 16),
@@ -115,11 +115,12 @@ class _DashboardKpis extends StatelessWidget {
                               children: [
                                 Expanded(
                                     child: _StatCard(
-                                        'الطلبات', '${stats.ordersCount}')),
+                                        'الطلبات', stats.ordersCount)),
                                 const SizedBox(width: 12),
                                 Expanded(
                                     child: _StatCard('الإيرادات',
-                                        '${stats.revenue.toStringAsFixed(0)} ج.م')),
+                                        stats.revenue,
+                                        suffix: ' ج.م')),
                               ],
                             ),
                             const SizedBox(height: 12),
@@ -127,11 +128,11 @@ class _DashboardKpis extends StatelessWidget {
                               children: [
                                 Expanded(
                                     child: _StatCard('الزيارات',
-                                        '${stats.visitsTotal}')),
+                                        stats.visitsTotal)),
                                 const SizedBox(width: 12),
                                 Expanded(
                                     child: _StatCard(
-                                        'زيارات اليوم', '${stats.visitsToday}')),
+                                        'زيارات اليوم', stats.visitsToday)),
                               ],
                             ),
                             const SizedBox(height: 12),
@@ -139,11 +140,12 @@ class _DashboardKpis extends StatelessWidget {
                               children: [
                                 Expanded(
                                     child: _StatCard('متوسط الوقت',
-                                        '${stats.avgVisitSeconds} ث')),
+                                        stats.avgVisitSeconds,
+                                        suffix: ' ث')),
                                 const SizedBox(width: 12),
                                 Expanded(
                                     child: _StatCard('طلبات متروكة',
-                                        '${stats.abandonedCount}')),
+                                        stats.abandonedCount)),
                               ],
                             ),
                             const SizedBox(height: 12),
@@ -151,11 +153,11 @@ class _DashboardKpis extends StatelessWidget {
                               children: [
                                 Expanded(
                                     child: _StatCard('المنتجات',
-                                        '${stats.productsCount}')),
+                                        stats.productsCount)),
                                 const SizedBox(width: 12),
                                 Expanded(
                                     child: _StatCard('الأقسام',
-                                        '${stats.categoriesCount}')),
+                                        stats.categoriesCount)),
                               ],
                             ),
                             const SizedBox(height: 16),
@@ -204,14 +206,27 @@ class _FunnelSection extends StatelessWidget {
           final steps = (data['steps'] as List<dynamic>? ?? []).map((e) => e.toString());
           funnelCounts[furthestStep(steps)] = (funnelCounts[furthestStep(steps)] ?? 0) + 1;
         }
+        final maxCount =
+            funnelCounts.values.fold<int>(1, (m, c) => c > m ? c : m);
         return Column(
           children: [
             for (final step in funnelOrder)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: _FlowRow(
-                  title: Text(_funnelLabel(step)),
-                  trailing: Text('${funnelCounts[step]}'),
+                child: FlowCard(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(child: Text(_funnelLabel(step))),
+                          Text('${funnelCounts[step]}'),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      GrowBar(fraction: funnelCounts[step]! / maxCount),
+                    ],
+                  ),
                 ),
               ),
           ],
@@ -284,18 +299,24 @@ String _funnelLabel(FunnelStep step) {
 }
 
 class _StatCard extends StatelessWidget {
-  const _StatCard(this.label, this.value);
+  const _StatCard(this.label, this.value, {this.suffix = ''});
   final String label;
-  final String value;
+  final num value;
+  final String suffix;
 
   @override
   Widget build(BuildContext context) {
+    final tokens = StoreGlass.of(context);
     return FlowCard(
       child: Column(
         children: [
-          Text(value, style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+          CountUpText(
+            target: value.toDouble(),
+            format: (v) => '${v.toStringAsFixed(0)}$suffix',
+            style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 4),
-          Text(label, style: const TextStyle(color: FlowPalette.textSecondary)),
+          Text(label, style: TextStyle(color: tokens.textSecondary)),
         ],
       ),
     );

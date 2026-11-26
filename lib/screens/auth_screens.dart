@@ -8,11 +8,14 @@ import '../core/diagnostics.dart';
 import '../core/identifier.dart';
 import '../services/backend.dart';
 import '../theme/flow_theme.dart';
+import '../theme/store_design.dart';
 import 'flow_signin_screen.dart';
 
 void _showError(BuildContext context, String message) {
   ScaffoldMessenger.of(context).showSnackBar(
-    SnackBar(content: Text(message), backgroundColor: FlowPalette.danger),
+    SnackBar(
+        content: Text(message),
+        backgroundColor: StoreGlass.of(context).danger),
   );
 }
 
@@ -29,6 +32,7 @@ class AccountChoiceScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final variant = FlowThemeControllerScope.maybeOf(context)?.variant ??
         FlowThemeVariant.liquidGloss;
+    final tokens = StoreGlassTokens.forVariant(variant);
     return FlowScaffold(
       variant: variant,
       body: Center(
@@ -37,14 +41,14 @@ class AccountChoiceScreen extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.storefront_rounded,
-                  size: 64, color: FlowPalette.cyan),
+              Icon(Icons.storefront_rounded,
+                  size: 64, color: tokens.accent),
               const SizedBox(height: 16),
               const Text('إدارة المتجر',
                   style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
-              const Text('اختر طريقة الدخول',
-                  style: TextStyle(color: FlowPalette.textSecondary)),
+              Text('اختر طريقة الدخول',
+                  style: TextStyle(color: tokens.textSecondary)),
               const SizedBox(height: 32),
               SizedBox(
                 width: double.infinity,
@@ -65,11 +69,11 @@ class AccountChoiceScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
-              const Text(
+              Text(
                 'إنشاء الحساب للأدمن بس — لو زميلك عمل لك حساب قبل كده، اختار "لدي حساب بالفعل" وادخل من موبايلك.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                    color: FlowPalette.textSecondary, fontSize: 13),
+                    color: tokens.textSecondary, fontSize: 13),
               ),
             ],
           ),
@@ -126,6 +130,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   Widget build(BuildContext context) {
     final variant = FlowThemeControllerScope.maybeOf(context)?.variant ??
         FlowThemeVariant.liquidGloss;
+    final tokens = StoreGlassTokens.forVariant(variant);
     return FlowScaffold(
       variant: variant,
       appBar: AppBar(
@@ -141,7 +146,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
             key: const Key('create-email'),
             controller: _email,
             keyboardType: TextInputType.emailAddress,
-            style: const TextStyle(color: Colors.white),
+            style: TextStyle(color: tokens.textPrimary),
             decoration: const InputDecoration(labelText: 'الإيميل'),
           ),
           const SizedBox(height: 12),
@@ -149,7 +154,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
             key: const Key('create-phone'),
             controller: _phone,
             keyboardType: TextInputType.phone,
-            style: const TextStyle(color: Colors.white),
+            style: TextStyle(color: tokens.textPrimary),
             decoration: const InputDecoration(
               labelText: 'رقم الموبايل',
               hintText: '01xxxxxxxxx',
@@ -160,7 +165,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
             key: const Key('create-password'),
             controller: _password,
             obscureText: true,
-            style: const TextStyle(color: Colors.white),
+            style: TextStyle(color: tokens.textPrimary),
             decoration: const InputDecoration(labelText: 'كلمة السر'),
           ),
           const SizedBox(height: 20),

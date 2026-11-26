@@ -14,10 +14,15 @@ import 'screens/auth_screens.dart';
 import 'screens/gate_screen.dart';
 import 'screens/splash_screen.dart';
 import 'services/backend.dart';
+import 'core/diagnostics.dart';
 import 'theme/flow_theme.dart';
+import 'theme/store_design.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Diagnostics first: the log must be loaded before anything logs
+  // into it (Backend.init logs the Firebase result).
+  await Diagnostics.instance.init();
   await Backend.instance.init();
   runApp(const StoreAdminApp());
 }
@@ -86,10 +91,11 @@ class _StoreAdminAppState extends State<StoreAdminApp> {
       return StSplashScreen(onDone: () => setState(() => _splashDone = true));
     }
     if (_gatePassed == null) {
-      return const Scaffold(
-        backgroundColor: FlowPalette.background,
+      return Scaffold(
+        backgroundColor: StoreGlassTokens.liquidGloss.base,
         body: Center(
-          child: CircularProgressIndicator(color: FlowPalette.cyan),
+          child: CircularProgressIndicator(
+              color: StoreGlassTokens.liquidGloss.accent),
         ),
       );
     }
@@ -97,16 +103,17 @@ class _StoreAdminAppState extends State<StoreAdminApp> {
       return GateScreen(onPassed: _passGate);
     }
     if (!Backend.instance.initialized) {
+      final tokens = StoreGlassTokens.liquidGloss;
       return Scaffold(
-        backgroundColor: FlowPalette.background,
+        backgroundColor: tokens.base,
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(24),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.cloud_off_outlined,
-                    size: 48, color: FlowPalette.danger),
+                Icon(Icons.cloud_off_outlined,
+                    size: 48, color: tokens.danger),
                 const SizedBox(height: 16),
                 const Text('تعذر الاتصال بقاعدة البيانات',
                     style: TextStyle(fontWeight: FontWeight.bold)),
@@ -114,8 +121,8 @@ class _StoreAdminAppState extends State<StoreAdminApp> {
                 Text(
                   Backend.instance.initError ?? 'خطأ غير معروف',
                   textAlign: TextAlign.center,
-                  style: const TextStyle(
-                      color: FlowPalette.textSecondary, fontSize: 13),
+                  style: TextStyle(
+                      color: tokens.textSecondary, fontSize: 13),
                 ),
                 const SizedBox(height: 16),
                 FlowButton(
@@ -135,10 +142,11 @@ class _StoreAdminAppState extends State<StoreAdminApp> {
       stream: Backend.instance.auth.authStateChanges(),
       builder: (context, snap) {
         if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            backgroundColor: FlowPalette.background,
+          return Scaffold(
+            backgroundColor: StoreGlassTokens.liquidGloss.base,
             body: Center(
-              child: CircularProgressIndicator(color: FlowPalette.cyan),
+              child: CircularProgressIndicator(
+                  color: StoreGlassTokens.liquidGloss.accent),
             ),
           );
         }

@@ -23,7 +23,7 @@ class _OrdersTab extends StatelessWidget {
         if (docs.isEmpty) return const Center(child: Text('مفيش طلبات لسه'));
         return StaggeredScope(
           child: ListView.builder(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, StoreTokens.navPillClearance),
             itemCount: docs.length,
             itemBuilder: (context, i) {
               final d = docs[i];

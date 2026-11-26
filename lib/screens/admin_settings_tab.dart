@@ -51,6 +51,10 @@ class _SettingsTabState extends State<_SettingsTab> {
   String _savedHeroAccent = '';
   String _savedHeroSubtitle = '';
 
+  // Diagnostics viewer: how many entries are shown (30 at a time;
+  // "show more" adds another 30). Reset when the log is cleared.
+  int _diagnosticsShown = 30;
+
   @override
   void initState() {
     super.initState();
@@ -61,9 +65,10 @@ class _SettingsTabState extends State<_SettingsTab> {
 
   @override
   Widget build(BuildContext context) {
+    final tokens = StoreGlass.of(context);
     return StaggeredScope(
       child: ListView(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, StoreTokens.navPillClearance),
         children: [
           if (widget.themeController != null) ...[
             const StaggeredItem(
@@ -80,12 +85,12 @@ class _SettingsTabState extends State<_SettingsTab> {
                         key: Key('theme-${v.prefsValue}'),
                         title: Text(v.label),
                         subtitle: Text(v == FlowThemeVariant.liquidGloss
-                            ? 'لمعان سائل أعمق'
-                            : 'زجاج هادي فوق تدرّج'),
+                            ? 'زجاج سائل كامل — لمعان وحركة'
+                            : 'زجاج هادي — نفس الألوان من غير حركة'),
                         trailing: widget.themeController!.variant == v
-                            ? const Icon(Icons.check_circle, color: FlowPalette.cyan)
-                            : const Icon(Icons.circle_outlined,
-                                color: FlowPalette.textMuted),
+                            ? Icon(Icons.check_circle, color: tokens.accent)
+                            : Icon(Icons.circle_outlined,
+                                color: tokens.textMuted),
                         onTap: () => widget.themeController!.setVariant(v),
                       ),
                   ],
@@ -247,9 +252,9 @@ class _SettingsTabState extends State<_SettingsTab> {
             },
           ),
         ),
-        const Text(
+        Text(
           'التصدير بيشتغل من التطبيق مباشرة (ملف JSON) — تصدير Firestore المُدار لسلة تخزين محتاج Blaze ومش طريق v1.',
-          style: TextStyle(color: Colors.grey, fontSize: 13),
+          style: TextStyle(color: tokens.textMuted, fontSize: 13),
         ),
         const SizedBox(height: 12),
         // v1.1.2: Updates row, exactly like the sibling rows.
@@ -261,9 +266,40 @@ class _SettingsTabState extends State<_SettingsTab> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text('سجل التشخيص', style: TextStyle(fontWeight: FontWeight.bold)),
-              TextButton(
-                onPressed: () => Diagnostics.instance.clear(),
-                child: const Text('مسح'),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton(
+                    onPressed: () async {
+                      try {
+                        final dir = await getTemporaryDirectory();
+                        final stamp = DateTime.now()
+                            .toIso8601String()
+                            .replaceAll(':', '-');
+                        final file =
+                            File('${dir.path}/store-diagnostics-$stamp.txt');
+                        await file.writeAsString(
+                            Diagnostics.instance.exportText());
+                        await SharePlus.instance.share(ShareParams(
+                          files: [XFile(file.path)],
+                          text: 'سجل تشخيص إدارة المتجر',
+                        ));
+                      } catch (e) {
+                        if (context.mounted) {
+                          _snack(context, e.toString(), error: true);
+                        }
+                      }
+                    },
+                    child: const Text('تصدير'),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      Diagnostics.instance.clear();
+                      setState(() => _diagnosticsShown = 30);
+                    },
+                    child: const Text('مسح'),
+                  ),
+                ],
               ),
             ],
           ),
@@ -272,16 +308,28 @@ class _SettingsTabState extends State<_SettingsTab> {
           valueListenable: Diagnostics.instance.entries,
           builder: (context, entries, _) {
             if (entries.isEmpty) return const Text('مفيش أحداث لسه');
+            final shown = entries.take(_diagnosticsShown).toList();
+            final remaining = entries.length - shown.length;
             return Column(
-              children: entries.take(30).map((e) => Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: _FlowRow(title: Text(e.toString())),
-                  )).toList(),
+              children: [
+                ...shown.map((e) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: _FlowRow(title: Text(e.toString())),
+                    )),
+                if (remaining > 0)
+                  TextButton(
+                    onPressed: () => setState(
+                        () => _diagnosticsShown += 30),
+                    child: Text('عرض المزيد ($remaining متبقية)'),
+                  ),
+              ],
             );
           },
         ),
         const Divider(height: 32),
-        if (_version.isNotEmpty) Text('نسخة البرنامج: $_version', style: const TextStyle(color: Colors.grey)),
+        if (_version.isNotEmpty)
+          Text('نسخة البرنامج: $_version',
+              style: TextStyle(color: tokens.textMuted)),
         const SizedBox(height: 12),
         StaggeredItem(
           index: 9,
@@ -453,8 +501,8 @@ class _SettingsTabState extends State<_SettingsTab> {
                     ),
                     const SizedBox(height: 8),
                     if (_heroIds.isEmpty)
-                      const Text('مفيش منتجات في الواجهة لسه',
-                          style: TextStyle(color: Colors.grey)),
+                      Text('مفيش منتجات في الواجهة لسه',
+                          style: TextStyle(color: StoreGlass.of(context).textMuted)),
                     for (var k = 0; k < _heroIds.length; k++)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
@@ -487,16 +535,16 @@ class _SettingsTabState extends State<_SettingsTab> {
                               Pressable(
                                 onTap: () => setState(
                                     () => _heroIds.removeAt(k)),
-                                child: const Icon(Icons.delete_outline,
-                                    color: Colors.red, size: 20),
+                                child: Icon(Icons.delete_outline,
+                                    color: StoreGlass.of(context).danger, size: 20),
                               ),
                             ],
                           ),
                         ),
                       ),
                     if (_heroIds.length >= maxHeroProducts)
-                      const Text('وصلت للحد الأقصى (4 منتجات)',
-                          style: TextStyle(color: Colors.grey, fontSize: 13))
+                      Text('وصلت للحد الأقصى (4 منتجات)',
+                          style: TextStyle(color: StoreGlass.of(context).textMuted, fontSize: 13))
                     else if (addable.isNotEmpty)
                       Row(
                         children: [
@@ -565,8 +613,8 @@ class _SettingsTabState extends State<_SettingsTab> {
                       ],
                     ),
                     if (_banners.isEmpty)
-                      const Text('مفيش بانرات لسه',
-                          style: TextStyle(color: Colors.grey)),
+                      Text('مفيش بانرات لسه',
+                          style: TextStyle(color: StoreGlass.of(context).textMuted)),
                     for (var k = 0; k < _banners.length; k++)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
@@ -617,8 +665,8 @@ class _SettingsTabState extends State<_SettingsTab> {
                                     setState(() => _banners.removeAt(k));
                                   }
                                 },
-                                child: const Icon(Icons.delete_outline,
-                                    color: Colors.red),
+                                child: Icon(Icons.delete_outline,
+                                    color: StoreGlass.of(context).danger),
                               ),
                             ],
                           ),
@@ -715,8 +763,8 @@ class _SettingsTabState extends State<_SettingsTab> {
                           Pressable(
                             onTap: () =>
                                 setState(() => _deliveryImage = ''),
-                            child: const Icon(Icons.delete_outline,
-                                color: Colors.red),
+                            child: Icon(Icons.delete_outline,
+                                color: StoreGlass.of(context).danger),
                           ),
                         ],
                       ],
@@ -886,7 +934,7 @@ class _SettingsTabState extends State<_SettingsTab> {
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: Text(errorText,
-                          style: const TextStyle(color: Colors.red)),
+                          style: TextStyle(color: StoreGlass.of(c).danger)),
                     ),
                   const SizedBox(height: 8),
                   TextField(
