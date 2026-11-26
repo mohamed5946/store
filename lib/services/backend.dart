@@ -318,7 +318,12 @@ class Backend {
   // below call these so the client logic can never drift from the
   // tested shapes.
 
-  static const int maxProductsPerOrder = 10;
+  // Cap is 7 lines (coordinator fix 2026-11-26): the rules allow
+  // 10 get()/getAfter() calls per operation, and the order-create
+  // rule costs N+3 for a manual order, so an 8-line manual order
+  // with a code is denied by the platform (7 lines = 10 calls,
+  // the safe max). Same cap in the storefront + PC.
+  static const int maxProductsPerOrder = 7;
   static const int maxQtyPerLine = 20;
 
   /// 24h reservation TTL (contract §5). A 'new' order older than
@@ -365,7 +370,7 @@ class Backend {
     if (items.isEmpty) return 'اختار منتج واحد على الأقل';
     final merged = dedupeManualItems(items);
     if (merged.length > maxProductsPerOrder) {
-      return 'الطلب فيه منتجات أكتر من الحد المسموح (10)';
+      return 'الطلب فيه منتجات أكتر من الحد المسموح (7)';
     }
     for (final line in merged) {
       final qty = ((line['qty'] ?? 0) as num).toInt();

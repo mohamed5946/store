@@ -59,10 +59,16 @@ void main() {
       ]), isNull);
     });
 
-    test('more than 10 distinct products fails', () {
+    test('more than 7 distinct products fails', () {
       final items = List.generate(
-          11, (i) => {'productId': 'p$i', 'qty': 1});
+          8, (i) => {'productId': 'p$i', 'qty': 1});
       expect(validate(items: items), isNotNull);
+    });
+
+    test('7 distinct products passes', () {
+      final items = List.generate(
+          7, (i) => {'productId': 'p$i', 'qty': 1});
+      expect(validate(items: items), isNull);
     });
 
     test('duplicate lines are deduped before the distinct count', () {
