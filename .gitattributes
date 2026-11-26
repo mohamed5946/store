@@ -1,0 +1,5 @@
+# The Windows installer (130 MB) exceeds GitHub's 100 MB per-file
+# push limit, so it is stored in Git LFS. The APK (59 MB) is a
+# normal git object — keeping it out of LFS avoids burning LFS
+# bandwidth on every deploy.
+storefront/updates/*.exe filter=lfs diff=lfs merge=lfs -text

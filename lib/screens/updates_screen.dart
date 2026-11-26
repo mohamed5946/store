@@ -751,7 +751,7 @@ class _SoftwareUpdateScreenState extends State<SoftwareUpdateScreen> {
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 16),
                 child: Text(
-                  'التحديث بيتم من إصدار GitHub الرسمي للمتجر، والملف بيتم التحقق منه قبل التثبيت.',
+                  'التحديث بيتم من خادم المتجر الرسمي، والملف بيتم التحقق منه قبل التثبيت.',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 13, color: _iosGrayText),
                 ),

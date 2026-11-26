@@ -122,7 +122,7 @@ jobs:
               'versionCode': int(code),
               'versionName': name,
               'changelog': subject,
-              'apkUrl': 'https://github.com/mohamed5946/store/releases/download/latest/app-release.apk',
+              'apkUrl': 'https://store-3384c.web.app/updates/app-release.apk',
               'apkSha256': sha,
               'apkSizeBytes': size,
           }

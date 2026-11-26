@@ -36,6 +36,12 @@ jobs:
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
+        with:
+          # LFS: this job also deploys hosting (rules + hosting), so
+          # it must fetch the real EXE under storefront/updates/ —
+          # without this it would publish the LFS pointer file as
+          # the installer and corrupt the hosted download.
+          lfs: true
 
       - name: Authenticate to Google Cloud (WIF)
         uses: google-github-actions/auth@v2
