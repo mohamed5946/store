@@ -1,3 +1,62 @@
+// Store Admin — Firestore Security Rules (Technical Plan v1.4 §5).
+//
+// The Cloud Functions backend is the only trusted writer of orders,
+// stock, and discounts. These rules are the second line of defense:
+// they deny anonymous order creation and anonymous reads where they
+// must not happen, validate admin writes, and enforce the audit trail
+// for admin mutations via getAfter() + operationId (v1.2 §11).
+//
+// HOW THE AUDIT ENFORCEMENT WORKS
+// - Every admin mutation is a batched write (or a client transaction)
+//   that includes its audit entry: /audit/{operationId}, where
+//   operationId is a fresh UUID the app generates per operation.
+// - The changed document(s) carry the same operationId as a metadata
+//   field (stamped by the app alongside updatedAt), so the rule can
+//   find the audit entry: getAfter(audit/{operationId}).
+// - The audit entry carries a `docIds` index map:
+//     docIds: { '<collection>/<docId>': [changedFields...] }
+//   The rule checks that the audit entry exists in this batch, its
+//   actor == request.auth.uid, its timestamp == request.time, and its
+//   docIds entry for this document COVERS every field this write
+//   actually changed (affectedKeys). Coverage (not exact equality):
+//   the app writes full documents, so a save may list fields whose
+//   values did not change — the attack the rule must stop is an
+//   OMISSION (a changed field missing from the audit), and coverage
+//   denies exactly that (T20). A reused operationId fails the
+//   timestamp check, and the audit create fails because the document
+//   already exists (T20).
+// - The audit entry also carries a `newValuesByDoc` map (same keys as
+//   docIds): { '<collection>/<docId>': {field: newValue...} }. The
+//   rule checks that every CHANGED SENSITIVE field (price, stock,
+//   reserved, status, paymentStatus, inStock, percent) is recorded
+//   there with the value actually written (T20: a fake audit that
+//   lists the field but records a wrong new value is denied). A flat
+//   newValues map cannot hold two different values for the same field
+//   when one operation touches several documents, so the per-doc map
+//   is the checkable one; the flat `newValues` stays as the human
+//   summary of the operation's main values.
+// - Deletes carry no resource data, so the rule cannot read an
+//   operationId from the write. Delete audit entries use the
+//   deterministic id `del_<collection>_<docId>`; the timestamp check
+//   prevents reusing a stale entry, and a second delete of the same
+//   doc id fails the audit create (safe failure — auto-ids make
+//   re-creation with the same id effectively impossible).
+// - The `operationId`/`updatedAt` metadata fields are ignored by
+//   readers (the storefront reads only its contract fields).
+//
+// ACCESS-CALL BUDGET (v1.2 §11): each admin write's rules use 1 get()
+// (the admin role — cached across the batch) + 1 getAfter() per changed
+// document (the audit entry — cached per document) + cross-check
+// getAfter()s where applicable. The apps cap admin batches at 10 pairs
+// (20 documents) — well within the 20-call limit per atomic operation.
+//
+// inStock CROSS-CHECKS (v1.4 §6.3): whenever inventory.stock or
+// inventory.reserved changes, products.inStock is updated in the same
+// atomic operation. The rules enforce it via getAfter() cross-checks —
+// but only once the product HAS an inventory document and an inStock
+// field (the pre-migration window: products without inventory skip the
+// check, so the admin app keeps working until the migration runs).
+
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -7,38 +66,305 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'admin';
     }
 
-    // Public storefront content: anyone can read, only admins write.
+    function isAdminOrManager() {
+      return request.auth != null
+        && get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role in ['admin', 'manager'];
+    }
+
+    /* The audit entry as projected after this request, or null when the
+     * batch contains no such entry. */
+    function auditAfter(opId) {
+      return getAfter(/databases/$(database)/documents/audit/$(opId));
+    }
+
+    /* True when every key in `changed` is listed in the audit entry's
+     * docIds entry for this document (subset coverage — see header). */
+    function covers(changed, auditList) {
+      return auditList != null
+        && changed.intersection(auditList.toSet()).size() == changed.size();
+    }
+
+    /* True when this batch contains a valid audit entry for the change
+     * to (collection, docId) with exactly `changed` keys changed:
+     * actor + timestamp + the docIds index entry covering the change +
+     * the per-document new values matching the written values for
+     * every changed SENSITIVE field (T20: a fake audit that lists the
+     * field but records a wrong new value is denied). The per-doc
+     * values live in `newValuesByDoc` (keyed '<collection>/<docId>'):
+     * a flat newValues map cannot hold two different values for the
+     * same field when one operation touches several documents. */
+    function hasAudit(opId, collection, docId, changed) {
+      let entry = auditAfter(opId);
+      return opId != null
+        && entry != null
+        && entry.data.actor == request.auth.uid
+        && entry.data.timestamp == request.time
+        && entry.data.docIds != null
+        && covers(changed, entry.data.docIds[collection + '/' + docId])
+        && sensitiveValuesOk(changed, entry, collection, docId);
+    }
+
+    /* Sensitive fields whose new value the audit entry must record
+     * correctly (price, stock, reserved, status, paymentStatus,
+     * inStock, percent). A changed sensitive field with a missing or
+     * wrong recorded value denies the write. */
+    function sensitiveValuesOk(changed, entry, collection, docId) {
+      let recorded = entry.data.newValuesByDoc != null
+        ? entry.data.newValuesByDoc[collection + '/' + docId]
+        : null;
+      return (!changed.hasAny(['price']) || (recorded != null && recorded.price == request.resource.data.price))
+        && (!changed.hasAny(['stock']) || (recorded != null && recorded.stock == request.resource.data.stock))
+        && (!changed.hasAny(['reserved']) || (recorded != null && recorded.reserved == request.resource.data.reserved))
+        && (!changed.hasAny(['status']) || (recorded != null && recorded.status == request.resource.data.status))
+        && (!changed.hasAny(['paymentStatus']) || (recorded != null && recorded.paymentStatus == request.resource.data.paymentStatus))
+        && (!changed.hasAny(['inStock']) || (recorded != null && recorded.inStock == request.resource.data.inStock))
+        && (!changed.hasAny(['percent']) || (recorded != null && recorded.percent == request.resource.data.percent));
+    }
+
+    /* Changed keys for an update (diff against the stored doc). */
+    function changedUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+    /* Changed keys for a create (every key of the new doc). */
+    function changedCreate() {
+      return request.resource.data.keys().toSet();
+    }
+
+    /* Delete audit id (deterministic — see header). */
+    function deleteAuditId(collection, docId) {
+      return 'del_' + collection + '_' + docId;
+    }
+    function hasDeleteAudit(collection, docId) {
+      let entry = auditAfter(deleteAuditId(collection, docId));
+      return entry != null
+        && entry.data.actor == request.auth.uid
+        && entry.data.timestamp == request.time
+        && entry.data.operation == 'delete'
+        && entry.data.collection == collection
+        && entry.data.docId == docId;
+    }
+
+    /* inStock must match the projected inventory (v1.4 §6.3). Skipped
+     * while the product has no inventory document or no inStock field
+     * (the pre-migration window). */
+    function productsInStockOk(productId) {
+      let inv = getAfter(/databases/$(database)/documents/inventory/$(productId));
+      if (inv == null) return true;
+      if (!('inStock' in request.resource.data)) return true;
+      return request.resource.data.inStock
+        == ((inv.data.stock - inv.data.reserved) > 0);
+    }
+    function inventoryInStockOk(productId) {
+      let prod = getAfter(/databases/$(database)/documents/products/$(productId));
+      if (prod == null) return true;
+      if (!('inStock' in prod.data)) return true;
+      return prod.data.inStock
+        == ((request.resource.data.stock - request.resource.data.reserved) > 0);
+    }
+
+    /* The unified order state machine (v1.4 Decision 23). */
+    function orderTransitionOk() {
+      let from = resource.data.status;
+      let to = request.resource.data.status;
+      if (from == to) return true;
+      return (from == 'new' && to in ['accepted', 'cancelled', 'expired'])
+        || (from == 'accepted' && to in ['preparing', 'cancelled'])
+        || (from == 'preparing' && to in ['ready', 'cancelled'])
+        || (from == 'ready' && to in ['in_transit', 'cancelled'])
+        || (from == 'in_transit' && to == 'delivered');
+    }
+
+    /* The feedback state machine (v1.4 §8.3). */
+    function feedbackTransitionOk() {
+      let from = resource.data.status;
+      let to = request.resource.data.status;
+      if (from == to) return true;
+      return (from == 'new' && to in ['in_review', 'rejected', 'spam'])
+        || (from == 'in_review' && to in ['awaiting_customer', 'resolved', 'rejected', 'spam'])
+        || (from == 'awaiting_customer' && to in ['resolved', 'in_review'])
+        || (from == 'resolved' && to == 'closed');
+    }
+
+    // ---- Public storefront content ----
     match /storeSettings/{doc} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow create: if isAdmin()
+        && hasAudit(request.resource.data.operationId, 'storeSettings', doc, changedCreate())
+        && (!('templateId' in request.resource.data)
+          || getAfter(/databases/$(database)/documents/templates/$(request.resource.data.templateId)).data.status == 'active');
+      allow update: if isAdmin()
+        && hasAudit(request.resource.data.operationId, 'storeSettings', doc, changedUpdate())
+        && (!('templateId' in request.resource.data)
+          || getAfter(/databases/$(database)/documents/templates/$(request.resource.data.templateId)).data.status == 'active');
+      allow delete: if isAdmin() && hasDeleteAudit('storeSettings', doc);
     }
+
     match /categories/{doc} {
       allow read: if true;
-      allow create, update, delete: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && hasAudit(request.resource.data.operationId, 'categories', doc, changedCreate());
+      allow update: if isAdmin()
+        && (!('name' in request.resource.data)
+          || (request.resource.data.name is string && request.resource.data.name.size() > 0))
+        && hasAudit(request.resource.data.operationId, 'categories', doc, changedUpdate());
+      allow delete: if isAdmin() && hasDeleteAudit('categories', doc);
     }
+
     match /products/{doc} {
       allow read: if true;
-      allow create, update, delete: if isAdmin();
+      allow create: if isAdminOrManager()
+        && request.resource.data.price is int
+        && request.resource.data.price > 0
+        && productsInStockOk(doc)
+        && hasAudit(request.resource.data.operationId, 'products', doc, changedCreate());
+      allow update: if isAdminOrManager()
+        && (!('price' in request.resource.data)
+          || (request.resource.data.price is int && request.resource.data.price > 0))
+        && productsInStockOk(doc)
+        && hasAudit(request.resource.data.operationId, 'products', doc, changedUpdate());
+      allow delete: if isAdminOrManager() && hasDeleteAudit('products', doc);
     }
 
-    // Orders: anyone can CREATE an order (COD checkout); only admins read
-    // or change status. Customers cannot read each other's orders.
+    // ---- Orders: created ONLY by the functions (Admin SDK bypasses
+    // rules). Anonymous create is denied; anonymous read is denied. ----
     match /orders/{doc} {
-      allow create: if true;
-      allow read, update, delete: if isAdmin();
+      allow create: if false;
+      allow read: if isAdminOrManager();
+      allow update: if isAdminOrManager()
+        && orderTransitionOk()
+        && (!('status' in request.resource.data)
+          || request.resource.data.status in ['new', 'accepted', 'preparing', 'ready', 'in_transit', 'delivered', 'cancelled', 'expired'])
+        && (!('paymentStatus' in request.resource.data)
+          || request.resource.data.paymentStatus in ['cod_pending', 'cod_paid', 'cod_refused', 'cod_failed'])
+        && hasAudit(request.resource.data.operationId, 'orders', doc, changedUpdate());
+      allow delete: if isAdmin() && hasDeleteAudit('orders', doc);
     }
 
-    // Admin profiles: an admin can read/write; any signed-in user may
-    // CREATE their own profile doc (bootstrap: the first admin has no
-    // profile yet, so isAdmin() cannot be true for them at that moment).
+    // ---- Inventory: admin/manager only, never anonymous. ----
+    match /inventory/{doc} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.stock is int && request.resource.data.stock >= 0
+        && request.resource.data.reserved is int && request.resource.data.reserved >= 0
+        && inventoryInStockOk(doc)
+        && hasAudit(request.resource.data.operationId, 'inventory', doc, changedCreate());
+      allow update: if isAdminOrManager()
+        && (!('stock' in request.resource.data)
+          || (request.resource.data.stock is int && request.resource.data.stock >= 0))
+        && (!('reserved' in request.resource.data)
+          || (request.resource.data.reserved is int && request.resource.data.reserved >= 0))
+        && inventoryInStockOk(doc)
+        && hasAudit(request.resource.data.operationId, 'inventory', doc, changedUpdate());
+      allow delete: if isAdminOrManager() && hasDeleteAudit('inventory', doc);
+    }
+
+    // ---- Stock movements: append-only, written inside audited ops. ----
+    match /movements/{doc} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager();
+      allow update, delete: if false;
+    }
+
+    // ---- Discount codes: admin only, never anonymous. ----
+    match /discounts/{code} {
+      allow read: if isAdmin();
+      allow create: if isAdmin()
+        && request.resource.data.percent is int
+        && request.resource.data.percent >= 1
+        && request.resource.data.percent <= 100
+        && hasAudit(request.resource.data.operationId, 'discounts', code, changedCreate());
+      allow update: if isAdmin()
+        && (!('percent' in request.resource.data)
+          || (request.resource.data.percent is int
+            && request.resource.data.percent >= 1
+            && request.resource.data.percent <= 100))
+        && hasAudit(request.resource.data.operationId, 'discounts', code, changedUpdate());
+      allow delete: if isAdmin() && hasDeleteAudit('discounts', code);
+    }
+
+    // ---- Template registry (Phase 3): public reads only the ACTIVE
+    // template's schema, via the pointer — never a list. ----
+    match /templates/{doc} {
+      allow get: if isAdminOrManager()
+        || get(/databases/$(database)/documents/storeSettings/activeTemplate).data.templateId == doc;
+      allow list: if isAdminOrManager();
+      allow create: if isAdmin()
+        && hasAudit(request.resource.data.operationId, 'templates', doc, changedCreate());
+      allow update: if isAdmin()
+        && hasAudit(request.resource.data.operationId, 'templates', doc, changedUpdate());
+      allow delete: if isAdmin() && hasDeleteAudit('templates', doc);
+    }
+
+    match /shippingCompanies/{doc} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdmin()
+        && hasAudit(request.resource.data.operationId, 'shippingCompanies', doc, changedCreate());
+      allow update: if isAdmin()
+        && hasAudit(request.resource.data.operationId, 'shippingCompanies', doc, changedUpdate());
+      allow delete: if isAdmin() && hasDeleteAudit('shippingCompanies', doc);
+    }
+
+    // ---- Audit log: append-only, create-only. The entry's own rule
+    // checks actor + operationId == doc id + timestamp; the per-doc
+    // rules above check the entry covers their change. ----
+    match /audit/{operationId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager()
+        && request.resource.data.actor == request.auth.uid
+        && request.resource.data.operationId == operationId
+        && request.resource.data.timestamp == request.time
+        && request.resource.data.docIds is map
+        && request.resource.data.docIds.size() > 0
+        && request.resource.data.newValuesByDoc is map;
+      allow update, delete: if false;
+    }
+
+    // ---- Rate limits: functions only. No client access at all. ----
+    match /rateLimits/{doc} {
+      allow read, write: if false;
+    }
+
+    // ---- Feedback: created ONLY by submitFeedback (Admin SDK).
+    // Admin updates are audited; the state machine is enforced;
+    // 'urgent' priority is admin-only; never hard-deleted. ----
+    match /feedback/{doc} {
+      allow read: if isAdminOrManager();
+      allow create: if false;
+      allow update: if isAdminOrManager()
+        && feedbackTransitionOk()
+        && (!('priority' in request.resource.data)
+          || request.resource.data.priority in ['low', 'medium', 'high', 'urgent'])
+        && (request.resource.data.priority != 'urgent' || isAdmin())
+        && hasAudit(request.resource.data.operationId, 'feedback', doc, changedUpdate());
+      allow delete: if false;
+    }
+
+    match /feedback/{doc}/replies/{replyId} {
+      allow read: if isAdminOrManager();
+      allow create: if isAdminOrManager();
+      allow update, delete: if false;
+    }
+
+    // ---- Spam blocks: functions + admin apps write; nobody reads. ----
+    match /feedbackBlocks/{doc} {
+      allow read: if false;
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    // ---- Admin profiles: self-create (bootstrap) + admin manage.
+    // A manager reads their own doc (for the permission check). ----
     match /admins/{uid} {
       allow create: if request.auth != null && request.auth.uid == uid;
-      allow read, update, delete: if isAdmin();
+      allow get: if request.auth != null && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow update, delete: if isAdmin();
     }
 
-    // Phone lookups: get-only by anyone (needed for phone sign-in
-    // resolution); listing all lookups is never allowed. Creation is
-    // allowed for admins, plus self-creation for the bootstrap case.
+    // ---- Phone lookups: get-only by anyone (phone sign-in
+    // resolution); listing all lookups is never allowed. ----
     match /phones/{key} {
       allow get: if true;
       allow list: if false;
@@ -47,13 +373,20 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
-    // Analytics: public create + update (the storefront writes its own
-    // session doc and refreshes its duration with a heartbeat — anonymous
-    // ids are random, so one visitor cannot guess another's); reads and
-    // deletes are admin-only.
+    // ---- Analytics: public create + update (anonymous funnel);
+    // reads and deletes are admin-only. (Decision 19 — the contact
+    // stored in attempts — is still open; no change here.) ----
     match /analytics/{section}/items/{doc} {
       allow create, update: if true;
-      allow read, delete: if isAdmin();
+      allow read, delete: if isAdminOrManager();
+    }
+
+    // ---- Health: written by the scheduled export + Store Manager
+    // health check (admin); read by admins. ----
+    match /health/{doc} {
+      allow read: if isAdminOrManager();
+      allow create, update: if isAdminOrManager();
+      allow delete: if false;
     }
   }
 }

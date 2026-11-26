@@ -1,0 +1,1 @@
+{"dependencies":{"firebase-admin":"^13.0.0","firebase-functions":"^6.0.0"},"description":"Store Admin Cloud Functions — the trusted backend for orders, stock, discounts, and feedback (Technical Plan v1.4).","engines":{"node":"20"},"main":"index.js","name":"functions","scripts":{"test":"node --test test/orders.test.js test/discounts.test.js test/audit.test.js"}}

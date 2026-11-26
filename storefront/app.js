@@ -48,9 +48,14 @@ import {
   getFirestore, collection, query, orderBy, getDocs, doc, getDoc,
   setDoc, updateDoc, serverTimestamp, arrayUnion,
 } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import {
+  getFunctions, httpsCallable,
+} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js';
 
 const app = initializeApp(window.STORE_FIREBASE_CONFIG);
 const db = getFirestore(app);
+const functions = getFunctions(app); /* us-central1 (default) */
+const placeOrderCallable = httpsCallable(functions, 'placeOrder');
 
 /* ---------- anonymous session + funnel ---------- */
 let sessionId = localStorage.getItem('store_session_id');
@@ -91,6 +96,13 @@ function newClientOrderId() {
 }
 let ordering = false;
 let theme = localStorage.getItem('sp-theme') || 'light';
+/* Discount code typed in the review step (sent to the placeOrder
+ * callable; the function validates and consumes it server-side). */
+let discountCode = '';
+/* True when the catalog load failed at boot — renderProducts shows an
+ * error UI with a retry instead of an empty grid (the silent catches
+ * used to swallow this with zero signal). */
+let bootFailed = false;
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -235,6 +247,16 @@ function visibleProducts() {
     (searchQuery === '' || (p.name || '').toLowerCase().includes(searchQuery)));
 }
 function renderProducts() {
+  if (bootFailed) {
+    $('#productsGrid').innerHTML = `
+      <div class="glass" style="grid-column:1/-1;text-align:center;padding:32px 16px">
+        <h3>تعذر تحميل المنتجات</h3>
+        <p style="color:var(--text-soft)">مفيش اتصال بقاعدة البيانات — اتأكد من الإنترنت وحاول تاني.</p>
+        <button class="btn btn-primary" id="bootRetry">حاول تاني</button>
+      </div>`;
+    $('#bootRetry').addEventListener('click', () => { bootFailed = false; boot(); });
+    return;
+  }
   $('#productsGrid').innerHTML = visibleProducts().map(productCard).join('');
   observeReveals();
 }
@@ -481,54 +503,76 @@ function showInfoForm(err = '') {
     showReview({ name, phone, addr });
   });
 }
-function showReview(customer) {
+/* Review step. `notice` is shown when the function rejected the previous
+ * confirm (price/total changed, bad code) — the customer re-confirms
+ * with the same clientOrderId, never a new one. */
+function showReview(customer, notice = '') {
   const lines = cartLines();
   openModal(`
     <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
     <h2>مراجعة الطلب</h2>
+    ${notice ? `<p class="form-err">${esc(notice)}</p>` : ''}
     <div class="review-box">
       <p><strong>${esc(customer.name)}</strong> — ${esc(customer.phone)}</p>
       <p>${esc(customer.addr)}</p>
     </div>
     ${lines.map((l) => `<div class="cart-line"><div class="cart-thumb">${(() => { const c = coverUrl(l.p); return c ? `<img src="${esc(c)}" alt="" />` : esc(initialOf(l.p.name)); })()}</div><div><h4>${esc(l.p.name)}</h4><span>× ${l.qty}</span></div><strong>${money(l.p.price * l.qty)}</strong></div>`).join('')}
     <div class="cart-foot"><div class="row"><span>الإجمالي</span><strong>${money(cartTotal())}</strong></div></div>
+    <label class="field"><span>كود خصم (اختياري)</span><input id="fDiscount" type="text" dir="ltr" style="text-align:right" placeholder="اكتب الكود لو معاك" value="${esc(discountCode)}" /></label>
     <p style="color:var(--text-soft)">الدفع عند الاستلام</p>
     <button class="btn btn-primary btn-block" id="confirmOrder">تأكيد الطلب</button>`);
-  $('#confirmOrder').addEventListener('click', () => placeOrder(customer));
+  $('#confirmOrder').addEventListener('click', () => {
+    discountCode = ($('#fDiscount').value || '').trim();
+    submitOrder(customer);
+  });
 }
 
-/* ---------- order journey: doc created EXACTLY ONCE, then the van drives ---------- */
-async function placeOrder(customer) {
+/* ---------- order journey: the trusted placeOrder callable creates the
+ * order EXACTLY ONCE, then the van drives ----------
+ * The client function is named submitOrder (not placeOrder) so it never
+ * collides with the callable of the same name. The client sends ONLY
+ * product ids + quantities + (optionally) a discount code + the prices
+ * it displayed (seenPrices/seenTotal) — never a price or total as a
+ * fact. The function recomputes everything from the database. */
+async function submitOrder(customer) {
   if (ordering) return;
   ordering = true;
   const btn = $('#confirmOrder');
   if (btn) btn.disabled = true;
   const lines = cartLines();
+  /* Client-side cap (10 different products, T23): the function enforces
+   * it too — this only saves a round trip with a clear message. */
+  if (lines.length > 10) {
+    ordering = false;
+    showReview(customer, 'الطلب فيه أكتر من 10 منتجات — قلل المنتجات الأول');
+    return;
+  }
   const total = cartTotal();
-  // Idempotency: one clientOrderId per checkout attempt. Normally set when
-  // the checkout opens; generate here only if placeOrder is ever reached
-  // without it, so the order doc id is never null.
+  /* Idempotency: one clientOrderId per checkout attempt. Normally set when
+   * the checkout opens; generate here only if submitOrder is ever reached
+   * without it, so the order id is never null. */
   if (!clientOrderId) {
     clientOrderId = newClientOrderId();
     localStorage.setItem('sp-checkout', clientOrderId);
   }
+  const seenPrices = {};
+  for (const l of lines) seenPrices[l.p.id] = l.p.price;
   try {
-    await setDoc(doc(db, 'orders', clientOrderId), {
-      id: clientOrderId,
+    const res = await placeOrderCallable({
       clientOrderId,
-      customerName: customer.name,
-      customerPhone: customer.phone,
-      customerAddress: customer.addr,
-      items: lines.map((l) => ({ id: l.p.id, name: l.p.name, price: l.p.price, qty: l.qty })),
-      total,
-      status: 'new',
-      createdAt: serverTimestamp(),
+      items: lines.map((l) => ({ productId: l.p.id, qty: l.qty })),
+      discountCode: discountCode || null,
+      customer: { name: customer.name, phone: customer.phone, address: customer.addr },
+      seenPrices,
+      seenTotal: total,
     });
+    const order = res && res.data && res.data.order;
+    if (!order) throw new Error('no order returned');
     await updateDoc(doc(db, 'analytics', 'attempts', 'items', attemptId), { ordered: true }).catch(() => {});
     recordStep('order');
-    cart = {}; renderCart();
-    // Order created: this checkout attempt is done, so the next checkout
-    // gets a fresh id.
+    cart = {}; discountCode = ''; renderCart();
+    /* Order created: this checkout attempt is done, so the next checkout
+     * gets a fresh id. */
     localStorage.removeItem('sp-checkout');
     clientOrderId = null;
     ordering = false;
@@ -536,9 +580,54 @@ async function placeOrder(customer) {
     showJourney();
   } catch (e) {
     ordering = false;
-    // Failure: clientOrderId is deliberately KEPT (sp-checkout untouched),
-    // so a retry writes the same order doc id instead of a duplicate.
-    // Real error, NO animation — never a fake success.
+    /* Structured errors from the function (e.details.code). Real error,
+     * NO animation — never a fake success. The clientOrderId is
+     * deliberately KEPT (sp-checkout untouched), so a retry reuses the
+     * same id instead of creating a duplicate. */
+    const code = (e && e.details && e.details.code) || '';
+    const details = (e && e.details) || {};
+    if (code === 'PRICE_CHANGED' || code === 'TOTAL_CHANGED') {
+      /* Prices/total changed since the review loaded: update the loaded
+       * prices from the function's current values and re-render the
+       * review — the customer confirms the NEW total before any order
+       * is created (T15). */
+      const current = details.currentPrices || {};
+      for (const [id, price] of Object.entries(current)) {
+        const p = products.find((x) => x.id === id);
+        if (p) p.price = price;
+      }
+      renderProducts();
+      showReview(customer, code === 'PRICE_CHANGED'
+        ? 'اتغير سعر منتج من اللي شفتهم — دي الأسعار الجديدة، راجع الإجمالي وأكد تاني'
+        : 'اتغير الإجمالي — راجع الإجمالي الجديد وأكد تاني');
+      return;
+    }
+    if (code === 'INSUFFICIENT_STOCK') {
+      const name = (details.productId && (products.find((x) => x.id === details.productId) || {}).name) || 'المنتج';
+      const avail = details.availableQty ?? 0;
+      openModal(`
+        <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
+        <h2>الكمية مش متاحة</h2>
+        <p style="color:var(--text-soft)">المتاح دلوقتي من "${esc(name)}" ${avail} بس — عدّل الكمية في السلة وحاول تاني.</p>
+        <button class="btn btn-primary btn-block" id="adjustQty">تعديل الكمية</button>`);
+      $('#adjustQty').addEventListener('click', () => { closeModal(); openCart(true); });
+      return;
+    }
+    if (code === 'DISCOUNT_INVALID' || code === 'DISCOUNT_USED') {
+      showReview(customer, code === 'DISCOUNT_USED'
+        ? 'كود الخصم ده اتستخدم قبل كده — جرّب كود تاني أو كمّل من غيره'
+        : 'كود الخصم مش صحيح — اتأكد منه أو كمّل من غيره');
+      return;
+    }
+    if (code === 'RATE_LIMITED') {
+      openModal(`
+        <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
+        <h2>محاولات كتير</h2>
+        <p style="color:var(--text-soft)">حاولت كتير في وقت قصير — استنى شوية وحاول تاني.</p>
+        <button class="btn btn-primary btn-block" id="retryOrder">حاول تاني</button>`);
+      $('#retryOrder').addEventListener('click', () => showReview(customer));
+      return;
+    }
     openModal(`
       <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
       <h2>حصلت مشكلة</h2>
@@ -688,7 +777,8 @@ if (heroCard && matchMedia('(pointer: fine)').matches) {
 $('#year').textContent = new Date().getFullYear();
 applyTheme();
 renderCart();
-(async function boot() {
+/* Named (not an IIFE) so the boot-error retry button can re-run it. */
+async function boot() {
   try {
     const sSnap = await getDoc(doc(db, 'storeSettings', 'settings'));
     if (sSnap.exists()) {
@@ -713,11 +803,16 @@ renderCart();
     categories = catsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     const prodsSnap = await getDocs(query(collection(db, 'products'), orderBy('createdAt')));
     products = prodsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-  } catch (_) {}
+  } catch (_) {
+    /* Catalog load failure is NOT silent anymore: the products grid
+     * shows the error with a retry (renderProducts reads bootFailed). */
+    bootFailed = true;
+  }
   applyBrand();
   applyDesign();
   applyLogoMark();
   applyHero();
   renderAll();
   observeReveals();
-})();
+}
+boot();

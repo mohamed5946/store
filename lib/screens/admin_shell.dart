@@ -20,6 +20,7 @@ import '../core/store_update.dart';
 import '../core/store_update_flow.dart';
 import '../services/backend.dart';
 import '../services/cloudinary.dart';
+import '../screens/manual_order_screen.dart';
 import '../screens/storefront_preview.dart';
 import '../screens/updates_screen.dart';
 import '../theme/flow_theme.dart';
@@ -32,6 +33,7 @@ part 'admin_categories_tab.dart';
 part 'admin_orders_tab.dart';
 part 'admin_team_tab.dart';
 part 'admin_settings_tab.dart';
+part 'feedback_screen.dart';
 
 class AdminShell extends StatefulWidget {
   const AdminShell({super.key, required this.onSignedOut, this.themeController});
@@ -59,6 +61,7 @@ class _AdminShellState extends State<AdminShell> {
       const _ProductsTab(),
       const _CategoriesTab(),
       const _OrdersTab(),
+      const _FeedbackTab(),
       const _TeamTab(),
       _SettingsTab(
         onSignedOut: widget.onSignedOut,
@@ -87,10 +90,11 @@ class _AdminShellState extends State<AdminShell> {
           Icons.inventory_2_outlined,
           Icons.category_outlined,
           Icons.receipt_long_outlined,
+          Icons.feedback_outlined,
           Icons.group_outlined,
           Icons.settings_outlined,
         ],
-        labels: const ['الرئيسية', 'المنتجات', 'الأقسام', 'الطلبات', 'الفريق', 'الإعدادات'],
+        labels: const ['الرئيسية', 'المنتجات', 'الأقسام', 'الطلبات', 'الشكاوى', 'الفريق', 'الإعدادات'],
       ),
     );
   }

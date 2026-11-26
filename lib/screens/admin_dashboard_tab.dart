@@ -165,7 +165,7 @@ class _DashboardKpis extends StatelessWidget {
                                 title: 'حالات الطلبات'),
                             const SizedBox(height: 8),
                             for (final entry
-                                in orderStatusLabels.entries)
+                                in Backend.orderStatusLabels.entries)
                               Padding(
                                 padding: const EdgeInsets.only(bottom: 8),
                                 child: _FlowRow(
@@ -274,7 +274,7 @@ class _RecentOrderRow extends StatelessWidget {
     return _FlowRow(
       title: Text((data['customerName'] ?? '') as String),
       subtitle: Text(
-          '${data['customerPhone'] ?? ''} — ${orderStatusLabels[status] ?? status}'),
+          '${data['customerPhone'] ?? ''} — ${Backend.orderStatusLabels[status] ?? status}'),
       trailing: Text('${((data['total'] ?? 0) as num).toStringAsFixed(0)} ج.م'),
       onTap: () => _showOrderDetail(context, doc),
     );
