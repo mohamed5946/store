@@ -75,7 +75,13 @@ function makeElement(selector, getElement) {
     hidden: false,
     disabled: false,
     dataset: {},
-    style: {},
+    // Phase 3: CSS custom properties set by applyTemplate are
+    // recorded here so tests can assert which tokens were applied.
+    style: {
+      _vars: {},
+      setProperty(k, v) { this._vars[k] = v; },
+      getPropertyValue(k) { return this._vars[k] || ''; },
+    },
     offsetWidth: 0,
     onclick: null,
     classList: {
@@ -150,12 +156,16 @@ function createStorefrontFake() {
 }
 
 /* ---------- load the real app.js into a vm context ---------- */
-function loadApp({ seedCheckoutId = null } = {}) {
+function loadApp({ seedCheckoutId = null, seedDocs = {} } = {}) {
   const localStorage = createLocalStorage();
   localStorage.setItem('sp-cart', '{}');
   if (seedCheckoutId) localStorage.setItem('sp-checkout', seedCheckoutId);
 
   const fake = createStorefrontFake();
+  // Phase 3: seed Firestore documents (full doc path -> data) BEFORE
+  // boot() runs, so template tests can drive the pointer/template
+  // reads.
+  for (const [path, data] of Object.entries(seedDocs)) fake.store.set(path, data);
 
   const elements = new Map();
   const getElement = (sel) => {
@@ -230,6 +240,15 @@ function loadApp({ seedCheckoutId = null } = {}) {
   submitOrder, showReview, cartLines, cartTotal,
   getClientOrderId() { return clientOrderId; },
   setClientOrderId(id) { clientOrderId = id; localStorage.setItem('sp-checkout', id); },
+  // Phase 3: template + feedback state.
+  getTemplateState() { return { templateId: activeTemplateId, grid: { ...templateGrid }, sections: { ...templateSections } }; },
+  getAppliedVars() { return { ...document.documentElement.style._vars }; },
+  getGridState() {
+    const grid = document.querySelector('#productsGrid');
+    return { columns: grid.style.gridTemplateColumns || '', expanded: gridExpanded };
+  },
+  loadActiveTemplate, applyTemplate, validateTemplateBody, renderProducts,
+  submitFeedbackForm, lookupFeedback,
 };`;
   vm.runInContext(src, sandbox, { filename: 'storefront/app.js' });
   return { sandbox, fake, localStorage, elements, getElement, t: sandbox.__test };
@@ -699,4 +718,145 @@ test('Phase 2 (T12): the unified state machine allows exactly the legal transiti
   assert.equal(isAllowedTransition('delivered', 'cancelled'), false);
   assert.equal(isAllowedTransition('cancelled', 'accepted'), false);
   assert.equal(isAllowedTransition('expired', 'accepted'), false);
+});
+
+/* ================= (C) Phase 3: templates ================= */
+
+const DARK_TEMPLATE = {
+  schemaVersion: 1,
+  status: 'active',
+  grid: { columns: 3, rows: 2, minColumnWidthPx: 200 },
+  tokens: { accent: '#111111', bg: '#222222', text: '#eeeeee' },
+  sections: { hero: false, promos: true, featured: true, delivery: true, contact: true },
+};
+
+const EIGHT_PRODUCTS = Array.from({ length: 8 }, (_, i) => ({
+  id: `prod-${i + 1}`, name: `منتج ${i + 1}`, price: 100 + i * 10, categoryId: 'cat-1',
+}));
+
+test('Phase 3: boot with no template pointer falls back to classic (auto-fill grid, classic tokens)', async () => {
+  const { t } = await loadAppReady({});
+  const state = t.getTemplateState();
+  assert.equal(state.templateId, 'classic');
+  assert.deepEqual(plain(state.grid), { columns: null, rows: null, minColumnWidthPx: 250 });
+  const vars = t.getAppliedVars();
+  assert.equal(vars['--accent'], '#3f7f8c');
+  assert.equal(vars['--bg'], '#f4f6f8');
+  // Launch grid: null columns keep the stylesheet auto-fill exactly.
+  assert.equal(t.getGridState().columns, '');
+});
+
+test('Phase 3: boot with a seeded template applies its tokens + fixed grid + rows cap', async () => {
+  const { t, elements, getElement } = await loadAppReady({
+    seedDocs: {
+      'storeSettings/activeTemplate': { templateId: 'dark' },
+      'templates/dark': DARK_TEMPLATE,
+    },
+  });
+  const state = t.getTemplateState();
+  assert.equal(state.templateId, 'dark');
+  assert.equal(state.sections.hero, false);
+  const vars = t.getAppliedVars();
+  assert.equal(vars['--accent'], '#111111');
+  assert.equal(vars['--bg'], '#222222');
+  assert.equal(t.getGridState().columns, 'repeat(3, 1fr)');
+
+  t.setProducts([...EIGHT_PRODUCTS]);
+  t.renderProducts();
+  const gridHtml = getElement('#productsGrid').innerHTML;
+  const shown = (gridHtml.match(/<article class="product"/g) || []).length;
+  assert.equal(shown, 6, 'rows 2 x columns 3 caps the visible products at 6');
+  assert.equal(elements.has('#gridMoreBtn'), true);
+  getElement('#gridMoreBtn').__fire('click');
+  const shownAll = (getElement('#productsGrid').innerHTML.match(/<article class="product"/g) || []).length;
+  assert.equal(shownAll, 8, 'show more reveals the rest');
+  assert.equal(elements.has('#gridLessBtn'), true);
+});
+
+test('Phase 3: an invalid template is rejected and classic applies', async () => {
+  const { t } = await loadAppReady({
+    seedDocs: {
+      'storeSettings/activeTemplate': { templateId: 'bad' },
+      'templates/bad': {
+        schemaVersion: 1,
+        status: 'active',
+        tokens: { accent: 'url(evil)' },
+      },
+    },
+  });
+  assert.equal(t.getTemplateState().templateId, 'classic');
+  assert.equal(t.getAppliedVars()['--accent'], '#3f7f8c');
+});
+
+test('Phase 3: the built-in classic matches templates/classic.json', async () => {
+  const classicJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'storefront', 'templates', 'classic.json'), 'utf8'));
+  const { t } = await loadAppReady({});
+  const state = t.getTemplateState();
+  assert.deepEqual(plain(state.grid), plain(classicJson.grid));
+  const cssVars = { bg: '--bg', bg2: '--bg-2', surface: '--surface', surfaceStrong: '--surface-strong', border: '--border', text: '--text', textSoft: '--text-soft', accent: '--accent', accent2: '--accent-2', warm: '--warm', radius: '--radius' };
+  const vars = t.getAppliedVars();
+  for (const [key, cssVar] of Object.entries(cssVars)) {
+    assert.equal(vars[cssVar], classicJson.tokens[key], `token ${key}`);
+  }
+});
+
+test('Phase 3: validateTemplateBody mirrors the gateway', async () => {
+  const { t } = await loadAppReady({});
+  assert.equal(t.validateTemplateBody({ schemaVersion: 1, tokens: { accent: '#3f7f8c' } }).passed, true);
+  // Failed-check arrays come from the vm realm — normalize via plain().
+  assert.deepEqual(plain(t.validateTemplateBody({ schemaVersion: 1, tokens: { accent: 'url(evil)' } }).failed), ['tokens.accent']);
+  assert.deepEqual(plain(t.validateTemplateBody({ schemaVersion: 1, grid: { columns: 99 } }).failed), ['grid.columns']);
+  assert.deepEqual(plain(t.validateTemplateBody({ schemaVersion: 2 }).failed), ['schemaVersion']);
+});
+
+/* ================= (D) Phase 3: feedback form ================= */
+
+function feedbackCallableImpl(fake) {
+  return async (name, data) => {
+    fake.calls.push({ name, data: JSON.parse(JSON.stringify(data)) });
+    if (name === 'submitFeedback') return { data: { trackingCode: 'FB-ABC123', duplicate: false, linked: false } };
+    if (name === 'getFeedbackStatus') return { data: { status: 'in_review', lastReply: 'جارٍ المراجعة' } };
+    return { data: { order: { id: data.clientOrderId, clientOrderId: data.clientOrderId, total: data.seenTotal, status: 'new' } } };
+  };
+}
+
+test('Phase 3: feedback form submits via the callable and shows the tracking code', async () => {
+  const { fake, getElement } = await loadAppReady({});
+  fake.callableImpl = feedbackCallableImpl(fake);
+  getElement('#fbType').value = 'complaint';
+  getElement('#fbCategory').value = 'delivery';
+  getElement('#fbTitle').value = 'مشكلة في التوصيل';
+  getElement('#fbMessage').value = 'الطلب وصل متأخر يومين عن الميعاد';
+  getElement('#fbOrderId').value = '';
+  getElement('#fbPhone').value = '01012345678';
+  getElement('#fbForm').__fire('submit', { preventDefault() {} });
+  await sleep(50);
+  assert.equal(fake.calls.length, 1);
+  const call = fake.calls[0];
+  assert.equal(call.name, 'submitFeedback');
+  assert.equal(call.data.submissionId, FIXED_UUID);
+  assert.equal(call.data.type, 'complaint');
+  assert.equal(call.data.category, 'delivery');
+  assert.equal(call.data.title, 'مشكلة في التوصيل');
+  assert.equal(call.data.phone, '01012345678');
+  assert.equal(call.data.orderId, null);
+  const result = getElement('#fbResult');
+  assert.equal(result.hidden, false);
+  assert.ok(result.textContent.includes('FB-ABC123'), `tracking code shown, got: ${result.textContent}`);
+});
+
+test('Phase 3: feedback lookup shows the status and last reply', async () => {
+  const { fake, getElement } = await loadAppReady({});
+  fake.callableImpl = feedbackCallableImpl(fake);
+  getElement('#fbLookupCode').value = 'FB-ABC123';
+  getElement('#fbLookupPhone').value = '01012345678';
+  getElement('#fbLookupBtn').__fire('click');
+  await sleep(50);
+  assert.equal(fake.calls.length, 1);
+  assert.equal(fake.calls[0].name, 'getFeedbackStatus');
+  assert.equal(fake.calls[0].data.trackingCode, 'FB-ABC123');
+  const result = getElement('#fbLookupResult');
+  assert.equal(result.hidden, false);
+  assert.ok(result.textContent.includes('قيد المراجعة'), `status shown, got: ${result.textContent}`);
+  assert.ok(result.textContent.includes('جارٍ المراجعة'), `last reply shown, got: ${result.textContent}`);
 });

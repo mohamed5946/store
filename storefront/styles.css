@@ -486,3 +486,26 @@ button { cursor: pointer; background: none; border: 0; }
 @media (max-width: 900px) {
   .promo-carousel { margin-inline: auto; }
 }
+
+/* ---------- Contact us / feedback (Phase 3, CUJ 6) ----------
+ * "Contact us" section: the feedback form + the tracking-code
+ * lookup. Reuses .field/.btn/.glass; the template tokens apply
+ * through the CSS variables, so a template re-themes this section
+ * with the rest of the site. */
+.contact-card { padding: 28px; border-radius: var(--radius); }
+.contact-card h3 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+.fb-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; }
+@media (max-width: 700px) { .fb-row { grid-template-columns: 1fr; } }
+.field select {
+  width: 100%; padding: 12px 14px; border-radius: 16px;
+  border: 1px solid var(--border); background: var(--surface-strong);
+  color: var(--text); outline: none;
+}
+.field select:focus { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 25%, transparent); }
+.fb-result { margin-top: 12px; font-weight: 600; }
+.fb-lookup { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border); }
+.fb-lookup > p { color: var(--text-soft); font-size: 14px; margin-bottom: 4px; }
+
+/* ---------- Template grid "show more" (Phase 3) ---------- */
+.grid-more { text-align: center; margin-top: 22px; }
+.grid-more:empty { display: none; }

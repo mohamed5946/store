@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>المتجر</title>
   <meta name="description" content="اطلب دلوقتي وادفع عند الاستلام" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://res.cloudinary.com; connect-src 'self' https://firestore.googleapis.com https://*.cloudfunctions.net https://securetoken.googleapis.com https://identitytoolkit.googleapis.com; frame-src 'none'; object-src 'none'; base-uri 'self'" />
   <meta property="og:title" content="المتجر" />
   <meta property="og:description" content="الدفع عند الاستلام — ادفع لما طلبك يوصلك" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -39,6 +40,7 @@
         <a href="#featured">الأكثر مبيعاً</a>
         <a href="#offers">العروض</a>
         <a href="#about">عن المتجر</a>
+        <a href="#contact">تواصل معنا</a>
       </nav>
 
       <div class="nav-actions">
@@ -116,6 +118,7 @@
       </header>
       <div id="featuredSpot"></div>
       <div class="products-grid" id="productsGrid"></div>
+      <div class="grid-more" id="gridMoreWrap"></div>
     </section>
 
     <section id="offers" class="container section">
@@ -124,6 +127,53 @@
 
     <section id="delivery" class="container section">
       <div id="deliveryWrap"></div>
+    </section>
+
+    <section id="contact" class="container section">
+      <header class="section-head reveal">
+        <h2>تواصل معنا</h2>
+        <p>عندك شكوى أو اقتراح؟ ابعتهالنا وهنرد عليك — وهتاخد كود تتبع لمتابعة الحالة.</p>
+      </header>
+      <div class="glass contact-card">
+        <form id="fbForm" novalidate>
+          <div class="fb-row">
+            <label class="field"><span>النوع</span>
+              <select id="fbType">
+                <option value="complaint">شكوى</option>
+                <option value="suggestion">اقتراح</option>
+              </select>
+            </label>
+            <label class="field"><span>التصنيف</span>
+              <select id="fbCategory">
+                <option value="order_issue">مشكلة في طلب</option>
+                <option value="product_quality">جودة المنتج</option>
+                <option value="delivery">التوصيل</option>
+                <option value="website">الموقع</option>
+                <option value="pricing">الأسعار</option>
+                <option value="other">أخرى</option>
+              </select>
+            </label>
+          </div>
+          <label class="field"><span>العنوان</span><input id="fbTitle" type="text" maxlength="100" placeholder="عنوان مختصر للشكوى أو الاقتراح" /></label>
+          <label class="field"><span>الرسالة</span><textarea id="fbMessage" rows="4" placeholder="اكتب رسالتك هنا (من 10 لـ 2000 حرف)"></textarea></label>
+          <div class="fb-row">
+            <label class="field"><span>رقم الطلب (اختياري)</span><input id="fbOrderId" type="text" dir="ltr" style="text-align:right" placeholder="لو الشكوى عن طلب معين" /></label>
+            <label class="field"><span>رقم الموبايل</span><input id="fbPhone" type="tel" dir="ltr" style="text-align:right" placeholder="هنحتاجه عشان تتابع الشكوى" /></label>
+          </div>
+          <button class="btn btn-primary" id="fbSubmit" type="submit">إرسال</button>
+          <p class="fb-result" id="fbResult" hidden></p>
+        </form>
+        <div class="fb-lookup">
+          <h3>تتبع شكوى بكود</h3>
+          <p>اكتب كود التتبع ورقم الموبايل اللي بعت بيهم الشكوى.</p>
+          <div class="fb-row">
+            <label class="field"><span>كود التتبع</span><input id="fbLookupCode" type="text" dir="ltr" style="text-align:right" placeholder="FB-XXXXXX" /></label>
+            <label class="field"><span>رقم الموبايل</span><input id="fbLookupPhone" type="tel" dir="ltr" style="text-align:right" /></label>
+          </div>
+          <button class="btn btn-ghost" id="fbLookupBtn" type="button">بحث</button>
+          <p class="fb-result" id="fbLookupResult" hidden></p>
+        </div>
+      </div>
     </section>
 
     <section id="about" class="container section about reveal">
@@ -148,6 +198,7 @@
         <a href="#categories">الأقسام</a>
         <a href="#featured">المنتجات</a>
         <a href="#about">عن المتجر</a>
+        <a href="#contact">تواصل معنا</a>
       </div>
     </div>
     <p class="copy">© <span id="year"></span> <span id="copyBrand">المتجر</span>. جميع الحقوق محفوظة.</p>

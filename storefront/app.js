@@ -32,6 +32,14 @@
  * override. Field URLs are the store's own Cloudinary uploads (f_auto,
  * q_auto applied via deliveryUrl; non-Cloudinary links pass through).
  *
+ * TEMPLATES (Phase 3): the storefront renders the active template
+ * (storeSettings/activeTemplate -> templates/{id}). The template is
+ * declarative JSON only — tokens (CSS variables), grid (rows x
+ * columns), section toggles. No template code runs here. When no
+ * pointer/template exists, the bundled templates/classic.json is
+ * used, then the built-in classic below — so the launch site renders
+ * exactly like today.
+ *
  * FROZEN RULES (never weaken these):
  * - 2-step Cash-on-Delivery checkout ONLY: info -> review -> order doc.
  * - Customer contact is saved ONLY after the info step completes with valid
@@ -56,6 +64,8 @@ const app = initializeApp(window.STORE_FIREBASE_CONFIG);
 const db = getFirestore(app);
 const functions = getFunctions(app); /* us-central1 (default) */
 const placeOrderCallable = httpsCallable(functions, 'placeOrder');
+const submitFeedbackCallable = httpsCallable(functions, 'submitFeedback');
+const getFeedbackStatusCallable = httpsCallable(functions, 'getFeedbackStatus');
 
 /* ---------- anonymous session + funnel ---------- */
 let sessionId = localStorage.getItem('store_session_id');
@@ -104,6 +114,47 @@ let discountCode = '';
  * used to swallow this with zero signal). */
 let bootFailed = false;
 
+/* ---------- active template (Phase 3) ---------- */
+/* The storefront is a frozen trusted shell + a swappable template
+ * skin. The template is declarative data only (JSON): tokens (CSS
+ * variables), grid (rows x columns), section toggles. No template
+ * runs JavaScript, so no template can read the cart, the checkout
+ * form, or customer contact data.
+ * Load order: the pointer (storeSettings/activeTemplate) -> the
+ * template document (public get, only the active one) -> the
+ * bundled classic.json asset -> the built-in classic below. Any
+ * step that fails or fails validation falls through to the next,
+ * so the site always renders — the launch template is the current
+ * site, unchanged. */
+let activeTemplateId = 'classic';
+let templateSections = {};
+let templateGrid = { columns: null, rows: null, minColumnWidthPx: 250 };
+let gridExpanded = false;
+const TEMPLATE_TOKEN_KEYS = new Set(['bg', 'bg2', 'surface', 'surfaceStrong', 'border', 'text', 'textSoft', 'accent', 'accent2', 'warm', 'radius']);
+const TEMPLATE_SECTION_KEYS = new Set(['hero', 'promos', 'featured', 'delivery', 'contact']);
+const TEMPLATE_CSS_VARS = { bg: '--bg', bg2: '--bg-2', surface: '--surface', surfaceStrong: '--surface-strong', border: '--border', text: '--text', textSoft: '--text-soft', accent: '--accent', accent2: '--accent-2', warm: '--warm', radius: '--radius' };
+/* Built-in launch template (same values as templates/classic.json
+ * and the admin app's classic definition): the current live site,
+ * verbatim — tokens are styles.css :root, grid nulls reproduce the
+ * current auto-fill behaviour exactly. */
+const CLASSIC_TEMPLATE = {
+  id: 'classic',
+  name: 'التصميم الحالي',
+  schemaVersion: 1,
+  status: 'active',
+  grid: { columns: null, rows: null, minColumnWidthPx: 250 },
+  tokens: {
+    bg: '#f4f6f8', bg2: '#eaeff3',
+    surface: 'rgba(255, 255, 255, 0.55)',
+    surfaceStrong: 'rgba(255, 255, 255, 0.82)',
+    border: 'rgba(20, 30, 45, 0.08)',
+    text: '#1b2430', textSoft: '#5b6878',
+    accent: '#3f7f8c', accent2: '#8fb8b0', warm: '#c9a57a',
+    radius: '24px',
+  },
+  sections: { hero: true, promos: true, featured: true, delivery: true, contact: true },
+};
+
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const money = (n) => `${Number(n || 0).toLocaleString('ar-EG')} ج.م`;
@@ -128,8 +179,95 @@ function productImages(p) {
 function initialOf(name) { return (name || '?').trim().charAt(0); }
 function catCount(id) { return products.filter((p) => p.categoryId === id).length; }
 function sectionOn(key) {
+  // The template's section toggles win; the design doc is the
+  // fallback; default true.
+  if (Object.prototype.hasOwnProperty.call(templateSections, key)) return templateSections[key] !== false;
   const s = (design && design.sections && typeof design.sections === 'object') ? design.sections : {};
   return s[key] !== false; // default true
+}
+
+/* Template validation gateway (client side — mirrors the admin
+ * app's gateway in lib/services/templates_service.dart). A template
+ * that fails any check is never applied. */
+function _isSafeCssValue(key, value) {
+  if (typeof value !== 'string') return false;
+  const v = value.trim();
+  if (!v) return false;
+  if (v.includes('url(') || v.includes('expression') || v.includes('javascript:') ||
+      v.includes(';') || v.includes('"') || v.includes("'") || v.includes('<') || v.includes('>')) return false;
+  if (key === 'radius') {
+    const m = /^(\d+)px$/.exec(v);
+    if (!m) return false;
+    const n = Number(m[1]);
+    return n >= 0 && n <= 64;
+  }
+  if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(v)) return true;
+  const rgba = /^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)$/.exec(v);
+  if (rgba) {
+    const r = Number(rgba[1]); const g = Number(rgba[2]); const b = Number(rgba[3]); const a = Number(rgba[4]);
+    return r <= 255 && g <= 255 && b <= 255 && a >= 0 && a <= 1;
+  }
+  return false;
+}
+function validateTemplateBody(body) {
+  const failed = [];
+  if (!body || typeof body !== 'object') return { passed: false, failed: ['template'] };
+  if (body.schemaVersion !== 1) failed.push('schemaVersion');
+  const grid = body.grid || {};
+  if (grid.columns != null && (!Number.isInteger(grid.columns) || grid.columns < 1 || grid.columns > 12)) failed.push('grid.columns');
+  if (grid.rows != null && (!Number.isInteger(grid.rows) || grid.rows < 1 || grid.rows > 20)) failed.push('grid.rows');
+  if (grid.minColumnWidthPx != null && (!Number.isInteger(grid.minColumnWidthPx) || grid.minColumnWidthPx < 120 || grid.minColumnWidthPx > 600)) failed.push('grid.minColumnWidthPx');
+  const tokens = body.tokens || {};
+  for (const [key, value] of Object.entries(tokens)) {
+    if (!TEMPLATE_TOKEN_KEYS.has(key) || !_isSafeCssValue(key, value)) failed.push('tokens.' + key);
+  }
+  const sections = body.sections || {};
+  for (const [key, value] of Object.entries(sections)) {
+    if (!TEMPLATE_SECTION_KEYS.has(key) || typeof value !== 'boolean') failed.push('sections.' + key);
+  }
+  return { passed: failed.length === 0, failed };
+}
+async function loadClassicTemplateFile() {
+  if (typeof fetch !== 'function') return null;
+  try {
+    const res = await fetch('templates/classic.json', { cache: 'no-store' });
+    if (!res || !res.ok) return null;
+    return await res.json();
+  } catch (_) { return null; }
+}
+async function loadActiveTemplate() {
+  try {
+    const ptrSnap = await getDoc(doc(db, 'storeSettings', 'activeTemplate'));
+    let body = null;
+    if (ptrSnap.exists() && ptrSnap.data() && typeof ptrSnap.data().templateId === 'string' && ptrSnap.data().templateId) {
+      const tSnap = await getDoc(doc(db, 'templates', ptrSnap.data().templateId));
+      if (tSnap.exists() && tSnap.data()) body = { id: tSnap.id, ...tSnap.data() };
+    }
+    if (!body || !validateTemplateBody(body).passed) body = await loadClassicTemplateFile();
+    if (!body || !validateTemplateBody(body).passed) body = CLASSIC_TEMPLATE;
+    applyTemplate(body);
+  } catch (_) {
+    applyTemplate(CLASSIC_TEMPLATE);
+  }
+}
+function applyTemplate(body) {
+  const tokens = (body && body.tokens && typeof body.tokens === 'object') ? body.tokens : {};
+  const root = document.documentElement;
+  for (const [key, cssVar] of Object.entries(TEMPLATE_CSS_VARS)) {
+    const v = tokens[key];
+    if (typeof v === 'string' && v.trim() && _isSafeCssValue(key, v)) {
+      root.style.setProperty(cssVar, v.trim());
+    }
+  }
+  templateSections = (body && body.sections && typeof body.sections === 'object') ? body.sections : {};
+  const grid = (body && body.grid && typeof body.grid === 'object') ? body.grid : {};
+  templateGrid = {
+    columns: (Number.isInteger(grid.columns) && grid.columns >= 1 && grid.columns <= 12) ? grid.columns : null,
+    rows: (Number.isInteger(grid.rows) && grid.rows >= 1 && grid.rows <= 20) ? grid.rows : null,
+    minColumnWidthPx: (Number.isInteger(grid.minColumnWidthPx) && grid.minColumnWidthPx >= 120 && grid.minColumnWidthPx <= 600) ? grid.minColumnWidthPx : 250,
+  };
+  gridExpanded = false;
+  activeTemplateId = (body && typeof body.id === 'string' && body.id) || 'classic';
 }
 
 /* ---------- brand + design application ---------- */
@@ -157,6 +295,8 @@ function applyDesign() {
   $('#offers').style.display = sectionOn('promos') ? '' : 'none';
   $('#featuredSpot').style.display = sectionOn('featured') ? '' : 'none';
   $('#delivery').style.display = sectionOn('delivery') ? '' : 'none';
+  const contact = $('#contact');
+  if (contact) contact.style.display = sectionOn('contact') ? '' : 'none';
 }
 
 /* ---------- app-editable brand mark + hero (see header contract) ---------- */
@@ -257,7 +397,39 @@ function renderProducts() {
     $('#bootRetry').addEventListener('click', () => { bootFailed = false; boot(); });
     return;
   }
-  $('#productsGrid').innerHTML = visibleProducts().map(productCard).join('');
+  const grid = $('#productsGrid');
+  // Per-template grid: fixed columns replace the stylesheet's
+  // auto-fill; null columns keep the auto-fill exactly (launch
+  // default). Rows cap the initially visible products (rows x
+  // columns) with a "show more" button; null rows show everything.
+  if (templateGrid.columns) {
+    grid.style.gridTemplateColumns = `repeat(${templateGrid.columns}, 1fr)`;
+  } else {
+    grid.style.gridTemplateColumns = '';
+  }
+  const list = visibleProducts();
+  let shown = list;
+  let capped = 0;
+  if (templateGrid.rows && !gridExpanded) {
+    // Auto-fill has no fixed column count: estimate 4 per row at the
+    // 250px minimum inside the 1180px container.
+    const perRow = templateGrid.columns || 4;
+    const cap = templateGrid.rows * perRow;
+    if (list.length > cap) { shown = list.slice(0, cap); capped = list.length - cap; }
+  }
+  grid.innerHTML = shown.map(productCard).join('');
+  const moreWrap = $('#gridMoreWrap');
+  if (moreWrap) {
+    if (capped > 0) {
+      moreWrap.innerHTML = `<button class="btn btn-ghost" id="gridMoreBtn">عرض المزيد (${capped} منتج)</button>`;
+      $('#gridMoreBtn').addEventListener('click', () => { gridExpanded = true; renderProducts(); });
+    } else if (gridExpanded && templateGrid.rows) {
+      moreWrap.innerHTML = `<button class="btn btn-ghost" id="gridLessBtn">عرض أقل</button>`;
+      $('#gridLessBtn').addEventListener('click', () => { gridExpanded = false; renderProducts(); });
+    } else {
+      moreWrap.innerHTML = '';
+    }
+  }
   observeReveals();
 }
 function renderFeatured() {
@@ -709,11 +881,11 @@ document.addEventListener('click', (e) => {
   const open = e.target.closest('[data-open]');
   if (open) { openProduct(open.dataset.open); return; }
   const catLink = e.target.closest('[data-cat-link]');
-  if (catLink) { filter = catLink.dataset.catLink; renderPills(); renderProducts(); document.querySelector('#featured')?.scrollIntoView({ behavior: 'smooth' }); return; }
+  if (catLink) { filter = catLink.dataset.catLink; gridExpanded = false; renderPills(); renderProducts(); document.querySelector('#featured')?.scrollIntoView({ behavior: 'smooth' }); return; }
   const pill = e.target.closest('[data-filter]');
-  if (pill) { filter = pill.dataset.filter; renderPills(); renderProducts(); return; }
+  if (pill) { filter = pill.dataset.filter; gridExpanded = false; renderPills(); renderProducts(); return; }
   const cat = e.target.closest('[data-cat]');
-  if (cat) { filter = cat.dataset.cat; renderPills(); renderProducts(); recordStep('category'); return; }
+  if (cat) { filter = cat.dataset.cat; gridExpanded = false; renderPills(); renderProducts(); recordStep('category'); return; }
   const prod = e.target.closest('.product');
   if (prod) { openProduct(prod.dataset.id); return; }
   const inc = e.target.closest('[data-inc]');
@@ -753,12 +925,95 @@ $('#searchToggle').addEventListener('click', () => {
 });
 $('#searchInput').addEventListener('input', (e) => {
   searchQuery = e.target.value.trim().toLowerCase();
+  gridExpanded = false;
   renderProducts();
 });
 $('#themeToggle').addEventListener('click', () => {
   theme = theme === 'dark' ? 'light' : 'dark';
   applyTheme();
 });
+
+/* ---------- feedback: "Contact us" (CUJ 6) ---------- */
+/* The storefront form calls the submitFeedback callable (rate-limited,
+ * duplicate-checked server-side, returns a tracking code) and the
+ * lookup calls getFeedbackStatus (tracking code + phone). The
+ * function never says which part failed — the lookup shows one
+ * generic "not found" message either way. */
+const FEEDBACK_STATUS_LABELS = { new: 'جديدة', in_review: 'قيد المراجعة', awaiting_customer: 'بانتظار العميل', resolved: 'تم الحل', closed: 'مغلقة', rejected: 'مرفوضة', spam: 'سبام' };
+function newSubmissionId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  return 'fb_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+async function submitFeedbackForm(e) {
+  if (e && e.preventDefault) e.preventDefault();
+  const resultEl = $('#fbResult');
+  const showResult = (msg, ok) => {
+    if (!resultEl) return;
+    resultEl.hidden = false;
+    resultEl.textContent = msg;
+    resultEl.style.color = ok ? 'var(--accent)' : '#c0392b';
+  };
+  const type = (($('#fbType') || {}).value || 'complaint');
+  const category = (($('#fbCategory') || {}).value || 'other');
+  const title = (($('#fbTitle') || {}).value || '').trim();
+  const message = (($('#fbMessage') || {}).value || '').trim();
+  const orderId = (($('#fbOrderId') || {}).value || '').trim();
+  const phone = (($('#fbPhone') || {}).value || '').trim();
+  if (title.length === 0 || title.length > 100) return showResult('اكتب عنوان من سطر واحد (لحد 100 حرف)');
+  if (message.length < 10 || message.length > 2000) return showResult('اكتب رسالتك (من 10 لـ 2000 حرف)');
+  if (phone.replace(/\D/g, '').length < 10) return showResult('اكتب رقم موبايل صحيح — هنحتاجه عشان تتابع الشكوى');
+  const btn = $('#fbSubmit');
+  if (btn) btn.disabled = true;
+  try {
+    const res = await submitFeedbackCallable({
+      submissionId: newSubmissionId(),
+      type, category, title, message,
+      orderId: orderId || null,
+      phone,
+    });
+    const data = (res && res.data) || {};
+    if (data.trackingCode) {
+      showResult(data.duplicate
+        ? `الشكوى دي اتبعتت قبل كده — كود التتبع بتاعها: ${data.trackingCode}`
+        : `تم استلام رسالتك! كود التتبع بتاعك: ${data.trackingCode} — احتفظ بيه عشان تتابع الحالة`, true);
+      const form = $('#fbForm');
+      if (form && form.reset) form.reset();
+    } else {
+      showResult('حصلت مشكلة — حاول تاني');
+    }
+  } catch (err) {
+    const code = (err && err.details && err.details.code) || '';
+    showResult(code === 'RATE_LIMITED' ? 'محاولات كتير — استنى شوية وحاول تاني'
+      : code === 'BLOCKED' ? 'الإرسال من الرقم ده موقوف مؤقتاً'
+      : 'حصلت مشكلة — حاول تاني');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+async function lookupFeedback() {
+  const resultEl = $('#fbLookupResult');
+  const showResult = (msg, ok) => {
+    if (!resultEl) return;
+    resultEl.hidden = false;
+    resultEl.textContent = msg;
+    resultEl.style.color = ok ? 'var(--accent)' : '#c0392b';
+  };
+  const code = (($('#fbLookupCode') || {}).value || '').trim();
+  const phone = (($('#fbLookupPhone') || {}).value || '').trim();
+  if (!code || phone.replace(/\D/g, '').length < 10) return showResult('اكتب كود التتبع ورقم الموبايل');
+  try {
+    const res = await getFeedbackStatusCallable({ trackingCode: code, phone });
+    const data = (res && res.data) || {};
+    const label = FEEDBACK_STATUS_LABELS[data.status] || data.status || '';
+    showResult(`الحالة: ${label}${data.lastReply ? ` — آخر رد: ${data.lastReply}` : ''}`, true);
+  } catch (_) {
+    showResult('مفيش شكوى بالكود ده — اتأكد من الكود ورقم الموبايل');
+  }
+}
+const fbForm = $('#fbForm');
+if (fbForm) fbForm.addEventListener('submit', submitFeedbackForm);
+const fbLookupBtn = $('#fbLookupBtn');
+if (fbLookupBtn) fbLookupBtn.addEventListener('click', lookupFeedback);
 window.addEventListener('scroll', () => {
   $('#topbar').classList.toggle('scrolled', window.scrollY > 20);
 }, { passive: true });
@@ -798,6 +1053,10 @@ async function boot() {
     const dSnap = await getDoc(doc(db, 'storeSettings', 'design'));
     if (dSnap.exists() && dSnap.data()) design = dSnap.data();
   } catch (_) {}
+  /* Active template (pointer -> template doc -> classic.json ->
+   * built-in classic). Loaded before applyDesign so the template's
+   * section toggles apply with the design toggles. */
+  await loadActiveTemplate();
   try {
     const catsSnap = await getDocs(query(collection(db, 'categories'), orderBy('createdAt')));
     categories = catsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));

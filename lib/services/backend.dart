@@ -210,6 +210,29 @@ class Backend {
     }
   }
 
+  /// Public entry point to the audited-write system above, for the
+  /// template service (Phase 3): the registry writes are admin
+  /// writes, so they go through the same batch + audit entry the
+  /// rules enforce — never a second audit implementation.
+  Future<void> auditedWrite({
+    required Map<String, Map<String, dynamic>> writes,
+    required Map<String, Map<String, dynamic>> sensitive,
+    required String operation,
+    Map<String, Map<String, dynamic>> oldValues = const {},
+    Map<String, dynamic> topNewValues = const {},
+    bool merge = true,
+  }) async {
+    _requireInit();
+    await _auditedBatch(
+      writes: writes,
+      sensitive: sensitive,
+      operation: operation,
+      oldValues: oldValues,
+      topNewValues: topNewValues,
+      merge: merge,
+    );
+  }
+
   /// An audited delete: the document is deleted and the audit entry
   /// uses the deterministic id `del_<collection>_<docId>` (a delete
   /// carries no resource data, so the rules cannot read an operationId

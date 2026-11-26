@@ -18,6 +18,80 @@ const Color _previewText = Color(0xFF1D1D1F);
 const Color _previewBlue = Color(0xFF0A84FF);
 const Color _previewMuted = Color(0xFF86868B);
 
+/// Template-driven colors for the storefront preview widgets
+/// (design doc file 12, Alternative K — parameterize the existing
+/// widgets from the template tokens, no new dependency). Defaults
+/// are the preview's long-standing values, so existing callers
+/// (Settings, product editor) render exactly as before when no
+/// tokens are passed; a template's tokens make the preview look
+/// like that template's live site (the old blue hard-coding would
+/// misrepresent the teal live site).
+class PreviewTokens {
+  const PreviewTokens({
+    this.background = Colors.white,
+    this.surface = const Color(0xFFF5F5F7),
+    this.text = _previewText,
+    this.muted = _previewMuted,
+    this.accent = _previewBlue,
+    this.radius = 18,
+  });
+
+  final Color background;
+  final Color surface;
+  final Color text;
+  final Color muted;
+  final Color accent;
+  final double radius;
+
+  /// Builds tokens from a template's token map (gateway-validated,
+  /// so any unparsable value falls back to the default).
+  factory PreviewTokens.fromTemplate(Map<String, String> tokens) {
+    Color? parseColor(String? v) {
+      if (v == null) return null;
+      final s = v.trim();
+      final hex = RegExp(r'^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$')
+          .firstMatch(s);
+      if (hex != null) {
+        var h = hex.group(1)!;
+        if (h.length == 3) h = h.split('').map((c) => '$c$c').join();
+        if (h.length == 6) h = 'FF$h';
+        final value = int.tryParse(h, radix: 16);
+        if (value != null) return Color(value);
+        return null;
+      }
+      final rgba = RegExp(
+              r'^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)$')
+          .firstMatch(s);
+      if (rgba != null) {
+        final r = int.tryParse(rgba.group(1)!);
+        final g = int.tryParse(rgba.group(2)!);
+        final b = int.tryParse(rgba.group(3)!);
+        final a = double.tryParse(rgba.group(4)!);
+        if (r != null && g != null && b != null && a != null) {
+          return Color.fromRGBO(r, g, b, a);
+        }
+      }
+      return null;
+    }
+
+    double parseRadius(String? v) {
+      final m = v == null ? null : RegExp(r'^(\d+)px$').firstMatch(v.trim());
+      final n = m == null ? null : double.tryParse(m.group(1)!);
+      return (n == null || n < 0 || n > 64) ? 18 : n;
+    }
+
+    return PreviewTokens(
+      background: parseColor(tokens['bg']) ?? Colors.white,
+      surface: parseColor(tokens['surfaceStrong']) ??
+          const Color(0xFFF5F5F7),
+      text: parseColor(tokens['text']) ?? _previewText,
+      muted: parseColor(tokens['textSoft']) ?? _previewMuted,
+      accent: parseColor(tokens['accent']) ?? _previewBlue,
+      radius: parseRadius(tokens['radius']),
+    );
+  }
+}
+
 /// Live preview of the storefront header + hero, exactly as the
 /// website shows them. Empty drafts fall back to the website's own
 /// defaults, so the preview never shows a blank header.
@@ -26,10 +100,15 @@ class StorefrontHeaderPreview extends StatelessWidget {
     super.key,
     required this.brandName,
     required this.tagline,
+    this.tokens = const PreviewTokens(),
   });
 
   final String brandName;
   final String tagline;
+
+  /// Template tokens (file 12): when given, the preview renders in
+  /// the template's colors; the default keeps the old look.
+  final PreviewTokens tokens;
 
   @override
   Widget build(BuildContext context) {
@@ -40,9 +119,9 @@ class StorefrontHeaderPreview extends StatelessWidget {
     return Container(
       key: const Key('storefront-header-preview'),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFFE5E5EA)),
+        color: tokens.background,
+        borderRadius: BorderRadius.circular(tokens.radius),
+        border: Border.all(color: tokens.muted.withValues(alpha: 0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -50,25 +129,27 @@ class StorefrontHeaderPreview extends StatelessWidget {
           // Website <header>: sticky white bar, brand + cart button.
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: const BoxDecoration(
-              border: Border(bottom: BorderSide(color: Color(0xFFE5E5EA))),
+            decoration: BoxDecoration(
+              border: Border(
+                  bottom: BorderSide(
+                      color: tokens.muted.withValues(alpha: 0.3))),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
                   brand,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 20,
                     fontWeight: FontWeight.w800,
-                    color: _previewText,
+                    color: tokens.text,
                   ),
                 ),
                 Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
-                    color: _previewBlue,
+                    color: tokens.accent,
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: const Text(
@@ -84,18 +165,18 @@ class StorefrontHeaderPreview extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
             child: Text(
               tag,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 22,
                 fontWeight: FontWeight.w800,
-                color: _previewText,
+                color: tokens.text,
               ),
             ),
           ),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 0, 16, 14),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
             child: Text(
               'اطلب دلوقتي وادفع عند الاستلام',
-              style: TextStyle(color: _previewMuted, fontSize: 13),
+              style: TextStyle(color: tokens.muted, fontSize: 13),
             ),
           ),
         ],
@@ -117,6 +198,7 @@ class HomepagePreview extends StatelessWidget {
     required this.featuredProduct,
     required this.promoBanners,
     required this.deliveryBanner,
+    this.tokens = const PreviewTokens(),
   });
 
   final List<Map<String, String>> heroProducts;
@@ -124,34 +206,37 @@ class HomepagePreview extends StatelessWidget {
   final List<Map<String, dynamic>> promoBanners;
   final Map<String, String> deliveryBanner;
 
+  /// Template tokens (file 12); the default keeps the old look.
+  final PreviewTokens tokens;
+
   @override
   Widget build(BuildContext context) {
     final featured = featuredProduct;
     return Container(
       key: const Key('homepage-preview'),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFFE5E5EA)),
+        color: tokens.background,
+        borderRadius: BorderRadius.circular(tokens.radius),
+        border: Border.all(color: tokens.muted.withValues(alpha: 0.3)),
       ),
       padding: const EdgeInsets.all(12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text(
+          Text(
             'معاينة واجهة الموقع',
             style: TextStyle(
               fontWeight: FontWeight.w800,
               fontSize: 15,
-              color: _previewText,
+              color: tokens.text,
             ),
           ),
           const SizedBox(height: 8),
           // Hero strip: ordered hero products.
           if (heroProducts.isEmpty)
-            const Text(
+            Text(
               'مفيش منتجات في الواجهة لسه — ضيف لحد 4 منتجات.',
-              style: TextStyle(color: _previewMuted, fontSize: 13),
+              style: TextStyle(color: tokens.muted, fontSize: 13),
             )
           else
             SingleChildScrollView(
@@ -163,8 +248,9 @@ class HomepagePreview extends StatelessWidget {
                       width: 110,
                       padding: const EdgeInsets.all(8),
                       decoration: BoxDecoration(
-                        color: const Color(0xFFF5F5F7),
-                        borderRadius: BorderRadius.circular(12),
+                        color: tokens.surface,
+                        borderRadius:
+                            BorderRadius.circular(tokens.radius / 2),
                       ),
                       child: Column(
                         children: [
@@ -175,10 +261,10 @@ class HomepagePreview extends StatelessWidget {
                             p['name'] ?? '',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w700,
-                              color: _previewText,
+                              color: tokens.text,
                             ),
                           ),
                         ],
@@ -199,10 +285,10 @@ class HomepagePreview extends StatelessWidget {
                 Expanded(
                   child: Text(
                     'المنتج المميز: ${featured['name'] ?? ''}',
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w700,
-                      color: _previewText,
+                      color: tokens.text,
                     ),
                   ),
                 ),
@@ -213,15 +299,15 @@ class HomepagePreview extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               'بانرات ترويجية: ${promoBanners.length}',
-              style: const TextStyle(fontSize: 13, color: _previewMuted),
+              style: TextStyle(fontSize: 13, color: tokens.muted),
             ),
           ],
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
-              color: const Color(0xFFF5F5F7),
-              borderRadius: BorderRadius.circular(12),
+              color: tokens.surface,
+              borderRadius: BorderRadius.circular(tokens.radius / 2),
             ),
             child: Row(
               children: [
@@ -238,17 +324,17 @@ class HomepagePreview extends StatelessWidget {
                         deliveryBanner['title']!.isEmpty
                             ? 'بانر التوصيل'
                             : deliveryBanner['title']!,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w700,
-                          color: _previewText,
+                          color: tokens.text,
                         ),
                       ),
                       if (deliveryBanner['subtitle']!.isNotEmpty)
                         Text(
                           deliveryBanner['subtitle']!,
-                          style: const TextStyle(
-                              fontSize: 12, color: _previewMuted),
+                          style: TextStyle(
+                              fontSize: 12, color: tokens.muted),
                         ),
                     ],
                   ),
@@ -267,10 +353,13 @@ class HomepagePreview extends StatelessWidget {
         width: size,
         height: size,
         decoration: BoxDecoration(
-          gradient: const LinearGradient(
+          gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [_previewBlue, Color(0xFF64D2FF)],
+            colors: [
+              tokens.accent,
+              tokens.accent.withValues(alpha: 0.55),
+            ],
           ),
           borderRadius: BorderRadius.circular(8),
         ),
@@ -294,7 +383,7 @@ class HomepagePreview extends StatelessWidget {
         errorBuilder: (c, e, st) => Container(
           width: size,
           height: size,
-          color: _previewMuted,
+          color: tokens.muted,
           child: const Icon(Icons.broken_image_outlined,
               color: Colors.white, size: 20),
         ),
@@ -308,11 +397,15 @@ class StorefrontProductCardPreview extends StatelessWidget {
     required this.name,
     required this.priceText,
     this.imageUrl,
+    this.tokens = const PreviewTokens(),
   });
 
   final String name;
   final String priceText;
   final String? imageUrl;
+
+  /// Template tokens (file 12); the default keeps the old look.
+  final PreviewTokens tokens;
 
   @override
   Widget build(BuildContext context) {
@@ -321,8 +414,8 @@ class StorefrontProductCardPreview extends StatelessWidget {
     return Container(
       key: const Key('storefront-product-card-preview'),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
+        color: tokens.background,
+        borderRadius: BorderRadius.circular(tokens.radius),
         boxShadow: [
           BoxShadow(
             color: Colors.black.withValues(alpha: 0.06),
@@ -332,7 +425,7 @@ class StorefrontProductCardPreview extends StatelessWidget {
         ],
       ),
       child: ClipRRect(
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(tokens.radius),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -340,11 +433,14 @@ class StorefrontProductCardPreview extends StatelessWidget {
               aspectRatio: 1,
               child: url.isEmpty
                   ? Container(
-                      decoration: const BoxDecoration(
+                      decoration: BoxDecoration(
                         gradient: LinearGradient(
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
-                          colors: [_previewBlue, Color(0xFF64D2FF)],
+                          colors: [
+                            tokens.accent,
+                            tokens.accent.withValues(alpha: 0.55),
+                          ],
                         ),
                       ),
                       alignment: Alignment.center,
@@ -361,7 +457,7 @@ class StorefrontProductCardPreview extends StatelessWidget {
                       deliveryUrl(url),
                       fit: BoxFit.cover,
                       errorBuilder: (c, e, st) => Container(
-                        color: _previewMuted,
+                        color: tokens.muted,
                         alignment: Alignment.center,
                         child: const Icon(Icons.broken_image_outlined,
                             color: Colors.white),
@@ -375,17 +471,17 @@ class StorefrontProductCardPreview extends StatelessWidget {
                 children: [
                   Text(
                     displayName,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontWeight: FontWeight.w700,
                       fontSize: 15,
-                      color: _previewText,
+                      color: tokens.text,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     '$priceText ج.م',
-                    style: const TextStyle(
-                      color: _previewBlue,
+                    style: TextStyle(
+                      color: tokens.accent,
                       fontWeight: FontWeight.w800,
                     ),
                   ),
@@ -394,7 +490,7 @@ class StorefrontProductCardPreview extends StatelessWidget {
                     alignment: Alignment.center,
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     decoration: BoxDecoration(
-                      color: _previewBlue,
+                      color: tokens.accent,
                       borderRadius: BorderRadius.circular(999),
                     ),
                     child: const Text(
