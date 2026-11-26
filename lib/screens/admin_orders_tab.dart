@@ -7,7 +7,8 @@ part of 'admin_shell.dart';
 // unified 8-state labels, offers only the LEGAL next states from the
 // current status (v1.4 Decision 23), and edits the notes + the COD
 // payment status. The manual-order screen opens from the header
-// button (createManualOrder — the same trusted path as placeOrder).
+// button (createManualOrder — the §1 client transaction, the same
+// trusted path as placeOrder).
 
 const Map<String, String> _paymentStatusLabels = {
   'cod_pending': 'بانتظار الدفع',
@@ -40,6 +41,9 @@ class _OrdersTabState extends State<_OrdersTab> {
 
   Future<void> _loadPage({required bool refresh}) async {
     if (refresh) {
+      // Lazy sweep (contract §5): the orders list loading is one of
+      // the three sweep triggers. Fire-and-forget, best-effort.
+      unawaited(Backend.instance.runLazySweep());
       setState(() {
         _isLoading = true;
         _error = null;
@@ -225,7 +229,43 @@ Future<void> _showOrderDetail(
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(c), child: const Text('إغلاق')),
+          TextButton(
+            onPressed: () => Navigator.pop(c),
+            child: const Text('إغلاق'),
+          ),
+          // Print (contract §9, trivial route): no printing plugin
+          // is added — the invoice is shared as text, and the share
+          // sheet offers printing. Every button here is wired.
+          TextButton.icon(
+            icon: const Icon(Icons.share_outlined),
+            label: const Text('مشاركة الفاتورة'),
+            onPressed: () async {
+              final lines = <String>[
+                'فاتورة طلب',
+                'الاسم: ${data['customerName'] ?? ''}',
+                'الموبايل: ${data['customerPhone'] ?? ''}',
+                'العنوان: ${data['customerAddress'] ?? ''}',
+                'الحالة: ${Backend.orderStatusLabels[status] ?? status}',
+                '---',
+              ];
+              for (final item in items) {
+                final name = item['name'] ?? '';
+                final qty = (item['qty'] as num?) ?? 0;
+                final price = (item['price'] as num?) ?? 0;
+                lines.add('$name × $qty = ${(price * qty).toStringAsFixed(0)} ج.م');
+              }
+              lines.add('---');
+              if ((data['discountCode'] as String?)?.isNotEmpty == true) {
+                lines.add(
+                    'كود الخصم: ${data['discountCode']} (${data['discountPercent'] ?? 0}٪)');
+              }
+              lines.add(
+                  'الإجمالي: ${((data['total'] ?? 0) as num).toStringAsFixed(0)} ج.م');
+              await SharePlus.instance.share(
+                ShareParams(text: lines.join('\n')),
+              );
+            },
+          ),
           FilledButton(
             onPressed: () async {
               try {

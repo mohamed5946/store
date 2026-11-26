@@ -1,6 +1,7 @@
 // Admin shell: dashboard (analytics), products, categories, orders,
 // team, settings + diagnostics. Apple-level feel: weighted motion is kept
 // simple and calm — animated switching, no popping, loading states first.
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -55,6 +56,27 @@ class _AdminShellState extends State<AdminShell> {
   // shell mount (see StoreUpdateLaunchCheck).
   late final StoreUpdateFlow _updateFlow =
       StoreUpdateFlow(service: StoreUpdateService());
+
+  // Lazy sweep (contract §5): on app boot (this shell mounts after
+  // sign-in) and every 30 minutes while the app is open. The third
+  // trigger lives in the orders list load. Best-effort, logged.
+  Timer? _sweepTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(Backend.instance.runLazySweep());
+    _sweepTimer = Timer.periodic(
+      const Duration(minutes: 30),
+      (_) => unawaited(Backend.instance.runLazySweep()),
+    );
+  }
+
+  @override
+  void dispose() {
+    _sweepTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

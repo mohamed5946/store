@@ -2,7 +2,6 @@
 // All failures are logged to Diagnostics with their real reason and
 // rethrown as plain-language messages — never swallowed silently.
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -48,12 +47,17 @@ class ProductData {
     required this.description,
     required this.categoryId,
     this.images = const <CloudinaryImage>[],
+    this.featured = false,
   });
   final String id;
   final String name;
   final double price;
   final String description;
   final String categoryId;
+
+  /// Featured on the storefront (no-functions contract §7/§9): the
+  /// storefront lists every product with featured == true first.
+  final bool featured;
 
   /// Gallery: cover = images[0]. A pasted link is an entry with an empty
   /// publicId. Legacy single imageUrl docs are read as one image.
@@ -80,6 +84,7 @@ class ProductData {
       description: (d['description'] ?? '') as String,
       categoryId: (d['categoryId'] ?? '') as String,
       images: images,
+      featured: (d['featured'] ?? false) == true,
     );
   }
 }
@@ -306,38 +311,145 @@ class Backend {
     return false;
   }
 
-  /// Maps a callable's structured error (details.code) to a plain
-  /// Arabic message for the screen. The code is the stable machine
-  /// code the function returns; the message is what the admin sees.
-  String _friendlyCallableError(FirebaseFunctionsException e) {
-    final details = e.details;
-    final code = (details is Map ? details['code'] : null) as String? ?? e.code;
-    switch (code) {
-      case 'PRICE_CHANGED':
-        return 'اتغير سعر منتج من اللي شفتهم — راجع الأسعار وحاول تاني';
-      case 'TOTAL_CHANGED':
-        return 'اتغير الإجمالي — راجع الإجمالي وحاول تاني';
-      case 'INSUFFICIENT_STOCK':
-        return 'الكمية المطلوبة أكبر من المتاح في المخزون';
-      case 'DISCOUNT_INVALID':
-        return 'كود الخصم مش صحيح';
-      case 'DISCOUNT_USED':
-        return 'كود الخصم ده اتستخدم قبل كده';
-      case 'ORDER_TOO_LARGE':
-        return 'الطلب فيه منتجات أكتر من الحد المسموح (10)';
-      case 'RATE_LIMITED':
-        return 'محاولات كتير في وقت قصير — استنى شوية وحاول تاني';
-      case 'PERMISSION_DENIED':
-        return 'ماعندكش صلاحية تعمل العملية دي';
-      case 'NOT_FOUND':
-        return 'البيانات المطلوبة مش موجودة';
-      case 'BLOCKED':
-        return 'الإرسال محظور مؤقتاً من الرقم ده';
-      case 'INVALID_INPUT':
-        return 'البيانات مش كاملة أو مش صحيحة';
-      default:
-        return 'حصل خطأ: $code';
+  // ---- No-functions pure helpers (contract §1/§5/§6/§9) ----
+  //
+  // Pure logic, no Firestore — unit-tested in
+  // test/no_functions_backend_test.dart. The transaction methods
+  // below call these so the client logic can never drift from the
+  // tested shapes.
+
+  static const int maxProductsPerOrder = 10;
+  static const int maxQtyPerLine = 20;
+
+  /// 24h reservation TTL (contract §5). A 'new' order older than
+  /// this is expired by the lazy sweep.
+  static const Duration reservationTtl = Duration(hours: 24);
+
+  static bool isReservationExpired({
+    required DateTime? createdAt,
+    required DateTime now,
+  }) =>
+      createdAt != null && !now.isBefore(createdAt.add(reservationTtl));
+
+  /// Merge duplicate lines by productId, summing quantities (keeps
+  /// first-seen order; mirrors functions/lib/validation.js
+  /// dedupeItems).
+  static List<Map<String, dynamic>> dedupeManualItems(
+      List<Map<String, dynamic>> items) {
+    final merged = <String, Map<String, dynamic>>{};
+    for (final line in items) {
+      final id = ((line['productId'] ?? '') as String).trim();
+      if (id.isEmpty) continue;
+      final qty = ((line['qty'] ?? 0) as num).toInt();
+      if (merged.containsKey(id)) {
+        merged[id]!['qty'] = ((merged[id]!['qty'] ?? 0) as num).toInt() + qty;
+      } else {
+        merged[id] = {'productId': id, 'qty': qty};
+      }
     }
+    return merged.values.toList();
+  }
+
+  /// Shape validation for a manual order (contract §1 step 3).
+  /// Returns an Arabic error message, or null when valid.
+  static String? validateManualOrderInput({
+    required String customerName,
+    required String customerPhone,
+    required String customerAddress,
+    required List<Map<String, dynamic>> items,
+  }) {
+    if (customerName.trim().isEmpty) return 'اكتب اسم العميل';
+    final digits = customerPhone.replaceAll(RegExp(r'\D'), '');
+    if (digits.length < 10) return 'اكتب رقم موبايل صحيح';
+    if (customerAddress.trim().isEmpty) return 'اكتب العنوان';
+    if (items.isEmpty) return 'اختار منتج واحد على الأقل';
+    final merged = dedupeManualItems(items);
+    if (merged.length > maxProductsPerOrder) {
+      return 'الطلب فيه منتجات أكتر من الحد المسموح (10)';
+    }
+    for (final line in merged) {
+      final qty = ((line['qty'] ?? 0) as num).toInt();
+      if (qty < 1 || qty > maxQtyPerLine) return 'الكمية لازم تكون بين 1 و 20';
+    }
+    return null;
+  }
+
+  /// Totals from DATABASE prices (contract §1 step 4):
+  /// subtotal = Σ price*qty; discountAmount =
+  /// round(subtotal * percent / 100); total = subtotal - discountAmount.
+  /// [lines] are {'price': num, 'qty': int} with trusted prices.
+  static ({num subtotal, int? discountPercent, num discountAmount, num total})
+      computeOrderTotals(
+    List<Map<String, dynamic>> lines,
+    int? percent,
+  ) {
+    num subtotal = 0;
+    for (final line in lines) {
+      subtotal += ((line['price'] ?? 0) as num) * ((line['qty'] ?? 0) as num);
+    }
+    final p = percent ?? 0;
+    final discountAmount = p == 0 ? 0 : (subtotal * p / 100).round();
+    return (
+      subtotal: subtotal,
+      discountPercent: percent,
+      discountAmount: discountAmount,
+      total: subtotal - discountAmount,
+    );
+  }
+
+  /// A whole-number price/total stored as int, not double: the new
+  /// rules require `price is int`, and a Dart double 100.0 is stored
+  /// as a double and fails that check. Fractional values pass through.
+  static num wholeNum(num value) =>
+      value is double && value == value.truncateToDouble()
+          ? value.toInt()
+          : value;
+
+  /// The insufficient-stock message (contract §1 step 5): the UI
+  /// shows the available count only.
+  static String insufficientStockMessage({
+    required String productName,
+    required int available,
+  }) =>
+      'المتاح دلوقتي من $productName هو $available بس';
+
+  /// Shape validation for a one-way complaint (contract §3/§6:
+  /// exact keys name/email/address/message/createdAt).
+  static String? validateFeedbackInput({
+    required String name,
+    required String email,
+    required String address,
+    required String message,
+  }) {
+    if (name.trim().isEmpty || name.trim().length > 100) {
+      return 'اكتب الاسم (بحد أقصى 100 حرف)';
+    }
+    final mail = email.trim();
+    if (mail.isEmpty || mail.length > 100 || !mail.contains('@')) {
+      return 'اكتب إيميل صحيح';
+    }
+    if (address.trim().isEmpty || address.trim().length > 300) {
+      return 'اكتب العنوان (بحد أقصى 300 حرف)';
+    }
+    final msg = message.trim();
+    if (msg.length < 10 || msg.length > 2000) {
+      return 'اكتب الشكوى (من 10 لـ 2000 حرف)';
+    }
+    return null;
+  }
+
+  /// WhatsApp-order settings (contract §7/§9): read from
+  /// storeSettings/settings, defaults false / '201557887719'.
+  static const String defaultWhatsAppNumber = '201557887719';
+
+  static ({bool enabled, String number}) parseWhatsAppSettings(
+      Map<String, dynamic>? data) {
+    final d = data ?? {};
+    final number = ((d['whatsappNumber'] as String?) ?? '').trim();
+    return (
+      enabled: (d['whatsappOrderEnabled'] as bool?) ?? false,
+      number: number.isEmpty ? defaultWhatsAppNumber : number,
+    );
   }
 
 
@@ -532,6 +644,30 @@ class Backend {
     );
   }
 
+  /// WhatsApp-order settings (contract §7/§9): the toggle + number
+  /// the storefront reads at boot. Defaults live in
+  /// parseWhatsAppSettings (false / '201557887719').
+  Future<void> setWhatsAppOrder({
+    required bool enabled,
+    required String number,
+  }) async {
+    _requireInit();
+    final trimmed = number.trim();
+    if (trimmed.isEmpty || !RegExp(r'^\d{10,15}$').hasMatch(trimmed)) {
+      throw BackendException('اكتب رقم واتساب صحيح (أرقام بس، بكود الدولة)');
+    }
+    await _auditedBatch(
+      writes: {
+        'storeSettings/settings': {
+          'whatsappOrderEnabled': enabled,
+          'whatsappNumber': trimmed,
+        },
+      },
+      sensitive: const {},
+      operation: 'update',
+    );
+  }
+
   /// v1.1.2 scope #8: the homepage editor's document. The website
   /// builder reads storeSettings/homepage with an exact field shape
   /// (see lib/core/homepage.dart) — this writes the FULL doc with
@@ -599,9 +735,12 @@ class Backend {
 
   Future<void> saveProduct(ProductData p) async {
     _requireInit();
+    // wholeNum: the new rules require `price is int` — a stored
+    // double 100.0 fails that check, so whole EGP prices are stored
+    // as ints (fractional prices, if any, stay doubles).
     final data = <String, dynamic>{
       'name': p.name,
-      'price': p.price,
+      'price': wholeNum(p.price),
       'description': p.description,
       'categoryId': p.categoryId,
       'images': p.images.map((img) => img.toMap()).toList(),
@@ -625,6 +764,18 @@ class Backend {
       collection: 'products',
       docId: id,
       changedFields: const ['name', 'price', 'description', 'categoryId', 'images'],
+    );
+  }
+
+  /// Featured toggle (contract §9): the storefront lists every
+  /// product with featured == true first. Audited write; `featured`
+  /// is not a sensitive field, so no new value is recorded.
+  Future<void> setProductFeatured(String id, bool featured) async {
+    _requireInit();
+    await _auditedBatch(
+      writes: {'products/$id': {'featured': featured}},
+      sensitive: const {},
+      operation: 'update',
     );
   }
 
@@ -685,19 +836,18 @@ class Backend {
   };
 
   /// Moves an order to [status]. Stock-moving transitions (cancel →
-  /// release the reservation; deliver → release + deduct from stock)
-  /// run inside ONE transaction that updates inventory, inStock,
-  /// movements, the order, and the audit entry atomically (v1.4 §6.3).
-  /// Pure status steps (accept → prepare → ready → in transit) are an
-  /// audited batch on the order alone. The lifecycle timestamps
+  /// release the reservation; deliver → release + deduct from stock;
+  /// expire → release, sweep only) run inside ONE transaction that
+  /// updates inventory, inStock, movements, the order, and the audit
+  /// entry atomically (v1.4 §6.3). Reopen (cancelled → new, contract
+  /// §2) is now a STOCK-MOVING transaction too: it re-checks
+  /// availability per line, re-reserves, and deletes the cancel stamp
+  /// (cancelledAt + cancelReason) — the audit docIds are derived from
+  /// the real write keys, including the deleted fields. Pure status
+  /// steps (accept → prepare → ready → in transit) are an audited
+  /// batch on the order alone. The lifecycle timestamps
   /// (acceptedAt / deliveredAt / cancelledAt) are stamped with the
-  /// transition; cancelReason is set on cancel/expire. Reopen
-  /// (cancelled → new) is the reverse of the cancel stamp: it DELETES
-  /// cancelledAt + cancelReason so the order reads as a fresh new
-  /// order (the audit entry's docIds are derived from the real write
-  /// keys, so the deleted fields stay covered by the rules). Reopen
-  /// does NOT re-reserve stock — cancel already released the
-  /// reservation, and the reopen write touches the order alone.
+  /// transition; cancelReason is set on cancel/expire.
   Future<void> setOrderStatus(String id, String status, {String? reason}) async {
     _requireInit();
     final orderRef = db.collection('orders').doc(id);
@@ -709,135 +859,25 @@ class Backend {
       throw BackendException('مينفعش تنقل الطلب من ${orderStatusLabels[from] ?? from} لـ ${orderStatusLabels[status] ?? status}');
     }
     if (status == 'cancelled' || status == 'delivered' || status == 'expired') {
-      await db.runTransaction((tx) async {
-        final freshSnap = await tx.get(orderRef);
-        final fresh = freshSnap.data();
-        if (fresh == null) throw BackendException('الطلب مش موجود');
-        if ((fresh['status'] ?? '') != from) {
-          throw BackendException('الطلب اتغير من حد تاني — حدّث الصفحة وحاول تاني');
-        }
-        final auditRef = db.collection('audit').doc();
-        final opId = auditRef.id;
-        final now = FieldValue.serverTimestamp();
-        // The order write (built first, below) also stamps the
-        // lifecycle fields — deliveredAt on deliver, cancelledAt +
-        // cancelReason on cancel/expire. The audit's docIds entry
-        // MUST list every key the write actually sets: the rules
-        // check diff().affectedKeys() coverage, so a hard-coded
-        // ['status', 'operationId', 'updatedAt'] denies the cancel /
-        // deliver write even with the new rules deployed (the
-        // lifecycle fields are new keys, hence affected). Deriving
-        // the list from the real write keeps the two in sync.
-        final orderUpdate = <String, dynamic>{
-          'status': status,
-          'operationId': opId,
-          'updatedAt': now,
-        };
-        if (status == 'accepted') orderUpdate['acceptedAt'] = now;
-        if (status == 'delivered') orderUpdate['deliveredAt'] = now;
-        if (status == 'cancelled' || status == 'expired') {
-          orderUpdate['cancelledAt'] = now;
-          orderUpdate['cancelReason'] = reason ??
-              (status == 'expired'
-                  ? 'reservation_expired'
-                  : 'cancelled_by_admin');
-        }
-        final orderChangedFields = orderUpdate.keys.toList();
-        final docIds = <String, List<String>>{
-          'orders/$id': orderChangedFields,
-        };
-        final newValuesByDoc = <String, Map<String, dynamic>>{
-          'orders/$id': {'status': status},
-        };
-        final documents = <Map<String, dynamic>>[];
-        final items = (fresh['items'] as List<dynamic>? ?? []);
-        for (final line in items) {
-          final m = line as Map<String, dynamic>;
-          final productId = (m['productId'] ?? '') as String;
-          final qty = ((m['qty'] ?? 0) as num).toInt();
-          if (productId.isEmpty || qty <= 0) continue;
-          final invRef = db.collection('inventory').doc(productId);
-          final invSnap = await tx.get(invRef);
-          final inv = invSnap.data() ?? {};
-          final stock = ((inv['stock'] ?? 0) as num).toInt();
-          final reserved = ((inv['reserved'] ?? 0) as num).toInt();
-          final newReserved = (reserved - qty).clamp(0, 1 << 30);
-          final newStock = status == 'delivered' ? (stock - qty).clamp(0, 1 << 30) : stock;
-          final newAvailable = newStock - newReserved;
-          tx.set(invRef, {
-            'reserved': newReserved,
-            'stock': newStock,
-            'operationId': opId,
-            'updatedAt': now,
-          }, SetOptions(merge: true));
-          tx.set(db.collection('products').doc(productId), {
-            'inStock': newAvailable > 0,
-            'operationId': opId,
-            'updatedAt': now,
-          }, SetOptions(merge: true));
-          tx.set(db.collection('movements').doc(), {
-            'productId': productId,
-            'type': status == 'delivered' ? 'order_deliver' : 'order_cancel',
-            'qty': status == 'delivered' ? -qty : qty,
-            'orderId': id,
-            'source': 'flutter_admin',
-            'actorUid': auth.currentUser?.uid,
-            'createdAt': now,
-          });
-          docIds['inventory/$productId'] = ['reserved', 'stock', 'operationId', 'updatedAt'];
-          docIds['products/$productId'] = ['inStock', 'operationId', 'updatedAt'];
-          newValuesByDoc['inventory/$productId'] = {'stock': newStock, 'reserved': newReserved};
-          newValuesByDoc['products/$productId'] = {'inStock': newAvailable > 0};
-          documents.add({
-            'collection': 'inventory',
-            'docId': productId,
-            'changedFields': ['reserved', 'stock'],
-            'oldValues': {'stock': stock, 'reserved': reserved},
-            'newValues': {'stock': newStock, 'reserved': newReserved},
-          });
-          documents.add({
-            'collection': 'products',
-            'docId': productId,
-            'changedFields': ['inStock'],
-            'oldValues': {},
-            'newValues': {'inStock': newAvailable > 0},
-          });
-        }
-        tx.set(orderRef, orderUpdate, SetOptions(merge: true));
-        documents.insert(0, {
-          'collection': 'orders',
-          'docId': id,
-          'changedFields': orderChangedFields,
-          'oldValues': {'status': from},
-          'newValues': {'status': status},
-        });
-        tx.set(auditRef, {
-          'operationId': opId,
-          'actor': auth.currentUser?.uid ?? '',
-          'actorName': auth.currentUser?.email ?? '',
-          'timestamp': now,
-          'collection': 'orders',
-          'docId': id,
-          'operation': 'status_change',
-          'changedFields': docIds.values.expand((e) => e).toSet().toList(),
-          'oldValues': {'status': from},
-          'newValues': {'status': status},
-          'docIds': docIds,
-          'newValuesByDoc': newValuesByDoc,
-          'documents': documents,
-          'source': 'flutter_admin',
-        });
-      });
+      await _stockMovingTransition(
+        id,
+        status,
+        from: from,
+        reason: reason,
+        actorUid: auth.currentUser?.uid ?? '',
+        actorName: auth.currentUser?.email ?? '',
+        source: 'flutter_admin',
+      );
       Diagnostics.instance.log('Order $id: $from -> $status (stock moved)');
+      return;
+    }
+    if (from == 'cancelled' && status == 'new') {
+      await _reopenTransition(id);
+      Diagnostics.instance.log('Order $id: cancelled -> new (re-reserved)');
       return;
     }
     final orderUpdate = <String, dynamic>{'status': status};
     if (status == 'accepted') orderUpdate['acceptedAt'] = FieldValue.serverTimestamp();
-    if (from == 'cancelled' && status == 'new') {
-      // Reopen: wipe the cancel stamp so the order reads as fresh-new.
-      orderUpdate['cancelledAt'] = FieldValue.delete();
-      orderUpdate['cancelReason'] = FieldValue.delete();
-    }
     await _auditedBatch(
       writes: {'orders/$id': orderUpdate},
       sensitive: {'orders/$id': {'status': status}},
@@ -846,6 +886,332 @@ class Backend {
       topNewValues: {'status': status},
     );
     Diagnostics.instance.log('Order $id: $from -> $status');
+  }
+
+  /// The stock-moving transaction shared by cancel / deliver /
+  /// expire (contract §2, §5). [expireBefore] is set only by the lazy
+  /// sweep: inside the transaction the order is re-checked (still
+  /// 'new' AND createdAt + 24h <= [expireBefore]) and the transition
+  /// is silently skipped when it no longer applies — idempotent by
+  /// construction. Returns true when the transition ran.
+  Future<bool> _stockMovingTransition(
+    String id,
+    String status, {
+    required String from,
+    String? reason,
+    required String actorUid,
+    required String actorName,
+    required String source,
+    DateTime? expireBefore,
+  }) async {
+    var ran = false;
+    final orderRef = db.collection('orders').doc(id);
+    await db.runTransaction((tx) async {
+      final freshSnap = await tx.get(orderRef);
+      final fresh = freshSnap.data();
+      if (fresh == null) throw BackendException('الطلب مش موجود');
+      if (expireBefore != null) {
+        if ((fresh['status'] ?? '') != 'new') return;
+        final createdAt = (fresh['createdAt'] as Timestamp?)?.toDate();
+        if (!isReservationExpired(createdAt: createdAt, now: expireBefore)) {
+          return;
+        }
+      } else if ((fresh['status'] ?? '') != from) {
+        throw BackendException('الطلب اتغير من حد تاني — حدّث الصفحة وحاول تاني');
+      }
+      final auditRef = db.collection('audit').doc();
+      final opId = auditRef.id;
+      final now = FieldValue.serverTimestamp();
+      // The order write (built first, below) also stamps the
+      // lifecycle fields — deliveredAt on deliver, cancelledAt +
+      // cancelReason on cancel/expire. The audit's docIds entry
+      // MUST list every key the write actually sets: the rules
+      // check diff().affectedKeys() coverage, so a hard-coded
+      // ['status', 'operationId', 'updatedAt'] denies the cancel /
+      // deliver write even with the new rules deployed (the
+      // lifecycle fields are new keys, hence affected). Deriving
+      // the list from the real write keeps the two in sync.
+      final orderUpdate = <String, dynamic>{
+        'status': status,
+        'operationId': opId,
+        'updatedAt': now,
+      };
+      if (status == 'delivered') orderUpdate['deliveredAt'] = now;
+      if (status == 'cancelled' || status == 'expired') {
+        orderUpdate['cancelledAt'] = now;
+        orderUpdate['cancelReason'] = reason ??
+            (status == 'expired'
+                ? 'reservation_expired'
+                : 'cancelled_by_admin');
+      }
+      final orderChangedFields = orderUpdate.keys.toList();
+      final docIds = <String, List<String>>{
+        'orders/$id': orderChangedFields,
+      };
+      final newValuesByDoc = <String, Map<String, dynamic>>{
+        'orders/$id': {'status': status},
+      };
+      final documents = <Map<String, dynamic>>[];
+      final items = (fresh['items'] as List<dynamic>? ?? []);
+      for (final line in items) {
+        final m = line as Map<String, dynamic>;
+        final productId = (m['productId'] ?? '') as String;
+        final qty = ((m['qty'] ?? 0) as num).toInt();
+        if (productId.isEmpty || qty <= 0) continue;
+        final invRef = db.collection('inventory').doc(productId);
+        final invSnap = await tx.get(invRef);
+        final inv = invSnap.data() ?? {};
+        final stock = ((inv['stock'] ?? 0) as num).toInt();
+        final reserved = ((inv['reserved'] ?? 0) as num).toInt();
+        final newReserved = (reserved - qty).clamp(0, 1 << 30);
+        final newStock = status == 'delivered' ? (stock - qty).clamp(0, 1 << 30) : stock;
+        final newAvailable = newStock - newReserved;
+        tx.set(invRef, {
+          'reserved': newReserved,
+          'stock': newStock,
+          'operationId': opId,
+          'updatedAt': now,
+        }, SetOptions(merge: true));
+        tx.set(db.collection('products').doc(productId), {
+          'inStock': newAvailable > 0,
+          'operationId': opId,
+          'updatedAt': now,
+        }, SetOptions(merge: true));
+        tx.set(db.collection('movements').doc(), {
+          'productId': productId,
+          'type': status == 'delivered'
+              ? 'order_deliver'
+              : status == 'expired'
+                  ? 'reservation_expire'
+                  : 'order_cancel',
+          'qty': status == 'delivered' ? -qty : qty,
+          'orderId': id,
+          'source': source,
+          'actorUid': actorUid,
+          'createdAt': now,
+        });
+        docIds['inventory/$productId'] = ['reserved', 'stock', 'operationId', 'updatedAt'];
+        docIds['products/$productId'] = ['inStock', 'operationId', 'updatedAt'];
+        newValuesByDoc['inventory/$productId'] = {'stock': newStock, 'reserved': newReserved};
+        newValuesByDoc['products/$productId'] = {'inStock': newAvailable > 0};
+        documents.add({
+          'collection': 'inventory',
+          'docId': productId,
+          'changedFields': ['reserved', 'stock'],
+          'oldValues': {'stock': stock, 'reserved': reserved},
+          'newValues': {'stock': newStock, 'reserved': newReserved},
+        });
+        documents.add({
+          'collection': 'products',
+          'docId': productId,
+          'changedFields': ['inStock'],
+          'oldValues': {},
+          'newValues': {'inStock': newAvailable > 0},
+        });
+      }
+      tx.set(orderRef, orderUpdate, SetOptions(merge: true));
+      documents.insert(0, {
+        'collection': 'orders',
+        'docId': id,
+        'changedFields': orderChangedFields,
+        'oldValues': {'status': from},
+        'newValues': {'status': status},
+      });
+      tx.set(auditRef, {
+        'operationId': opId,
+        'actor': actorUid,
+        'actorName': actorName,
+        'timestamp': now,
+        'collection': 'orders',
+        'docId': id,
+        'operation': 'status_change',
+        'changedFields': docIds.values.expand((e) => e).toSet().toList(),
+        'oldValues': {'status': from},
+        'newValues': {'status': status},
+        'docIds': docIds,
+        'newValuesByDoc': newValuesByDoc,
+        'documents': documents,
+        'source': source,
+      });
+      ran = true;
+    });
+    return ran;
+  }
+
+  /// Reopen (cancelled → new, contract §2): a STOCK-MOVING
+  /// transaction. Reads the order + inventory per line, throws with
+  /// the product name + available count when any line is short,
+  /// re-reserves, refreshes products.inStock, writes
+  /// 'reopen_reserve' movements, sets status 'new' and DELETES
+  /// cancelledAt + cancelReason. The audit docIds are derived from
+  /// the real write keys, including the deleted fields.
+  Future<void> _reopenTransition(String id) async {
+    final orderRef = db.collection('orders').doc(id);
+    await db.runTransaction((tx) async {
+      final freshSnap = await tx.get(orderRef);
+      final fresh = freshSnap.data();
+      if (fresh == null) throw BackendException('الطلب مش موجود');
+      if ((fresh['status'] ?? '') != 'cancelled') {
+        throw BackendException('الطلب اتغير من حد تاني — حدّث الصفحة وحاول تاني');
+      }
+      final auditRef = db.collection('audit').doc();
+      final opId = auditRef.id;
+      final now = FieldValue.serverTimestamp();
+      final uid = auth.currentUser?.uid ?? '';
+      final email = auth.currentUser?.email ?? '';
+      final docIds = <String, List<String>>{};
+      final newValuesByDoc = <String, Map<String, dynamic>>{};
+      final documents = <Map<String, dynamic>>[];
+      final items = (fresh['items'] as List<dynamic>? ?? []);
+      for (final line in items) {
+        final m = line as Map<String, dynamic>;
+        final productId = (m['productId'] ?? '') as String;
+        final qty = ((m['qty'] ?? 0) as num).toInt();
+        if (productId.isEmpty || qty <= 0) continue;
+        final invRef = db.collection('inventory').doc(productId);
+        final invSnap = await tx.get(invRef);
+        final inv = invSnap.data() ?? {};
+        final stock = ((inv['stock'] ?? 0) as num).toInt();
+        final reserved = ((inv['reserved'] ?? 0) as num).toInt();
+        final available = stock - reserved;
+        if (qty > available) {
+          final productSnap = await tx.get(db.collection('products').doc(productId));
+          final name = ((productSnap.data() ?? {})['name'] ?? productId) as String;
+          throw BackendException(insufficientStockMessage(
+            productName: name,
+            available: available < 0 ? 0 : available,
+          ));
+        }
+        final newReserved = reserved + qty;
+        final newAvailable = stock - newReserved;
+        tx.set(invRef, {
+          'reserved': newReserved,
+          'stock': stock,
+          'operationId': opId,
+          'updatedAt': now,
+        }, SetOptions(merge: true));
+        tx.set(db.collection('products').doc(productId), {
+          'inStock': newAvailable > 0,
+          'operationId': opId,
+          'updatedAt': now,
+        }, SetOptions(merge: true));
+        tx.set(db.collection('movements').doc(), {
+          'productId': productId,
+          'type': 'reopen_reserve',
+          'qty': -qty,
+          'orderId': id,
+          'source': 'flutter_admin',
+          'actorUid': uid,
+          'createdAt': now,
+        });
+        docIds['inventory/$productId'] = ['reserved', 'stock', 'operationId', 'updatedAt'];
+        docIds['products/$productId'] = ['inStock', 'operationId', 'updatedAt'];
+        newValuesByDoc['inventory/$productId'] = {'stock': stock, 'reserved': newReserved};
+        newValuesByDoc['products/$productId'] = {'inStock': newAvailable > 0};
+        documents.add({
+          'collection': 'inventory',
+          'docId': productId,
+          'changedFields': ['reserved', 'stock'],
+          'oldValues': {'stock': stock, 'reserved': reserved},
+          'newValues': {'stock': stock, 'reserved': newReserved},
+        });
+        documents.add({
+          'collection': 'products',
+          'docId': productId,
+          'changedFields': ['inStock'],
+          'oldValues': {},
+          'newValues': {'inStock': newAvailable > 0},
+        });
+      }
+      final orderUpdate = <String, dynamic>{
+        'status': 'new',
+        'operationId': opId,
+        'updatedAt': now,
+        'cancelledAt': FieldValue.delete(),
+        'cancelReason': FieldValue.delete(),
+      };
+      final orderChangedFields = orderUpdate.keys.toList();
+      docIds['orders/$id'] = orderChangedFields;
+      newValuesByDoc['orders/$id'] = {'status': 'new'};
+      tx.set(orderRef, orderUpdate, SetOptions(merge: true));
+      documents.insert(0, {
+        'collection': 'orders',
+        'docId': id,
+        'changedFields': orderChangedFields,
+        'oldValues': {'status': 'cancelled'},
+        'newValues': {'status': 'new'},
+      });
+      tx.set(auditRef, {
+        'operationId': opId,
+        'actor': uid,
+        'actorName': email,
+        'timestamp': now,
+        'collection': 'orders',
+        'docId': id,
+        'operation': 'status_change',
+        'changedFields': docIds.values.expand((e) => e).toSet().toList(),
+        'oldValues': {'status': 'cancelled'},
+        'newValues': {'status': 'new'},
+        'docIds': docIds,
+        'newValuesByDoc': newValuesByDoc,
+        'documents': documents,
+        'source': 'flutter_admin',
+      });
+    });
+  }
+
+  /// Lazy sweep (contract §5, replaces the scheduled sweep):
+  /// releases expired 'new' orders (createdAt older than 24h).
+  /// Runs on app boot (AdminShell), when the orders list loads, and
+  /// every 30 minutes while the app is open. Best-effort: never
+  /// throws to the UI, every failure is logged. Returns how many
+  /// orders were expired. The query filters status == 'new' only
+  /// (single-field index) and the TTL check happens client-side +
+  /// again inside each transaction, so no composite index is needed.
+  bool _sweepRunning = false;
+
+  Future<int> runLazySweep() async {
+    if (!initialized || auth.currentUser == null) return 0;
+    if (_sweepRunning) return 0;
+    _sweepRunning = true;
+    try {
+      final snap = await db
+          .collection('orders')
+          .where('status', isEqualTo: 'new')
+          .limit(100)
+          .get();
+      final now = DateTime.now();
+      var expired = 0;
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
+        if (!isReservationExpired(createdAt: createdAt, now: now)) continue;
+        try {
+          final ran = await _stockMovingTransition(
+            doc.id,
+            'expired',
+            from: 'new',
+            reason: 'reservation_expired',
+            actorUid: 'sweep',
+            actorName: 'sweep',
+            source: 'sweep',
+            expireBefore: now,
+          );
+          if (ran) expired++;
+        } catch (e) {
+          Diagnostics.instance.log('Lazy sweep: failed to expire ${doc.id}: $e');
+        }
+      }
+      if (expired > 0) {
+        Diagnostics.instance.log('Lazy sweep: expired $expired order(s)');
+      }
+      return expired;
+    } on FirebaseException catch (e) {
+      Diagnostics.instance.log('Lazy sweep failed: ${e.code} ${e.message}');
+      return 0;
+    } finally {
+      _sweepRunning = false;
+    }
   }
 
   /// Admin note on an order (v1.4 §7). A note never changes the
@@ -892,7 +1258,7 @@ class Backend {
   }
 
   /// Inventory keyed by product id: {stock, reserved, available,
-  /// inStock}. The admin apps read it for the stock-visibility
+  /// inStock, minStock}. The admin apps read it for the stock-visibility
   /// display; the storefront never sees quantities.
   Future<Map<String, Map<String, dynamic>>> inventoryMap() async {
     _requireInit();
@@ -907,6 +1273,7 @@ class Backend {
         'reserved': reserved,
         'available': stock - reserved,
         'inStock': (stock - reserved) > 0,
+        'minStock': ((data['minStock'] ?? 5) as num).toInt(),
       };
     }
     return map;
@@ -921,15 +1288,20 @@ class Backend {
     return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
   }
 
-  // ---- Callables: manual orders + feedback (v1.4 §6/§8) ----
-
-  /// Creates an order on behalf of a customer (phone order). Runs the
-  /// same trusted path as the storefront's placeOrder — same price /
-  /// stock / discount validation, same reservation, same idempotency,
-  /// same audit — with source 'admin_manual'. The form sends NO price,
-  /// total, or discount-percent fields; a discount applies only via a
-  /// code. The function re-checks the orders_create_manual permission
-  /// server-side (the UI check in hasPermission() is not security).
+  // ---- Manual orders (contract §1, no-functions) ----
+  //
+  // Creates an order on behalf of a customer (phone order) with ONE
+  // Firestore client transaction — the same transaction the
+  // storefront runs, with source 'admin_manual' and the admin's UID.
+  // No Cloud Function is involved: prices/totals come from the
+  // DATABASE prices just read, stock is reserved in the same
+  // transaction, the discount is claimed in the same transaction,
+  // and the audit entry rides along (§4). Permission is checked
+  // client-side here AND re-checked by the rules from admins/{uid}.
+  // After the transaction commits, products.inStock is refreshed
+  // by the §13 second write (batched, up to 3 tries, best-effort).
+  // Returns {'order': {...}, 'created': bool} — created:false means
+  // the clientOrderId already existed (idempotent retry).
   Future<Map<String, dynamic>> createManualOrder({
     required String clientOrderId,
     required List<Map<String, dynamic>> items,
@@ -941,112 +1313,337 @@ class Backend {
     String? notes,
   }) async {
     _requireInit();
+    if (!await hasPermission('orders_create_manual')) {
+      throw BackendException('ماعندكش صلاحية إنشاء طلبات يدوية');
+    }
+    final shapeError = validateManualOrderInput(
+      customerName: customerName,
+      customerPhone: customerPhone,
+      customerAddress: customerAddress,
+      items: items,
+    );
+    if (shapeError != null) throw BackendException(shapeError);
+    final merged = dedupeManualItems(items);
+    final uid = auth.currentUser?.uid;
+    if (uid == null) throw BackendException('سجّل الدخول الأول');
+    final email = auth.currentUser?.email ?? '';
+    final code = (discountCode ?? '').trim();
+    Map<String, dynamic> result;
     try {
-      final callable = FirebaseFunctions.instance.httpsCallable('createManualOrder');
-      final res = await callable.call(<String, dynamic>{
-        'clientOrderId': clientOrderId,
-        'items': items,
-        'discountCode': discountCode,
-        'customer': {
-          'name': customerName,
-          'phone': customerPhone,
-          'address': customerAddress,
-        },
-        'shippingCompanyId': shippingCompanyId,
-        'notes': notes,
+      result = await db.runTransaction<Map<String, dynamic>>((tx) async {
+        final orderRef = db.collection('orders').doc(clientOrderId);
+        // Idempotency first: a retry with the same clientOrderId
+        // returns the existing order — no stock work, no discount
+        // work, no duplicate.
+        final existing = await tx.get(orderRef);
+        if (existing.exists) {
+          final data = existing.data() ?? {};
+          return {
+            'order': {'id': existing.id, ...data},
+            'created': false,
+            'newInStock': <String, bool>{},
+          };
+        }
+        // Read products + inventory (one read per line), validate
+        // against the DATABASE prices and the real availability.
+        final lines = <Map<String, dynamic>>[];
+        for (final line in merged) {
+          final productId = (line['productId'] ?? '') as String;
+          final qty = ((line['qty'] ?? 0) as num).toInt();
+          final productSnap = await tx.get(db.collection('products').doc(productId));
+          if (!productSnap.exists) {
+            throw BackendException('منتج مش موجود في المتجر');
+          }
+          final product = productSnap.data() ?? {};
+          final rawPrice = (product['price'] ?? 0) as num;
+          if (!rawPrice.isFinite || rawPrice <= 0) {
+            throw BackendException('سعر المنتج مش صحيح');
+          }
+          final price = wholeNum(rawPrice);
+          final invSnap = await tx.get(db.collection('inventory').doc(productId));
+          final inv = invSnap.data() ?? {};
+          final stock = ((inv['stock'] ?? 0) as num).toInt();
+          final reserved = ((inv['reserved'] ?? 0) as num).toInt();
+          final available = stock - reserved;
+          if (qty > available) {
+            throw BackendException(insufficientStockMessage(
+              productName: (product['name'] ?? productId) as String,
+              available: available < 0 ? 0 : available,
+            ));
+          }
+          lines.add({
+            'productId': productId,
+            'name': (product['name'] ?? '') as String,
+            'price': price,
+            'qty': qty,
+            'stock': stock,
+            'reserved': reserved,
+            'minStock': ((inv['minStock'] ?? 5) as num).toInt(),
+            'costPrice': ((inv['costPrice'] ?? 0) as num).toInt(),
+          });
+        }
+        // Discount: read the trusted record, verify, claim atomically.
+        Map<String, dynamic>? discount;
+        if (code.isNotEmpty) {
+          final discSnap = await tx.get(db.collection('discounts').doc(code));
+          if (!discSnap.exists) throw BackendException('كود الخصم مش صحيح');
+          final record = discSnap.data() ?? {};
+          if (record['active'] != true) {
+            throw BackendException('كود الخصم مش فعال');
+          }
+          if (record['usedBy'] != null) {
+            throw BackendException('كود الخصم ده اتستخدم قبل كده');
+          }
+          final expiresAt = record['expiresAt'];
+          DateTime? expires;
+          if (expiresAt is Timestamp) expires = expiresAt.toDate();
+          if (expiresAt is num) {
+            expires = DateTime.fromMillisecondsSinceEpoch(expiresAt.toInt());
+          }
+          if (expires != null && !expires.isAfter(DateTime.now())) {
+            throw BackendException('كود الخصم انتهت صلاحيته');
+          }
+          final percent = ((record['percent'] ?? 0) as num).toInt();
+          if (percent < 1 || percent > 100) {
+            throw BackendException('كود الخصم مش صحيح');
+          }
+          discount = {'code': code, 'percent': percent};
+        }
+        // Totals from the DATABASE prices, never a client total.
+        final computed = computeOrderTotals(
+          lines
+              .map((l) => {'price': l['price'] as num, 'qty': l['qty'] as int})
+              .toList(),
+          discount?['percent'] as int?,
+        );
+        final now = FieldValue.serverTimestamp();
+        final auditRef = db.collection('audit').doc();
+        final auditId = auditRef.id;
+        final docIds = <String, List<String>>{
+          'orders/$clientOrderId': ['status', 'total'],
+        };
+        final newValuesByDoc = <String, Map<String, dynamic>>{
+          'orders/$clientOrderId': {
+            'status': 'new',
+            'total': wholeNum(computed.total),
+          },
+        };
+        final documents = <Map<String, dynamic>>[];
+        final newInStock = <String, bool>{};
+        // Reserve stock (absolute set, merge). The rules enforce
+        // reserved <= stock, so an over-reservation is denied.
+        for (final line in lines) {
+          final productId = (line['productId'] ?? '') as String;
+          final qty = (line['qty'] ?? 0) as int;
+          final stock = (line['stock'] ?? 0) as int;
+          final reserved = (line['reserved'] ?? 0) as int;
+          final newReserved = reserved + qty;
+          newInStock[productId] = (stock - newReserved) > 0;
+          final invRef = db.collection('inventory').doc(productId);
+          tx.set(invRef, {
+            'productId': productId,
+            'stock': stock,
+            'reserved': newReserved,
+            'minStock': ((line['minStock'] ?? 5) as num).toInt(),
+            'costPrice': ((line['costPrice'] ?? 0) as num).toInt(),
+            'operationId': auditId,
+            'updatedAt': now,
+          }, SetOptions(merge: true));
+          tx.set(db.collection('movements').doc(), {
+            'productId': productId,
+            'type': 'order_reserve',
+            'qty': -qty,
+            'orderId': clientOrderId,
+            'source': 'createManualOrder',
+            'actorUid': uid,
+            'createdAt': now,
+          });
+          // docIds must cover every key the inventory write sets
+          // (the rules check diff coverage); the sensitive values
+          // (stock/reserved) are recorded in newValuesByDoc.
+          docIds['inventory/$productId'] = [
+            'productId',
+            'stock',
+            'reserved',
+            'minStock',
+            'costPrice',
+            'operationId',
+            'updatedAt',
+          ];
+          newValuesByDoc['inventory/$productId'] = {
+            'stock': stock,
+            'reserved': newReserved,
+          };
+          documents.add({
+            'collection': 'inventory',
+            'docId': productId,
+            'changedFields': ['reserved', 'stock'],
+            'oldValues': {'stock': stock, 'reserved': reserved},
+            'newValues': {'stock': stock, 'reserved': newReserved},
+          });
+        }
+        // Claim the discount (one use only, atomically in this tx).
+        // Exactly usedBy + usedAt — the §3 claim shape, no
+        // operationId on this write.
+        if (discount != null) {
+          tx.set(db.collection('discounts').doc(discount['code'] as String), {
+            'usedBy': clientOrderId,
+            'usedAt': now,
+          }, SetOptions(merge: true));
+        }
+        // Create the order (doc id = clientOrderId), fields EXACTLY
+        // as functions/lib/orders.js createOrderTx builds them, PLUS
+        // auditId — and nothing else (the rules enforce the exact
+        // key set, so no operationId field here).
+        final order = <String, dynamic>{
+          'id': clientOrderId,
+          'clientOrderId': clientOrderId,
+          'customerName': customerName.trim(),
+          'customerPhone': customerPhone.trim(),
+          'customerAddress': customerAddress.trim(),
+          'items': lines
+              .map((l) => {
+                    'productId': l['productId'],
+                    'name': l['name'],
+                    'price': l['price'],
+                    'qty': l['qty'],
+                  })
+              .toList(),
+          'subtotal': wholeNum(computed.subtotal),
+          'discountCode': discount?['code'],
+          'discountPercent': computed.discountPercent,
+          'discountAmount': wholeNum(computed.discountAmount),
+          'total': wholeNum(computed.total),
+          'status': 'new',
+          'paymentStatus': 'cod_pending',
+          'source': 'admin_manual',
+          'createdBy': uid,
+          'shippingCompanyId': (shippingCompanyId ?? '').trim().isEmpty
+              ? null
+              : shippingCompanyId!.trim(),
+          'trackingNumber': null,
+          'notes': (notes ?? '').trim().isEmpty ? null : notes!.trim(),
+          'createdAt': now,
+          'updatedAt': now,
+          'acceptedAt': null,
+          'deliveredAt': null,
+          'cancelledAt': null,
+          'cancelReason': null,
+          'auditId': auditId,
+        };
+        tx.set(orderRef, order);
+        documents.insert(0, {
+          'collection': 'orders',
+          'docId': clientOrderId,
+          'changedFields': ['status', 'total'],
+          'oldValues': {},
+          'newValues': {'status': 'new', 'total': wholeNum(computed.total)},
+        });
+        tx.set(auditRef, {
+          'operationId': auditId,
+          'actor': uid,
+          'actorName': email,
+          'timestamp': now,
+          'collection': 'orders',
+          'docId': clientOrderId,
+          'operation': 'manual_order_create',
+          'changedFields': docIds.values.expand((e) => e).toSet().toList(),
+          'oldValues': {},
+          'newValues': {'status': 'new', 'total': wholeNum(computed.total)},
+          'docIds': docIds,
+          'newValuesByDoc': newValuesByDoc,
+          'documents': documents,
+          'source': 'createManualOrder',
+        });
+        return {
+          'order': order,
+          'created': true,
+          'newInStock': newInStock,
+        };
       });
+    } on BackendException {
+      rethrow;
+    } on FirebaseException catch (e) {
+      Diagnostics.instance.log('Manual order failed: ${e.code} ${e.message}');
+      if (e.code == 'permission-denied') {
+        throw BackendException(
+            'تعذر إنشاء الطلب — الكمية أكبر من المتاح أو البيانات مرفوضة، راجع الكميات وحاول تاني');
+      }
+      throw BackendException('تعذر إنشاء الطلب: ${e.message ?? e.code}');
+    }
+    if (result['created'] == true) {
       Diagnostics.instance.log('Manual order created: $clientOrderId');
-      return Map<String, dynamic>.from(res.data as Map);
-    } on FirebaseFunctionsException catch (e) {
-      Diagnostics.instance.log('Manual order failed: ${e.code}');
-      throw BackendException(_friendlyCallableError(e));
+      await _refreshInStock(
+          (result['newInStock'] as Map<String, bool>?) ?? {});
+    }
+    return {'order': result['order'], 'created': result['created']};
+  }
+
+  /// §13 second write: refresh products.inStock from the inventory
+  /// values the order transaction just wrote. Batched, up to 3 tries,
+  /// best-effort — a failure only leaves a stale availability flag
+  /// (logged here, corrected by the next admin sync / sweep).
+  Future<void> _refreshInStock(Map<String, bool> newInStock) async {
+    if (newInStock.isEmpty) return;
+    for (var attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await _auditedBatch(
+          writes: {
+            for (final e in newInStock.entries)
+              'products/${e.key}': {'inStock': e.value},
+          },
+          sensitive: {
+            for (final e in newInStock.entries)
+              'products/${e.key}': {'inStock': e.value},
+          },
+          operation: 'update',
+        );
+        return;
+      } catch (e) {
+        Diagnostics.instance.log(
+            'inStock refresh failed (attempt $attempt/3): $e');
+      }
     }
   }
 
-  /// Creates a feedback record on behalf of a customer (phone
-  /// complaint). The storefront form itself lands in Phase 3; this is
-  /// the Flutter manual-creation path (v1.4 §8). Returns the tracking
-  /// code (and duplicate:true when the same phone + message was
-  /// already submitted within 24h).
-  Future<Map<String, dynamic>> submitFeedback({
-    required String submissionId,
-    required String type,
-    required String category,
-    required String title,
+  // ---- Feedback, one-way cards (contract §6) ----
+  //
+  // No status, no priority, no replies, no tracking code, no lookup.
+  // A complaint is a direct write of {name, email, address, message,
+  // createdAt}; the admin only reads the cards and can delete spam.
+
+  /// Creates a complaint on a customer's behalf (same one-way shape
+  /// as the storefront contact form). Returns the new doc id.
+  Future<String> submitFeedback({
+    required String name,
+    required String email,
+    required String address,
     required String message,
-    String? orderId,
-    String? phone,
   }) async {
     _requireInit();
+    final error = validateFeedbackInput(
+      name: name,
+      email: email,
+      address: address,
+      message: message,
+    );
+    if (error != null) throw BackendException(error);
+    final ref = db.collection('feedback').doc();
     try {
-      final callable = FirebaseFunctions.instance.httpsCallable('submitFeedback');
-      final res = await callable.call(<String, dynamic>{
-        'submissionId': submissionId,
-        'type': type,
-        'category': category,
-        'title': title,
-        'message': message,
-        'orderId': orderId,
-        'phone': phone,
+      await ref.set({
+        'name': name.trim(),
+        'email': email.trim(),
+        'address': address.trim(),
+        'message': message.trim(),
+        'createdAt': FieldValue.serverTimestamp(),
       });
-      return Map<String, dynamic>.from(res.data as Map);
-    } on FirebaseFunctionsException catch (e) {
-      Diagnostics.instance.log('submitFeedback failed: ${e.code}');
-      throw BackendException(_friendlyCallableError(e));
+    } on FirebaseException catch (e) {
+      Diagnostics.instance.log('submitFeedback failed: ${e.code} ${e.message}');
+      throw BackendException('تعذر حفظ الشكوى: ${e.message ?? e.code}');
     }
+    Diagnostics.instance.log('Feedback submitted: ${ref.id}');
+    return ref.id;
   }
-
-  /// Tracking-code lookup (tracking code + phone). Returns only
-  /// {status, lastReply} — the function never says which part failed.
-  Future<Map<String, dynamic>> getFeedbackStatus({
-    required String trackingCode,
-    required String phone,
-  }) async {
-    _requireInit();
-    try {
-      final callable = FirebaseFunctions.instance.httpsCallable('getFeedbackStatus');
-      final res = await callable.call(<String, dynamic>{
-        'trackingCode': trackingCode,
-        'phone': phone,
-      });
-      return Map<String, dynamic>.from(res.data as Map);
-    } on FirebaseFunctionsException catch (e) {
-      Diagnostics.instance.log('getFeedbackStatus failed: ${e.code}');
-      throw BackendException(_friendlyCallableError(e));
-    }
-  }
-
-  // ---- Feedback (admin side) ----
-
-  static const Map<String, List<String>> feedbackTransitions = {
-    'new': ['in_review', 'rejected', 'spam'],
-    'in_review': ['awaiting_customer', 'resolved', 'rejected', 'spam'],
-    'awaiting_customer': ['resolved', 'in_review'],
-    'resolved': ['closed'],
-    'closed': [],
-    'rejected': [],
-    'spam': [],
-  };
-
-  static bool isAllowedFeedbackTransition(String from, String to) =>
-      (feedbackTransitions[from] ?? []).contains(to);
-
-  static const Map<String, String> feedbackStatusLabels = {
-    'new': 'جديدة',
-    'in_review': 'قيد المراجعة',
-    'awaiting_customer': 'بانتظار العميل',
-    'resolved': 'تم الحل',
-    'closed': 'مغلقة',
-    'rejected': 'مرفوضة',
-    'spam': 'سبام',
-  };
-
-  static const Map<String, String> feedbackPriorityLabels = {
-    'low': 'عادية',
-    'medium': 'متوسطة',
-    'high': 'عالية',
-    'urgent': 'عاجلة',
-  };
 
   Stream<QuerySnapshot<Map<String, dynamic>>> feedbackStream() => db
       .collection('feedback')
@@ -1054,184 +1651,17 @@ class Backend {
       .limit(100)
       .snapshots();
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> feedbackRepliesStream(String feedbackId) => db
-      .collection('feedback')
-      .doc(feedbackId)
-      .collection('replies')
-      .orderBy('createdAt')
-      .snapshots();
-
-  /// Moves a feedback record to [status] (state-machine validated;
-  /// the rules enforce it too).
-  Future<void> setFeedbackStatus(String id, String status) async {
+  /// Deletes a complaint card (spam). Audited delete — the rules
+  /// allow admin delete with the deterministic delete-audit entry.
+  Future<void> deleteFeedback(String id) async {
     _requireInit();
-    final snap = await db.collection('feedback').doc(id).get();
-    final data = snap.data();
-    if (data == null) throw BackendException('الشكوى مش موجودة');
-    final from = (data['status'] ?? '') as String;
-    if (!isAllowedFeedbackTransition(from, status)) {
-      throw BackendException('مينفعش تنقل الشكوى من ${feedbackStatusLabels[from] ?? from} لـ ${feedbackStatusLabels[status] ?? status}');
-    }
-    await _auditedBatch(
-      writes: {'feedback/$id': {'status': status}},
-      sensitive: {'feedback/$id': {'status': status}},
-      operation: 'feedback_status',
-      oldValues: {'feedback/$id': {'status': from}},
-      topNewValues: {'status': status},
+    await _auditedDelete(
+      collection: 'feedback',
+      docId: id,
+      changedFields: const ['name', 'email', 'address', 'message', 'createdAt'],
     );
+    Diagnostics.instance.log('Feedback deleted: $id');
   }
-
-  /// Sets the priority. 'urgent' is admin-only in the rules — the
-  /// screen checks the role first and the rules deny a manager anyway.
-  Future<void> setFeedbackPriority(String id, String priority) async {
-    _requireInit();
-    if (!{'low', 'medium', 'high', 'urgent'}.contains(priority)) {
-      throw BackendException('الأولوية مش صحيحة');
-    }
-    await _auditedBatch(
-      writes: {'feedback/$id': {'priority': priority}},
-      sensitive: const {},
-      operation: 'feedback_status',
-    );
-  }
-
-  /// Admin reply on a feedback record. The reply is written to the
-  /// replies subcollection in the SAME batch as the feedback update
-  /// (repliesCount + lastReplyAt, plus a status move when [newStatus]
-  /// is given) and the audit entry — so a reply never lands without
-  /// its audit. The reply record shape is defined once in the
-  /// functions (buildReplyRecord); the app writes the same shape.
-  Future<void> replyToFeedback(String id, String text, {String? newStatus}) async {
-    _requireInit();
-    final trimmed = text.trim();
-    if (trimmed.isEmpty) throw BackendException('اكتب الرد الأول');
-    final snap = await db.collection('feedback').doc(id).get();
-    final data = snap.data();
-    if (data == null) throw BackendException('الشكوى مش موجودة');
-    final from = (data['status'] ?? '') as String;
-    if (newStatus != null && !isAllowedFeedbackTransition(from, newStatus)) {
-      throw BackendException('مينفعش تنقل الشكوى من ${feedbackStatusLabels[from] ?? from} لـ ${feedbackStatusLabels[newStatus] ?? newStatus}');
-    }
-    final batch = db.batch();
-    final auditRef = db.collection('audit').doc();
-    final opId = auditRef.id;
-    final now = FieldValue.serverTimestamp();
-    final replyRef = db.collection('feedback').doc(id).collection('replies').doc();
-    batch.set(replyRef, {
-      'adminUid': auth.currentUser?.uid ?? '',
-      'adminName': auth.currentUser?.email ?? '',
-      'text': trimmed,
-      'createdAt': now,
-      'visibleToCustomer': true,
-    });
-    final update = <String, dynamic>{
-      'repliesCount': FieldValue.increment(1),
-      'lastReplyAt': now,
-      'operationId': opId,
-      'updatedAt': now,
-    };
-    if (newStatus != null) update['status'] = newStatus;
-    batch.set(db.collection('feedback').doc(id), update, SetOptions(merge: true));
-    final changed = update.keys.toList();
-    batch.set(auditRef, {
-      'operationId': opId,
-      'actor': auth.currentUser?.uid ?? '',
-      'actorName': auth.currentUser?.email ?? '',
-      'timestamp': now,
-      'collection': 'feedback',
-      'docId': id,
-      'operation': 'feedback_reply',
-      'changedFields': changed,
-      'oldValues': {'status': from},
-      'newValues': newStatus == null ? {} : {'status': newStatus},
-      'docIds': {'feedback/$id': changed},
-      'newValuesByDoc': {
-        'feedback/$id': newStatus == null ? {} : {'status': newStatus},
-      },
-      'documents': [
-        {
-          'collection': 'feedback',
-          'docId': id,
-          'changedFields': changed,
-          'oldValues': {'status': from},
-          'newValues': newStatus == null ? {} : {'status': newStatus},
-        }
-      ],
-      'source': 'flutter_admin',
-    });
-    try {
-      await batch.commit();
-    } on FirebaseException catch (e) {
-      Diagnostics.instance.log('Feedback reply failed: ${e.code} ${e.message}');
-      throw BackendException('تعذر إرسال الرد: ${e.message ?? e.code}');
-    }
-  }
-
-  /// Marks a feedback record as spam AND blocks the sender's phone for
-  /// 24 hours (feedbackBlocks). Both writes happen in one batch with
-  /// the audit entry. The block key is `phone:<normalized phone>`.
-  Future<void> markFeedbackSpam(String id) async {
-    _requireInit();
-    final snap = await db.collection('feedback').doc(id).get();
-    final data = snap.data();
-    if (data == null) throw BackendException('الشكوى مش موجودة');
-    final from = (data['status'] ?? '') as String;
-    if (!isAllowedFeedbackTransition(from, 'spam')) {
-      throw BackendException('مينفعش تحوّل الشكوى دي لسبام من الحالة دي');
-    }
-    final customerRef = (data['customerRef'] as Map<String, dynamic>?) ?? {};
-    final phone = (customerRef['phone'] ?? '') as String;
-    final batch = db.batch();
-    final auditRef = db.collection('audit').doc();
-    final opId = auditRef.id;
-    final now = FieldValue.serverTimestamp();
-    batch.set(db.collection('feedback').doc(id), {
-      'status': 'spam',
-      'operationId': opId,
-      'updatedAt': now,
-    }, SetOptions(merge: true));
-    if (phone.isNotEmpty) {
-      batch.set(db.collection('feedbackBlocks').doc('phone:$phone'), {
-        'type': 'phone',
-        'value': phone,
-        'blockedUntil': Timestamp.fromDate(DateTime.now().add(const Duration(hours: 24))),
-        'reason': 'spam',
-        'blockedBy': auth.currentUser?.uid ?? '',
-        'createdAt': now,
-      });
-    }
-    batch.set(auditRef, {
-      'operationId': opId,
-      'actor': auth.currentUser?.uid ?? '',
-      'actorName': auth.currentUser?.email ?? '',
-      'timestamp': now,
-      'collection': 'feedback',
-      'docId': id,
-      'operation': 'feedback_status',
-      'changedFields': ['status', 'operationId', 'updatedAt'],
-      'oldValues': {'status': from},
-      'newValues': {'status': 'spam'},
-      'docIds': {'feedback/$id': ['status', 'operationId', 'updatedAt']},
-      'newValuesByDoc': {'feedback/$id': {'status': 'spam'}},
-      'documents': [
-        {
-          'collection': 'feedback',
-          'docId': id,
-          'changedFields': ['status'],
-          'oldValues': {'status': from},
-          'newValues': {'status': 'spam'},
-        }
-      ],
-      'source': 'flutter_admin',
-    });
-    try {
-      await batch.commit();
-    } on FirebaseException catch (e) {
-      Diagnostics.instance.log('Mark spam failed: ${e.code} ${e.message}');
-      throw BackendException('تعذر التحويل لسبام: ${e.message ?? e.code}');
-    }
-  }
-
 
   Stream<QuerySnapshot<Map<String, dynamic>>> teamStream() =>
       db.collection('admins').snapshots();

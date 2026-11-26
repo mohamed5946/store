@@ -3,12 +3,13 @@
 // An admin creates an order on behalf of a customer (phone order).
 // The form has NO price, total, or discount-percent fields — a
 // discount applies only via a code. Creation goes through the
-// `createManualOrder` callable: the same trusted path as the
-// storefront's placeOrder (same price/stock/discount validation, same
-// reservation, same idempotency, same audit) with
-// source 'admin_manual' and the admin's UID. The function re-checks
-// the orders_create_manual permission server-side; this screen checks
-// it first only to show a clear message instead of a bare denial.
+// `createManualOrder` client transaction (contract §1): the same
+// trusted path as the storefront's placeOrder (same price/stock/
+// discount validation, same reservation, same idempotency, same
+// audit) with source 'admin_manual' and the admin's UID. The
+// permission is checked client-side first (and re-checked by the
+// rules from admins/{uid}); this screen checks it only to show a
+// clear message instead of a bare denial.
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 

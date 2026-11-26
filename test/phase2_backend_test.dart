@@ -1,6 +1,12 @@
-// Phase 2 backend tests: the unified order + feedback state machines
-// and their Arabic labels (Technical Plan v1.4 Decision 23, §8.3).
+// Phase 2 backend tests: the unified order state machine and its
+// Arabic labels (Technical Plan v1.4 Decision 23, §8.3).
 // Pure logic — no Firestore, no emulator.
+//
+// NOTE (no-functions contract §6, 2026-11-26): the feedback state
+// machine is DELETED — complaints are one-way cards now (no status,
+// no priority, no replies, no tracking code). The feedback tests
+// that lived here moved to test/no_functions_backend_test.dart
+// (validateFeedbackInput + the one-way shape).
 import 'package:flutter_test/flutter_test.dart';
 import 'package:storeadmin/services/backend.dart';
 
@@ -50,39 +56,6 @@ void main() {
     test('reopen: cancelled lists only new as its next state', () {
       expect(Backend.orderTransitions['cancelled'], ['new']);
       expect(Backend.orderTransitions['expired'], []);
-    });
-  });
-
-  group('feedback state machine (v1.4 §8.3)', () {
-    test('legal transitions are allowed', () {
-      expect(Backend.isAllowedFeedbackTransition('new', 'in_review'), isTrue);
-      expect(Backend.isAllowedFeedbackTransition('new', 'rejected'), isTrue);
-      expect(Backend.isAllowedFeedbackTransition('new', 'spam'), isTrue);
-      expect(Backend.isAllowedFeedbackTransition('in_review', 'awaiting_customer'), isTrue);
-      expect(Backend.isAllowedFeedbackTransition('in_review', 'resolved'), isTrue);
-      expect(Backend.isAllowedFeedbackTransition('awaiting_customer', 'resolved'), isTrue);
-      expect(Backend.isAllowedFeedbackTransition('awaiting_customer', 'in_review'), isTrue);
-      expect(Backend.isAllowedFeedbackTransition('resolved', 'closed'), isTrue);
-    });
-
-    test('illegal transitions are denied', () {
-      expect(Backend.isAllowedFeedbackTransition('new', 'resolved'), isFalse);
-      expect(Backend.isAllowedFeedbackTransition('new', 'closed'), isFalse);
-      expect(Backend.isAllowedFeedbackTransition('awaiting_customer', 'spam'), isFalse);
-      expect(Backend.isAllowedFeedbackTransition('resolved', 'in_review'), isFalse);
-      expect(Backend.isAllowedFeedbackTransition('closed', 'in_review'), isFalse);
-      expect(Backend.isAllowedFeedbackTransition('spam', 'new'), isFalse);
-      expect(Backend.isAllowedFeedbackTransition('rejected', 'new'), isFalse);
-    });
-
-    test('every state and priority has an Arabic label', () {
-      for (final state in Backend.feedbackTransitions.keys) {
-        expect(Backend.feedbackStatusLabels[state], isNotNull,
-            reason: 'missing label for $state');
-      }
-      expect(Backend.feedbackStatusLabels.length, 7);
-      expect(Backend.feedbackPriorityLabels.keys.toSet(),
-          {'low', 'medium', 'high', 'urgent'});
     });
   });
 }

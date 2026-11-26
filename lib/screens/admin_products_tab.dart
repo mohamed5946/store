@@ -37,6 +37,7 @@ class _ProductsTabState extends State<_ProductsTab> {
                     itemCount: docs.length,
                     itemBuilder: (context, i) {
                       final p = ProductData.fromDoc(docs[i]);
+                      final featured = (docs[i].data()['featured'] ?? false) == true;
                       if (_deletingId == p.id) {
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 8),
@@ -69,10 +70,33 @@ class _ProductsTabState extends State<_ProductsTab> {
                             leading: _ProductThumb(product: p),
                             title: Text(p.name),
                             subtitle: Text(
-                                '${p.price.toStringAsFixed(0)} ج.م'),
+                                '${p.price.toStringAsFixed(0)} ج.م${featured ? ' — مميز' : ''}'),
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
+                                // Featured toggle (contract §9): the
+                                // storefront lists featured products
+                                // first. Audited write, one tap.
+                                Pressable(
+                                  onTap: () async {
+                                    try {
+                                      await Backend.instance
+                                          .setProductFeatured(p.id, !featured);
+                                    } catch (e) {
+                                      if (context.mounted) {
+                                        _snack(context, e.toString(),
+                                            error: true);
+                                      }
+                                    }
+                                  },
+                                  child: Icon(
+                                    featured ? Icons.star : Icons.star_border,
+                                    color: featured
+                                        ? StoreGlass.of(context).accent
+                                        : null,
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
                                 Pressable(
                                   onTap: () => _editProduct(context, p),
                                   child: const Icon(Icons.edit_outlined),

@@ -109,6 +109,30 @@ void main() {
       expect(find.text('في الطريق'), findsNothing);
     });
   });
+
+  group('reopen re-reserves stock (no-functions contract §2)', () {
+    test('short stock throws with the product name + available count', () {
+      // The exact message the reopen transaction throws when a line
+      // is short — the UI shows the available count only.
+      expect(
+        Backend.insufficientStockMessage(
+            productName: 'سماعة', available: 2),
+        'المتاح دلوقتي من سماعة هو 2 بس',
+      );
+      expect(
+        Backend.insufficientStockMessage(
+            productName: 'سماعة', available: 0),
+        'المتاح دلوقتي من سماعة هو 0 بس',
+      );
+    });
+
+    test('reopen is still only cancelled -> new in the state machine', () {
+      expect(Backend.isAllowedOrderTransition('cancelled', 'new'), isTrue);
+      expect(Backend.isAllowedOrderTransition('cancelled', 'accepted'),
+          isFalse);
+      expect(Backend.isAllowedOrderTransition('expired', 'new'), isFalse);
+    });
+  });
 }
 
 void _noop(String _) {}

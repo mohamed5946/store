@@ -15,25 +15,31 @@ class _DashboardTab extends StatelessWidget {
           const SizedBox(height: 16),
           const StaggeredItem(
             index: 1,
-            child: FlowSectionHeader(title: 'وصل كل زائر لحد فين'),
+            child: FlowSectionHeader(title: 'منتجات قربت تخلص'),
           ),
-          const StaggeredItem(index: 2, child: _FunnelSection()),
+          const StaggeredItem(index: 2, child: _LowStockSection()),
           const SizedBox(height: 16),
           const StaggeredItem(
             index: 3,
-            child: FlowSectionHeader(title: 'الطلبات الأخيرة'),
+            child: FlowSectionHeader(title: 'وصل كل زائر لحد فين'),
           ),
-          const StaggeredItem(index: 4, child: _RecentOrders()),
+          const StaggeredItem(index: 4, child: _FunnelSection()),
           const SizedBox(height: 16),
           const StaggeredItem(
             index: 5,
+            child: FlowSectionHeader(title: 'الطلبات الأخيرة'),
+          ),
+          const StaggeredItem(index: 6, child: _RecentOrders()),
+          const SizedBox(height: 16),
+          const StaggeredItem(
+            index: 7,
             child: Text(
               'اللي بدأ طلب ومكملوش (ومعانا بياناته من خطوة مكتملة)',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
           const SizedBox(height: 8),
-          const StaggeredItem(index: 6, child: _AbandonedList()),
+          const StaggeredItem(index: 8, child: _AbandonedList()),
         ],
       ),
     );
@@ -181,6 +187,56 @@ class _DashboardKpis extends StatelessWidget {
                   },
                 );
               },
+            );
+          },
+        );
+      },
+    );
+  }
+}
+
+/// Low-stock flags (contract §8/§9): products where
+/// stock - reserved <= minStock (minStock default 5). Inventory is a
+/// one-shot read; products stay a live stream.
+class _LowStockSection extends StatelessWidget {
+  const _LowStockSection();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Map<String, Map<String, dynamic>>>(
+      future: Backend.instance.inventoryMap(),
+      builder: (context, invSnap) {
+        if (invSnap.connectionState == ConnectionState.waiting) {
+          return _loading();
+        }
+        if (invSnap.hasError) return _streamError(invSnap.error!);
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: Backend.instance.productsStream(),
+          builder: (context, snap) {
+            if (snap.connectionState == ConnectionState.waiting) {
+              return _loading();
+            }
+            if (snap.hasError) return _streamError(snap.error!);
+            final products = (snap.data?.docs ?? [])
+                .map((d) => {'id': d.id, ...d.data()})
+                .toList();
+            final low = lowStockProducts(
+              products: products,
+              inventory: invSnap.data ?? {},
+            );
+            if (low.isEmpty) return const Text('مفيش منتجات قربت تخلص');
+            return Column(
+              children: [
+                for (final p in low)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: _FlowRow(
+                      title: Text((p['name'] ?? '') as String),
+                      subtitle: Text(
+                          'المتاح: ${p['available']} — الحد الأدنى: ${p['minStock']}'),
+                    ),
+                  ),
+              ],
             );
           },
         );

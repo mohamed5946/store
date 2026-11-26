@@ -35,6 +35,31 @@ class DashboardStats {
       a.year == b.year && a.month == b.month && a.day == b.day;
 }
 
+/// Low-stock flags (contract §8/§9): products where
+/// stock - reserved <= minStock (minStock default 5, the per-product
+/// inventory field). Each returned map is the product map plus
+/// 'available' and 'minStock'. Products with no inventory doc are
+/// skipped (unknown, not low).
+List<Map<String, dynamic>> lowStockProducts({
+  required List<Map<String, dynamic>> products,
+  required Map<String, Map<String, dynamic>> inventory,
+}) {
+  final low = <Map<String, dynamic>>[];
+  for (final p in products) {
+    final id = (p['id'] ?? '') as String;
+    final inv = inventory[id];
+    if (inv == null) continue;
+    final stock = ((inv['stock'] ?? 0) as num).toInt();
+    final reserved = ((inv['reserved'] ?? 0) as num).toInt();
+    final minStock = ((inv['minStock'] ?? 5) as num).toInt();
+    final available = stock - reserved;
+    if (available <= minStock) {
+      low.add({...p, 'available': available, 'minStock': minStock});
+    }
+  }
+  return low;
+}
+
 DashboardStats computeDashboardStats({
   required List<Map<String, dynamic>> sessions,
   required List<Map<String, dynamic>> orders,

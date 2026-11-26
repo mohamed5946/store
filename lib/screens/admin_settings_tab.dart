@@ -22,6 +22,25 @@ class _SettingsTabState extends State<_SettingsTab> {
   String _savedBrand = '';
   String _savedTagline = '';
 
+  // WhatsApp-order settings (contract §7/§9): the toggle + number
+  // on storeSettings/settings. Same draft pattern as brand: nothing
+  // writes until Save; Cancel restores the last-saved values.
+  bool _whatsappLoaded = false;
+  bool _whatsappEnabled = false;
+  final _whatsappNumber = TextEditingController();
+  bool _savedWhatsappEnabled = false;
+  String _savedWhatsappNumber = Backend.defaultWhatsAppNumber;
+
+  @override
+  void dispose() {
+    _brand.dispose();
+    _tagline.dispose();
+    _deliveryTitle.dispose();
+    _deliverySubtitle.dispose();
+    _whatsappNumber.dispose();
+    super.dispose();
+  }
+
   // v1.1.2 scope #8: homepage editor draft (storeSettings/homepage).
   // Same pattern as brand: the draft lives only in state, the
   // preview renders it live, Save writes the full doc, Cancel
@@ -189,11 +208,16 @@ class _SettingsTabState extends State<_SettingsTab> {
         const SizedBox(height: 16),
         StaggeredItem(
           index: 4,
-          child: _homepageSection(),
+          child: _whatsappSection(),
         ),
         const SizedBox(height: 16),
         StaggeredItem(
           index: 5,
+          child: _homepageSection(),
+        ),
+        const SizedBox(height: 16),
+        StaggeredItem(
+          index: 6,
           child: FilledButton.tonal(
             onPressed: () async {
               try {
@@ -223,7 +247,7 @@ class _SettingsTabState extends State<_SettingsTab> {
         ),
         const SizedBox(height: 12),
         StaggeredItem(
-          index: 6,
+          index: 7,
           child: FilledButton.tonalIcon(
             icon: const Icon(Icons.download_outlined),
             label: const Text('تصدير نسخة احتياطية (JSON)'),
@@ -258,10 +282,10 @@ class _SettingsTabState extends State<_SettingsTab> {
         ),
         const SizedBox(height: 12),
         // v1.1.2: Updates row, exactly like the sibling rows.
-        const StaggeredItem(index: 7, child: UpdatesSettingsRow()),
+        const StaggeredItem(index: 8, child: UpdatesSettingsRow()),
         const Divider(height: 32),
         StaggeredItem(
-          index: 8,
+          index: 9,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -332,7 +356,7 @@ class _SettingsTabState extends State<_SettingsTab> {
               style: TextStyle(color: tokens.textMuted)),
         const SizedBox(height: 12),
         StaggeredItem(
-          index: 9,
+          index: 10,
           child: OutlinedButton(
             onPressed: () async {
               if (await _confirm(context, 'متأكد إنك عايز تسجل الخروج؟')) {
@@ -345,6 +369,95 @@ class _SettingsTabState extends State<_SettingsTab> {
         ),
       ],
       ),
+    );
+  }
+
+  // ---------------- WhatsApp order (contract §7/§9) ----------------
+  //
+  // The toggle + number the storefront reads at boot
+  // (storeSettings/settings). Draft pattern like brand: typing only
+  // changes state, Save writes via auditedWrite, Cancel restores
+  // the last-saved values.
+
+  Widget _whatsappSection() {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: Backend.instance.brandStream(),
+      builder: (context, snap) {
+        if (!_whatsappLoaded && snap.hasData && snap.data!.exists) {
+          final parsed =
+              Backend.parseWhatsAppSettings(snap.data!.data());
+          _savedWhatsappEnabled = parsed.enabled;
+          _savedWhatsappNumber = parsed.number;
+          _whatsappEnabled = parsed.enabled;
+          _whatsappNumber.text = parsed.number;
+          _whatsappLoaded = true;
+        }
+        if (snap.hasError) return _streamError(snap.error!);
+        return FlowCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('الطلب عبر واتساب',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              SwitchListTile(
+                title: const Text('تفعيل الطلب عبر واتساب'),
+                subtitle: const Text(
+                    'بيظهر زر واتساب في خطوة المراجعة على الموقع'),
+                value: _whatsappEnabled,
+                onChanged: (v) => setState(() => _whatsappEnabled = v),
+              ),
+              TextField(
+                controller: _whatsappNumber,
+                keyboardType: TextInputType.phone,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(
+                  labelText: 'رقم الواتساب (بكود الدولة)',
+                  hintText: '201557887719',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: () async {
+                        try {
+                          await Backend.instance.setWhatsAppOrder(
+                            enabled: _whatsappEnabled,
+                            number: _whatsappNumber.text,
+                          );
+                          if (context.mounted) {
+                            setState(() {
+                              _savedWhatsappEnabled = _whatsappEnabled;
+                              _savedWhatsappNumber =
+                                  _whatsappNumber.text.trim();
+                            });
+                            _snack(context, 'تم حفظ إعدادات واتساب');
+                          }
+                        } catch (e) {
+                          if (context.mounted) {
+                            _snack(context, e.toString(), error: true);
+                          }
+                        }
+                      },
+                      child: const Text('حفظ إعدادات واتساب'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton(
+                    onPressed: () => setState(() {
+                      _whatsappEnabled = _savedWhatsappEnabled;
+                      _whatsappNumber.text = _savedWhatsappNumber;
+                    }),
+                    child: const Text('إلغاء'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
