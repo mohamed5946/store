@@ -1,5 +1,17 @@
 // Store Admin — Firestore Security Rules (no-functions build, contract 2026-11-26).
 //
+// RULES-LANGUAGE NOTE (coordinator fix 2026-11-26): the Firestore
+// rules language has NO `if` STATEMENTS inside functions — only
+// `let` bindings + a single `return` expression (ternary `? :` and
+// `&&` / `||` chains do the branching). An `if` inside a function
+// is a COMPILE error ("Unexpected 'if'") and the whole deploy
+// fails. The Phase 2 file used `if` statements throughout and
+// never compiled — it was never deployed, so nobody caught it until
+// this deploy. Do NOT reintroduce `if` inside a function; every
+// helper below is written as a pure expression for this reason.
+// (`allow ... : if ...` on a match line is fine — that `if` is
+// part of the allow syntax, not a statement.)
+//
 // NO Cloud Functions are deployed (Spark, no Blaze). The storefront,
 // Flutter admin and Electron Store Manager write Firestore DIRECTLY
 // from the client, and these rules are the trusted enforcement:
@@ -203,18 +215,18 @@ service cloud.firestore {
      * pre-migration window). */
     function inventoryInStockOk(productId) {
       let prod = getAfter(/databases/$(database)/documents/products/$(productId));
-      if (prod == null) return true;
-      if (!('inStock' in prod.data)) return true;
-      return prod.data.inStock
-        == ((request.resource.data.stock - request.resource.data.reserved) > 0);
+      return prod == null
+        || !('inStock' in prod.data)
+        || prod.data.inStock
+          == ((request.resource.data.stock - request.resource.data.reserved) > 0);
     }
 
     /* The unified order state machine (v1.4 Decision 23). */
     function orderTransitionOk() {
       let from = resource.data.status;
       let to = request.resource.data.status;
-      if (from == to) return true;
-      return (from == 'new' && to in ['accepted', 'cancelled', 'expired'])
+      return from == to
+        || (from == 'new' && to in ['accepted', 'cancelled', 'expired'])
         || (from == 'accepted' && to in ['preparing', 'cancelled'])
         || (from == 'preparing' && to in ['ready', 'cancelled'])
         || (from == 'ready' && to in ['in_transit', 'cancelled'])
@@ -277,9 +289,10 @@ service cloud.firestore {
      * amount 0. */
     function orderDiscountAmountOk() {
       let d = request.resource.data;
-      if (d.discountPercent == null) return d.discountAmount == 0;
-      return d.discountAmount * 100 - 50 <= d.subtotal * d.discountPercent
-        && d.subtotal * d.discountPercent < d.discountAmount * 100 + 50;
+      return d.discountPercent == null
+        ? d.discountAmount == 0
+        : (d.discountAmount * 100 - 50 <= d.subtotal * d.discountPercent
+          && d.subtotal * d.discountPercent < d.discountAmount * 100 + 50);
     }
 
     /* Line i's price must equal the products doc price (one get per
@@ -287,9 +300,8 @@ service cloud.firestore {
      * order costs 1 get). */
     function orderLinePriceOk(i) {
       let items = request.resource.data.items;
-      if (items.size() <= i) return true;
-      let prod = get(/databases/$(database)/documents/products/$(items[i].productId));
-      return prod != null && prod.data.price == items[i].price;
+      let prod = items.size() <= i ? null : get(/databases/$(database)/documents/products/$(items[i].productId));
+      return items.size() <= i || (prod != null && prod.data.price == items[i].price);
     }
 
     function orderPricesOk() {
@@ -344,15 +356,15 @@ service cloud.firestore {
      * to the order's discountPercent. */
     function orderDiscountOk() {
       let d = request.resource.data;
-      if (d.discountCode == null) return true;
-      let disc = get(/databases/$(database)/documents/discounts/$(d.discountCode));
-      if (disc == null) return false;
-      return disc.data.get('active', false) == true
-        && disc.data.get('usedBy', null) == null
-        && (!('expiresAt' in disc.data) || disc.data.expiresAt == null || disc.data.expiresAt > request.time)
-        && disc.data.get('percent', null) is int
-        && disc.data.percent >= 1 && disc.data.percent <= 100
-        && disc.data.percent == d.discountPercent;
+      let disc = d.discountCode == null ? null : get(/databases/$(database)/documents/discounts/$(d.discountCode));
+      return d.discountCode == null
+        || (disc != null
+          && disc.data.get('active', false) == true
+          && disc.data.get('usedBy', null) == null
+          && (!('expiresAt' in disc.data) || disc.data.expiresAt == null || disc.data.expiresAt > request.time)
+          && disc.data.get('percent', null) is int
+          && disc.data.percent >= 1 && disc.data.percent <= 100
+          && disc.data.percent == d.discountPercent);
     }
 
     /* The audit entry for this order, as projected after this
@@ -361,12 +373,11 @@ service cloud.firestore {
      * status + total. */
     function orderAuditOk(doc) {
       let d = request.resource.data;
-      if (!(d.auditId is string) || d.auditId.size() == 0) return false;
-      let entry = getAfter(/databases/$(database)/documents/audit/$(d.auditId));
-      if (entry == null) return false;
-      let actorOk = (d.source == 'storefront' && entry.data.actor == 'anonymous' && entry.data.operation == 'create')
-        || (d.source == 'admin_manual' && request.auth != null && entry.data.actor == request.auth.uid && entry.data.operation == 'manual_order_create');
-      return actorOk
+      let hasId = d.auditId is string && d.auditId.size() > 0;
+      let entry = hasId ? getAfter(/databases/$(database)/documents/audit/$(d.auditId)) : null;
+      return entry != null
+        && ((d.source == 'storefront' && entry.data.actor == 'anonymous' && entry.data.operation == 'create')
+          || (d.source == 'admin_manual' && request.auth != null && entry.data.actor == request.auth.uid && entry.data.operation == 'manual_order_create'))
         && entry.data.collection == 'orders'
         && entry.data.docId == doc
         && entry.data.timestamp == request.time
@@ -377,11 +388,12 @@ service cloud.firestore {
      * (1 get, cached with the role checks in the same request.) */
     function manualOrderAllowed() {
       let admin = get(/databases/$(database)/documents/admins/$(request.auth.uid));
-      if (admin == null) return false;
-      if (admin.data.get('role', null) == 'admin') return true;
-      if (admin.data.get('role', null) != 'manager') return false;
-      let perms = admin.data.get('permissions', null);
-      return perms != null && perms.get('orders_create_manual', false) == true;
+      let perms = admin == null ? null : admin.data.get('permissions', null);
+      return admin != null
+        && (admin.data.get('role', null) == 'admin'
+          || (admin.data.get('role', null) == 'manager'
+            && perms != null
+            && perms.get('orders_create_manual', false) == true));
     }
 
     /* Pure stock reservation (contract §1): the order transaction
@@ -411,11 +423,11 @@ service cloud.firestore {
      * Releases (reserved down) and stock changes still need the
      * audited admin branch. Costs 0 access calls. */
     function inventoryReserveOk(doc) {
-      if (resource == null) return false;
-      let old = resource.data;
+      let old = resource == null ? null : resource.data;
       let d = request.resource.data;
       let newReserved = d.get('reserved', null);
-      return newReserved is int && newReserved >= 0
+      return resource != null
+        && newReserved is int && newReserved >= 0
         && d.get('stock', 0) == old.get('stock', 0)
         && d.get('stock', 0) >= 0
         && newReserved > old.get('reserved', 0)
@@ -443,11 +455,11 @@ service cloud.firestore {
      * denied for lack of audit would leave the storefront showing
      * stale availability after a manual order). */
     function productsRefreshOk(doc) {
-      if (!changedUpdate().hasOnly(['inStock'])) return false;
-      let inv = get(/databases/$(database)/documents/inventory/$(doc));
-      if (inv == null) return false;
       let flag = request.resource.data.get('inStock', null);
-      return flag is bool
+      let inv = changedUpdate().hasOnly(['inStock']) ? get(/databases/$(database)/documents/inventory/$(doc)) : null;
+      return changedUpdate().hasOnly(['inStock'])
+        && inv != null
+        && flag is bool
         && flag == ((inv.data.get('stock', 0) - inv.data.get('reserved', 0)) > 0);
     }
 
@@ -460,30 +472,32 @@ service cloud.firestore {
      * contract's "anonymous claim ONLY" cannot stand as written:
      * manual orders claim the same way and their write carries no
      * audit entry for the admin branch). */
+    /* 'operationId' + 'updatedAt' are tolerated in the changed
+     * keys (coordinator fix 2026-11-26): the PC manual order
+     * stamps both on the claim write; without them the claim falls
+     * back to the audited admin branch, whose docIds do not cover
+     * the extra keys, so the claim is denied outright. The
+     * getAfter tie to a real order below is what makes the claim
+     * safe, and it still applies. */
     function discountClaimOk(code) {
-      if (!changedUpdate().hasOnly(['usedBy', 'usedAt', 'operationId', 'updatedAt'])) return false;
-      /* 'operationId' + 'updatedAt' tolerated (coordinator fix
-       * 2026-11-26): the PC manual order stamps both on the claim
-       * write; without them the claim falls back to the audited
-       * admin branch, whose docIds do not cover the extra keys, so
-       * the claim is denied outright. The getAfter tie to a real
-       * order below is what makes the claim safe, and it still
-       * applies. */
       let d = request.resource.data;
       let usedBy = d.get('usedBy', null);
-      if (!(usedBy is string) || usedBy.size() == 0) return false;
-      if (d.get('usedAt', null) != request.time) return false;
-      if (resource.data.get('usedBy', null) != null) return false;
-      let order = getAfter(/databases/$(database)/documents/orders/$(usedBy));
-      return order != null && order.data.discountCode == code;
+      let shapeOk = changedUpdate().hasOnly(['usedBy', 'usedAt', 'operationId', 'updatedAt'])
+        && usedBy is string && usedBy.size() > 0
+        && d.get('usedAt', null) == request.time
+        && resource.data.get('usedBy', null) == null;
+      let order = shapeOk ? getAfter(/databases/$(database)/documents/orders/$(usedBy)) : null;
+      return shapeOk
+        && order != null
+        && order.data.discountCode == code;
     }
 
     /* Anonymous stock-movement entry for an order (contract §3):
      * the exact 7-field shape, reserve types only (negative qty). */
     function movementReserveOk() {
-      if (request.auth != null) return false;
       let d = request.resource.data;
-      return d.keys().hasOnly(['productId', 'type', 'qty', 'orderId', 'source', 'actorUid', 'createdAt'])
+      return request.auth == null
+        && d.keys().hasOnly(['productId', 'type', 'qty', 'orderId', 'source', 'actorUid', 'createdAt'])
         && d.keys().size() == 7
         && d.productId is string && d.productId.size() > 0
         && d.type in ['order_reserve', 'reopen_reserve']
@@ -515,11 +529,11 @@ service cloud.firestore {
      * rule's getAfter check is what ties the order to a real
      * entry. */
     function auditAnonOk(operationId) {
-      if (request.auth != null) return false;
       let d = request.resource.data;
-      if (!(d.actor in ['anonymous', 'storefront'])) return false;
-      if (!(d.docId is string) || d.docId.size() == 0) return false;
-      return d.operationId == operationId
+      return request.auth == null
+        && d.actor in ['anonymous', 'storefront']
+        && d.docId is string && d.docId.size() > 0
+        && d.operationId == operationId
         && d.timestamp == request.time
         && d.collection == 'orders'
         && d.operation in ['create', 'manual_order_create']
