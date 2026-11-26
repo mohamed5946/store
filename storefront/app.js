@@ -684,6 +684,13 @@ function showInfoForm(err = '') {
     <label class="field"><span>رقم الموبايل</span><input id="fPhone" type="tel" dir="ltr" style="text-align:right" autocomplete="tel" /></label>
     <label class="field"><span>العنوان</span><textarea id="fAddr" rows="2" autocomplete="street-address"></textarea></label>
     <button class="btn btn-primary btn-block" id="toReview">مراجعة الطلب</button>`);
+  /* Pre-fill from the saved customer (last successful order). */
+  const saved = loadSavedCustomer();
+  if (saved) {
+    if (saved.name) $('#fName').value = saved.name;
+    if (saved.phone) $('#fPhone').value = saved.phone;
+    if (saved.address) $('#fAddr').value = saved.address;
+  }
   $('#toReview').addEventListener('click', () => {
     const name = $('#fName').value.trim();
     const phone = $('#fPhone').value.trim();
@@ -1035,6 +1042,8 @@ async function submitOrder(customer) {
      * gets a fresh id. */
     localStorage.removeItem('sp-checkout');
     clientOrderId = null;
+    /* Remember the customer for the next checkout + the complaint form. */
+    saveCustomer({ name: customer.name, phone: customer.phone, address: customer.addr });
     ordering = false;
     closeModal();
     showJourney();
@@ -1263,6 +1272,51 @@ $('#themeToggle').addEventListener('click', () => {
   applyTheme();
 });
 
+/* ---------- saved customer (sp-customer) ----------
+ * The checkout info (name/phone/address) is saved here when an
+ * order succeeds, so the customer doesn't retype it: the next
+ * checkout info form and the complaint form are pre-filled from
+ * it. Fields stay editable; nothing is sent anywhere except as
+ * the order's own customer data or the complaint's phone. */
+const STORE_PHONE = '01557887719';
+function loadSavedCustomer() {
+  try {
+    const raw = localStorage.getItem('sp-customer');
+    if (!raw) return null;
+    const c = JSON.parse(raw);
+    if (!c || typeof c !== 'object') return null;
+    return {
+      name: typeof c.name === 'string' ? c.name : '',
+      phone: typeof c.phone === 'string' ? c.phone : '',
+      address: typeof c.address === 'string' ? c.address : '',
+    };
+  } catch (_) {
+    return null;
+  }
+}
+function saveCustomer(customer) {
+  try {
+    localStorage.setItem('sp-customer', JSON.stringify({
+      name: customer.name || '',
+      phone: customer.phone || '',
+      address: customer.address || '',
+    }));
+  } catch (_) { /* storage unavailable — pre-fill just won't happen */ }
+}
+/* Fill the complaint form from the saved customer; the phone falls
+ * back to the store number when there is no saved customer. Only
+ * empty fields are filled, so typed text is never clobbered. */
+function prefillFeedbackForm() {
+  const nameEl = $('#fbName');
+  const phoneEl = $('#fbPhone');
+  if (!nameEl || !phoneEl) return;
+  const saved = loadSavedCustomer();
+  if (nameEl.value.trim() === '' && saved && saved.name) nameEl.value = saved.name;
+  if (phoneEl.value.trim() === '') {
+    phoneEl.value = (saved && saved.phone) || STORE_PHONE;
+  }
+}
+
 /* ---------- feedback: "Contact us" — one-way complaint cards ----------
  * No functions, no tracking code, no lookup. The form writes directly
  * to the feedback collection (contract §6, shape §3): name, email,
@@ -1303,6 +1357,22 @@ async function submitFeedbackForm(e) {
 }
 const fbForm = $('#fbForm');
 if (fbForm) fbForm.addEventListener('submit', submitFeedbackForm);
+/* Fill the complaint form when it first appears (and once at init,
+ * in case it is already visible) — only empty fields are filled. */
+prefillFeedbackForm();
+if ('IntersectionObserver' in window) {
+  const contactSection = $('#contact');
+  if (contactSection) {
+    const contactObs = new IntersectionObserver((entries) => {
+      if (!entries.some((e) => e.isIntersecting)) return;
+      prefillFeedbackForm();
+      const nameEl = $('#fbName');
+      const phoneEl = $('#fbPhone');
+      if (nameEl && phoneEl && nameEl.value.trim() !== '' && phoneEl.value.trim() !== '') contactObs.disconnect();
+    }, { threshold: 0.1 });
+    contactObs.observe(contactSection);
+  }
+}
 window.addEventListener('scroll', () => {
   $('#topbar').classList.toggle('scrolled', window.scrollY > 20);
 }, { passive: true });
