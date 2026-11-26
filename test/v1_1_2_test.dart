@@ -67,6 +67,56 @@ void main() {
       expect(m.isNewerThan(5), isFalse);
       expect(m.isNewerThan(6), isFalse);
     });
+
+    test('nested apk entry wins over the top-level fields', () {
+      final m = StoreUpdateManifest.tryParse(
+        '{"versionCode": 5, "versionName": "1.1.3", '
+        '"apkUrl": "https://example.test/old.apk", '
+        '"apkSha256": "oldhash", "apkSizeBytes": 111, '
+        '"apk": {"url": "https://example.test/new.apk", '
+        '"sha256": "newhash", "size": 222}}',
+      );
+      expect(m, isNotNull);
+      expect(m!.apkUrl, 'https://example.test/new.apk');
+      expect(m.apkSha256, 'newhash');
+      expect(m.apkSizeBytes, 222);
+      expect(m.exe, isNull);
+    });
+
+    test('exe entry parses; a manifest without one has exe == null', () {
+      final withExe = StoreUpdateManifest.tryParse(
+        '{"versionCode": 5, "versionName": "1.1.3", '
+        '"apkUrl": "https://example.test/app.apk", '
+        '"apkSha256": "abcdef", "apkSizeBytes": 12345, '
+        '"exe": {"version": "1.0.0", '
+        '"url": "https://example.test/setup.exe", '
+        '"sha256": "deadbeef", "size": 999}}',
+      );
+      expect(withExe, isNotNull);
+      expect(withExe!.exe, isNotNull);
+      expect(withExe.exe!.version, '1.0.0');
+      expect(withExe.exe!.url, 'https://example.test/setup.exe');
+      expect(withExe.exe!.sha256, 'deadbeef');
+      expect(withExe.exe!.sizeBytes, 999);
+
+      final withoutExe = StoreUpdateManifest.tryParse(
+        '{"versionCode": 5, "versionName": "1.1.3", '
+        '"apkUrl": "https://example.test/app.apk", '
+        '"apkSha256": "abcdef", "apkSizeBytes": 12345}',
+      );
+      expect(withoutExe, isNotNull);
+      expect(withoutExe!.exe, isNull);
+
+      // An exe entry missing a required field is ignored, not fatal.
+      final brokenExe = StoreUpdateManifest.tryParse(
+        '{"versionCode": 5, "versionName": "1.1.3", '
+        '"apkUrl": "https://example.test/app.apk", '
+        '"apkSha256": "abcdef", "apkSizeBytes": 12345, '
+        '"exe": {"version": "1.0.0", "url": "https://example.test/setup.exe"}}',
+      );
+      expect(brokenExe, isNotNull);
+      expect(brokenExe!.exe, isNull);
+    });
   });
 
   group('remind-tonight suppression', () {

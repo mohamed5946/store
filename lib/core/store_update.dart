@@ -4,11 +4,16 @@
 // rules, stated here on purpose so no later edit can quietly
 // promise more:
 //
-// - The app fetches a version manifest from the stable GitHub
-//   "latest" release ([defaultManifestUrl]). CI regenerates that
-//   manifest on EVERY release (versionCode, versionName, changelog,
-//   APK URL, APK SHA-256, APK size), so it is never hand-edited and
-//   never stale while CI runs.
+// - The app fetches a version manifest from Firebase Hosting
+//   ([defaultManifestUrl]). The manifest is one file for BOTH apps:
+//   the top-level fields + the `apk` entry describe this Android
+//   app, the `exe` entry describes the Windows Store Manager —
+//   so one manifest drives both updaters. It is updated with each
+//   release (after the APK + the installer are built, with their
+//   real SHA-256 + size). CI still generates the GitHub "latest"
+//   version.json asset as a legacy fallback; the app no longer
+//   reads it — the private repo made the updater fail silently
+//   on the GitHub URL (anonymous requests 404).
 // - If the manifest's versionCode is HIGHER than the installed build
 //   number, the iOS-style Software Update screen is shown. The
 //   update is NEVER forced: closing the screen (back arrow) dismisses
@@ -35,17 +40,57 @@ import 'package:path_provider/path_provider.dart';
 
 import 'diagnostics.dart';
 
-/// Stable manifest URL: the `version.json` asset of the "latest"
-/// GitHub release. GitHub redirects this to the real asset; the http
-/// client follows redirects for GET.
+/// Stable manifest URL: the `version.json` file on Firebase Hosting.
+/// Hosting is public, so the updater works without GitHub auth — the
+/// private repo made the old GitHub-release URL fail silently.
 const String defaultManifestUrl =
-    'https://github.com/mohamed5946/store/releases/download/latest/version.json';
+    'https://store-3384c.web.app/updates/version.json';
 
 /// Stable APK URL: the `app-release.apk` asset of the "latest"
 /// release. NEVER an expiring fast link — the updater must keep
 /// working months after a release, not 48 hours.
 const String defaultApkUrl =
     'https://github.com/mohamed5946/store/releases/download/latest/app-release.apk';
+
+/// The Windows Store Manager entry of the shared manifest.
+/// All fields are optional at the manifest level — an older manifest
+/// without `exe` parses fine (exe == null) and the Android app
+/// simply ignores it. The Electron updater reads the same entry.
+class StoreUpdateExeEntry {
+  final String version;
+  final String url;
+  final String sha256;
+  final int sizeBytes;
+
+  const StoreUpdateExeEntry({
+    required this.version,
+    required this.url,
+    required this.sha256,
+    required this.sizeBytes,
+  });
+
+  static StoreUpdateExeEntry? tryParse(Object? raw) {
+    if (raw is! Map) return null;
+    final m = Map<String, dynamic>.from(raw);
+    final version = m['version'] as String?;
+    final url = m['url'] as String?;
+    final sha256 = m['sha256'] as String?;
+    if (version == null ||
+        version.isEmpty ||
+        url == null ||
+        url.isEmpty ||
+        sha256 == null ||
+        sha256.isEmpty) {
+      return null;
+    }
+    return StoreUpdateExeEntry(
+      version: version,
+      url: url,
+      sha256: sha256,
+      sizeBytes: (m['size'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
 
 /// One version manifest, as published by CI. Parsing is tolerant: a
 /// manifest missing a required field, or with a non-numeric
@@ -59,6 +104,10 @@ class StoreUpdateManifest {
   final String apkSha256;
   final int apkSizeBytes;
 
+  /// The Windows installer entry, when the manifest carries one.
+  /// Null for manifests written before the exe entry existed.
+  final StoreUpdateExeEntry? exe;
+
   const StoreUpdateManifest({
     required this.versionCode,
     required this.versionName,
@@ -66,6 +115,7 @@ class StoreUpdateManifest {
     required this.apkUrl,
     required this.apkSha256,
     required this.apkSizeBytes,
+    this.exe,
   });
 
   static StoreUpdateManifest? tryParse(String raw) {
@@ -75,8 +125,23 @@ class StoreUpdateManifest {
       final m = Map<String, dynamic>.from(decoded);
       final versionCode = (m['versionCode'] as num?)?.toInt();
       final versionName = m['versionName'] as String?;
-      final apkUrl = m['apkUrl'] as String?;
-      final apkSha256 = m['apkSha256'] as String?;
+      // The per-platform `apk` entry, when present, is the source of
+      // truth for the Android download; the top-level fields stay
+      // required so a manifest written by CI (top-level only) still
+      // parses.
+      var apkUrl = m['apkUrl'] as String?;
+      var apkSha256 = m['apkSha256'] as String?;
+      var apkSizeBytes = (m['apkSizeBytes'] as num?)?.toInt() ?? 0;
+      final apkEntry = m['apk'];
+      if (apkEntry is Map) {
+        final entry = Map<String, dynamic>.from(apkEntry);
+        final entryUrl = entry['url'] as String?;
+        final entrySha = entry['sha256'] as String?;
+        final entrySize = (entry['size'] as num?)?.toInt();
+        if (entryUrl != null && entryUrl.isNotEmpty) apkUrl = entryUrl;
+        if (entrySha != null && entrySha.isNotEmpty) apkSha256 = entrySha;
+        if (entrySize != null && entrySize > 0) apkSizeBytes = entrySize;
+      }
       if (versionCode == null ||
           versionName == null ||
           versionName.isEmpty ||
@@ -92,7 +157,8 @@ class StoreUpdateManifest {
         changelog: (m['changelog'] as String?) ?? '',
         apkUrl: apkUrl,
         apkSha256: apkSha256,
-        apkSizeBytes: (m['apkSizeBytes'] as num?)?.toInt() ?? 0,
+        apkSizeBytes: apkSizeBytes,
+        exe: StoreUpdateExeEntry.tryParse(m['exe']),
       );
     } catch (_) {
       return null;
