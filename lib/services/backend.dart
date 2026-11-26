@@ -1192,13 +1192,20 @@ class Backend {
         final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
         if (!isReservationExpired(createdAt: createdAt, now: now)) continue;
         try {
+          // The audit actor MUST be the signed-in admin's uid, not
+          // the literal 'sweep': the rules' audit entry requires
+          // actor == request.auth.uid, so a 'sweep' actor denies
+          // the whole expire transaction (and the stock never
+          // releases). The sweep is still identifiable by
+          // source == 'sweep' on the audit entry + movements.
+          // (The PC sweep already does it this way.)
           final ran = await _stockMovingTransition(
             doc.id,
             'expired',
             from: 'new',
             reason: 'reservation_expired',
-            actorUid: 'sweep',
-            actorName: 'sweep',
+            actorUid: auth.currentUser?.uid ?? '',
+            actorName: auth.currentUser?.email ?? '',
             source: 'sweep',
             expireBefore: now,
           );
