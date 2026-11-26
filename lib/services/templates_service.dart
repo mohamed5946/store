@@ -292,6 +292,23 @@ TemplateValidationReport validateTemplateDoc(Map<String, dynamic>? doc) {
   );
 }
 
+/// Grid edit validation (pure — unit-tested): columns is the
+/// products per row (1–12), rows is the rows shown before
+/// "show more" (1–20). Null on either side keeps the current
+/// behaviour — auto-fill columns / show all rows. The ranges match
+/// the gateway's grid checks above, so a validated edit can never
+/// push a good template through the gateway as invalid. Returns an
+/// Arabic error message, or null when the values are valid.
+String? validateTemplateGrid({int? columns, int? rows}) {
+  if (columns != null && (columns < 1 || columns > 12)) {
+    return 'عدد المنتجات في الصف لازم يكون بين 1 و 12';
+  }
+  if (rows != null && (rows < 1 || rows > 20)) {
+    return 'عدد الصفوف لازم يكون بين 1 و 20';
+  }
+  return null;
+}
+
 /// A token value is safe only as a plain color or a pixel radius:
 /// hex (#RGB / #RRGGBB / #RRGGBBAA) or rgba() with bounded numbers,
 /// or `<n>px` for radius. Anything with url(, expression, quotes,
@@ -587,5 +604,50 @@ class TemplatesService {
       },
       topNewValues: {'templateId': id, 'status': status},
     );
+  }
+
+  /// Edits a template's product grid (columns = products per row,
+  /// rows = rows shown before "show more"; null = auto-fill /
+  /// show all). Only the grid sub-map is written — the rest of the
+  /// document is untouched — and the write goes through the audited
+  /// write like every other admin mutation (grid fields are not
+  /// sensitive per the rules, so the sensitive map is empty). The
+  /// merged document is re-run through the validation gateway, so
+  /// an edit can never silently invalidate a live template; the
+  /// minColumnWidthPx is preserved from the stored document.
+  Future<void> updateTemplateGrid({
+    required String id,
+    int? columns,
+    int? rows,
+  }) async {
+    final error = validateTemplateGrid(columns: columns, rows: rows);
+    if (error != null) throw BackendException(error);
+    final snap = await _db.collection('templates').doc(id).get();
+    final data = snap.data();
+    if (data == null) throw BackendException('القالب مش موجود');
+    final existingGrid = (data['grid'] as Map<String, dynamic>?) ?? {};
+    final mergedGrid = <String, dynamic>{
+      'columns': columns,
+      'rows': rows,
+      'minColumnWidthPx': existingGrid['minColumnWidthPx'] ?? 250,
+    };
+    final mergedDoc = <String, dynamic>{...data, 'grid': mergedGrid};
+    final report = validateTemplateDoc(mergedDoc);
+    if (!report.passed) {
+      throw BackendException(
+          'الشبكة دي مش صالحة: ${report.failedChecks.join('، ')}');
+    }
+    await Backend.instance.auditedWrite(
+      writes: {
+        'templates/$id': {'grid': mergedGrid},
+      },
+      sensitive: const {},
+      operation: 'template_grid',
+      oldValues: {
+        'templates/$id': {'grid': data['grid']},
+      },
+      topNewValues: {'templateId': id, 'grid': mergedGrid},
+    );
+    Diagnostics.instance.log('Template grid updated: $id ($columns × $rows)');
   }
 }

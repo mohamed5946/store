@@ -70,6 +70,19 @@ before(async () => {
       paymentStatus: 'cod_pending', total: 1000,
       customerName: 'اختبار', customerPhone: '01012345678',
     });
+    // A3 batch (2026-11-26): fresh orders for the cancel-coverage
+    // tests — order-1's status mutates across the earlier tests, so
+    // the cancel tests need their own 'new' orders.
+    await setDoc(doc(db, 'orders', 'order-cancel-ok'), {
+      id: 'order-cancel-ok', clientOrderId: 'order-cancel-ok',
+      status: 'new', paymentStatus: 'cod_pending', total: 1000,
+      customerName: 'اختبار', customerPhone: '01012345678',
+    });
+    await setDoc(doc(db, 'orders', 'order-cancel-bad'), {
+      id: 'order-cancel-bad', clientOrderId: 'order-cancel-bad',
+      status: 'new', paymentStatus: 'cod_pending', total: 1000,
+      customerName: 'اختبار', customerPhone: '01012345678',
+    });
     await setDoc(doc(db, 'feedback', 'fb-1'), {
       id: 'fb-1', trackingCode: 'FB-AAAAAA', status: 'new',
       priority: 'low', customerRef: { phone: '01012345678', linked: false },
@@ -318,6 +331,60 @@ test('Phase 2 (T12): an illegal order transition is denied, a legal one passes',
     data: { status: 'accepted' }, sensitive: { status: 'accepted' },
   }));
   assert.equal((await getDoc(doc(db, 'orders', 'order-1'))).data().status, 'accepted');
+});
+
+/* ---------- A3 batch (2026-11-26): the cancel/deliver lifecycle
+ * fields must be covered by the audit entry. The app's stock-moving
+ * status transaction stamps cancelledAt + cancelReason (or
+ * deliveredAt) alongside status; the rules check
+ * diff().affectedKeys() coverage, so an audit entry that lists only
+ * ['status', 'operationId', 'updatedAt'] denies the write even
+ * though the transition itself is legal. The app now derives the
+ * docIds list from the real write — these tests pin that contract:
+ * full coverage passes, the old hard-coded list is denied. */
+
+test('A3: cancelling an order WITH the lifecycle fields covered passes', async () => {
+  const db = adminDb();
+  await assertSucceeds(auditedSet(db, ADMIN_UID, {
+    collection: 'orders', docId: 'order-cancel-ok',
+    data: {
+      status: 'cancelled',
+      cancelledAt: serverTimestamp(),
+      cancelReason: 'cancelled_by_admin',
+    },
+    sensitive: { status: 'cancelled' },
+  }));
+  assert.equal((await getDoc(doc(db, 'orders', 'order-cancel-ok'))).data().status, 'cancelled');
+});
+
+test('A3: cancelling an order with the OLD hard-coded audit list is denied', async () => {
+  const db = adminDb();
+  opCounter += 1;
+  const opId = `op-test-${opCounter}`;
+  const batch = writeBatch(db);
+  // The write sets status + cancelledAt + cancelReason, but the
+  // audit entry lists only status/operationId/updatedAt — the
+  // lifecycle fields are missing from docIds, so coverage fails.
+  batch.set(doc(db, 'orders', 'order-cancel-bad'), {
+    status: 'cancelled',
+    cancelledAt: serverTimestamp(),
+    cancelReason: 'cancelled_by_admin',
+    operationId: opId,
+    updatedAt: serverTimestamp(),
+  }, { merge: true });
+  batch.set(doc(db, 'audit', opId), {
+    operationId: opId, actor: ADMIN_UID, actorName: 'Test Admin',
+    timestamp: serverTimestamp(), collection: 'orders', docId: 'order-cancel-bad',
+    operation: 'status_change',
+    changedFields: ['status', 'operationId', 'updatedAt'],
+    oldValues: { status: 'new' }, newValues: { status: 'cancelled' },
+    docIds: { 'orders/order-cancel-bad': ['status', 'operationId', 'updatedAt'] },
+    newValuesByDoc: { 'orders/order-cancel-bad': { status: 'cancelled' } },
+    documents: [{ collection: 'orders', docId: 'order-cancel-bad', changedFields: ['status'], oldValues: { status: 'new' }, newValues: { status: 'cancelled' } }],
+    source: 'test',
+  });
+  await assertFails(batch.commit());
+  assert.equal((await getDoc(doc(db, 'orders', 'order-cancel-bad'))).data().status, 'new');
 });
 
 test('Phase 2: an illegal feedback transition is denied, a legal one passes', async () => {

@@ -678,11 +678,28 @@ class FlowNavPill extends StatelessWidget {
                 ),
               ],
             ),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                for (var i = 0; i < labels.length; i++) _item(context, i),
-              ],
+            // A1 (2026-11-26): the pill scrolls horizontally — with 8
+            // tabs the row overflows a phone screen and the last tab
+            // was cut off. The ConstrainedBox keeps the old spread
+            // look when everything fits (the Row stretches to the
+            // viewport width and spaceAround distributes the tabs);
+            // when the tabs are wider than the viewport the pill
+            // scrolls instead of clipping. The pill look itself
+            // (r30, blur, gradient, gold selected pill) is unchanged.
+            child: LayoutBuilder(
+              builder: (context, constraints) => SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: ConstrainedBox(
+                  constraints:
+                      BoxConstraints(minWidth: constraints.maxWidth),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      for (var i = 0; i < labels.length; i++) _item(context, i),
+                    ],
+                  ),
+                ),
+              ),
             ),
           ),
         ),

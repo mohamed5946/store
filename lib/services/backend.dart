@@ -713,8 +713,32 @@ class Backend {
         final auditRef = db.collection('audit').doc();
         final opId = auditRef.id;
         final now = FieldValue.serverTimestamp();
+        // The order write (built first, below) also stamps the
+        // lifecycle fields — deliveredAt on deliver, cancelledAt +
+        // cancelReason on cancel/expire. The audit's docIds entry
+        // MUST list every key the write actually sets: the rules
+        // check diff().affectedKeys() coverage, so a hard-coded
+        // ['status', 'operationId', 'updatedAt'] denies the cancel /
+        // deliver write even with the new rules deployed (the
+        // lifecycle fields are new keys, hence affected). Deriving
+        // the list from the real write keeps the two in sync.
+        final orderUpdate = <String, dynamic>{
+          'status': status,
+          'operationId': opId,
+          'updatedAt': now,
+        };
+        if (status == 'accepted') orderUpdate['acceptedAt'] = now;
+        if (status == 'delivered') orderUpdate['deliveredAt'] = now;
+        if (status == 'cancelled' || status == 'expired') {
+          orderUpdate['cancelledAt'] = now;
+          orderUpdate['cancelReason'] = reason ??
+              (status == 'expired'
+                  ? 'reservation_expired'
+                  : 'cancelled_by_admin');
+        }
+        final orderChangedFields = orderUpdate.keys.toList();
         final docIds = <String, List<String>>{
-          'orders/$id': ['status', 'operationId', 'updatedAt'],
+          'orders/$id': orderChangedFields,
         };
         final newValuesByDoc = <String, Map<String, dynamic>>{
           'orders/$id': {'status': status},
@@ -773,22 +797,11 @@ class Backend {
             'newValues': {'inStock': newAvailable > 0},
           });
         }
-        final orderUpdate = <String, dynamic>{
-          'status': status,
-          'operationId': opId,
-          'updatedAt': now,
-        };
-        if (status == 'accepted') orderUpdate['acceptedAt'] = now;
-        if (status == 'delivered') orderUpdate['deliveredAt'] = now;
-        if (status == 'cancelled' || status == 'expired') {
-          orderUpdate['cancelledAt'] = now;
-          orderUpdate['cancelReason'] = reason ?? (status == 'expired' ? 'reservation_expired' : 'cancelled_by_admin');
-        }
         tx.set(orderRef, orderUpdate, SetOptions(merge: true));
         documents.insert(0, {
           'collection': 'orders',
           'docId': id,
-          'changedFields': ['status'],
+          'changedFields': orderChangedFields,
           'oldValues': {'status': from},
           'newValues': {'status': status},
         });

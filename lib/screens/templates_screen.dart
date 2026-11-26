@@ -166,6 +166,13 @@ Future<void> _showTemplateDetail(
   required bool isAdmin,
 }) async {
   final tokens = PreviewTokens.fromTemplate(record.tokens);
+  // Grid editor state (A2, 2026-11-26): the detail dialog is where
+  // the grid summary already lives, so the edit UI lives here too —
+  // admin-only, registry templates only. The built-in classic has
+  // no registry document yet, so it keeps the note below instead
+  // of an editor (it gets one automatically once it is seeded).
+  var gridColumns = record.gridColumns;
+  var gridRows = record.gridRows;
   await showDialog<void>(
     context: context,
     builder: (c) => StatefulBuilder(
@@ -189,14 +196,85 @@ Future<void> _showTemplateDetail(
                 StaggeredItem(
                     index: 2,
                     child: Text('الشبكة: ${record.gridSummary}')),
-                const StaggeredItem(index: 3, child: Divider()),
+                if (isAdmin && record.fromRegistry) ...[
+                  const SizedBox(height: 12),
+                  StaggeredItem(
+                    index: 3,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('شبكة المنتجات',
+                            style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        DropdownButtonFormField<int?>(
+                          initialValue: gridColumns,
+                          items: [
+                            const DropdownMenuItem(
+                                value: null,
+                                child: Text('تلقائي (حسب عرض الشاشة)')),
+                            for (var c = 1; c <= 12; c++)
+                              DropdownMenuItem(
+                                  value: c, child: Text('$c في الصف')),
+                          ],
+                          onChanged: (v) =>
+                              setState(() => gridColumns = v),
+                          decoration: const InputDecoration(
+                              labelText: 'المنتجات في الصف (الأعمدة)'),
+                        ),
+                        const SizedBox(height: 8),
+                        DropdownButtonFormField<int?>(
+                          initialValue: gridRows,
+                          items: [
+                            const DropdownMenuItem(
+                                value: null, child: Text('الكل')),
+                            for (var r = 1; r <= 20; r++)
+                              DropdownMenuItem(
+                                  value: r, child: Text('$r صفوف')),
+                          ],
+                          onChanged: (v) => setState(() => gridRows = v),
+                          decoration: const InputDecoration(
+                              labelText: 'الصفوف قبل "عرض المزيد"'),
+                        ),
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: AlignmentDirectional.centerEnd,
+                          child: OutlinedButton(
+                            onPressed: (gridColumns == record.gridColumns &&
+                                    gridRows == record.gridRows)
+                                ? null
+                                : () async {
+                                    try {
+                                      await TemplatesService.instance
+                                          .updateTemplateGrid(
+                                        id: record.id,
+                                        columns: gridColumns,
+                                        rows: gridRows,
+                                      );
+                                      if (c.mounted) {
+                                        Navigator.pop(c);
+                                        _snack(c, 'الشبكة اتحفظت');
+                                      }
+                                    } catch (e) {
+                                      if (c.mounted) {
+                                        _snack(c, e.toString(), error: true);
+                                      }
+                                    }
+                                  },
+                            child: const Text('حفظ الشبكة'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                const StaggeredItem(index: 4, child: Divider()),
                 const StaggeredItem(
-                    index: 4,
+                    index: 5,
                     child: Text('معاينة بالقالب ده',
                         style: TextStyle(fontWeight: FontWeight.bold))),
                 const SizedBox(height: 8),
                 StaggeredItem(
-                  index: 5,
+                  index: 6,
                   child: StorefrontHeaderPreview(
                     brandName: 'المتجر',
                     tagline: 'كل اللي تحتاجه، في مكان واحد',
@@ -205,7 +283,7 @@ Future<void> _showTemplateDetail(
                 ),
                 const SizedBox(height: 8),
                 StaggeredItem(
-                  index: 6,
+                  index: 7,
                   child: StorefrontProductCardPreview(
                     name: 'سماعة بلوتوث',
                     priceText: '500',
@@ -215,7 +293,7 @@ Future<void> _showTemplateDetail(
                 if (!record.fromRegistry) ...[
                   const SizedBox(height: 8),
                   const StaggeredItem(
-                      index: 7,
+                      index: 8,
                       child: Text(
                           'القالب ده افتراضي — لسه متسجلش في السجل. أول تفعيل لقالب تاني هيسجّله تلقائياً.')),
                 ],
