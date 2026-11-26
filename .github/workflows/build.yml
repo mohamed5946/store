@@ -3,6 +3,14 @@ name: Build Store Admin APK
 on:
   push:
     branches: [main]
+    paths:
+      - 'lib/**'
+      - 'test/**'
+      - 'android/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'analysis_options.yaml'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 permissions:
