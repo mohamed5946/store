@@ -379,7 +379,7 @@ function productCard(p) {
       ${p.description ? `<p class="desc">${esc(p.description)}</p>` : ''}
       <div class="price-row">
         <span class="price">${money(p.price)}</span>
-        <button class="add-btn" data-add="${p.id}" aria-label="أضف للسلة">+</button>
+        <button class="add-btn" data-add="${p.id}" aria-label="أضف للسلة" ${p.inStock === false ? 'disabled' : ''}>+</button>
       </div>
     </div>
   </article>`;
@@ -1124,7 +1124,7 @@ function showJourney() {
     openModal(`
       <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
       <div style="text-align:center;padding:20px 0">
-        <h2>طلبك اتأكد! ✅</h2>
+        <h2>طلبك اتأكد!</h2>
         <p style="color:var(--text-soft)">هندفع عند الاستلام — شكراً لطلبك.</p>
         <button class="btn btn-primary btn-block" id="successClose">تمام</button>
       </div>`);
