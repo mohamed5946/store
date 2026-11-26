@@ -1,0 +1,54 @@
+name: Deploy Rules and Hosting to Firebase
+
+# Deploys Firestore rules + Hosting to project store-3384c (NO Cloud
+# Functions — the no-functions build: functions/ stays in the repo,
+# un-deployed, un-deleted).
+# Auth is Workload Identity Federation — no service-account key files
+# and no secrets are involved — the SAME pattern as
+# .github/workflows/deploy-hosting.yml: the pool (github-pool) and
+# provider (github-provider) only trust this repository.
+#
+# MANUAL ONLY (workflow_dispatch): a rules/hosting deploy is never
+# automatic — run it from Actions only after the branch has been
+# reviewed.
+#
+# CONSOLE SETUP — DONE: the service account firebase-deploy@ exists
+# with Firebase Admin + Cloud Functions Admin + Service Account User,
+# and the WIF provider is granted Workload Identity User on it (the
+# SAME workload-identity principal that already impersonates
+# hosting-deploy@). If the Authenticate step ever fails with a
+# permission error, that grant is what to re-check — not the
+# workflow.
+#
+# BILLING: Blaze is NOT needed and NOT enabled — the project is on
+# Spark. Rules + hosting deploy fine on Spark (only Cloud Functions
+# deploys need Blaze, and no functions are deployed here).
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/766975771796/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: firebase-deploy@store-3384c.iam.gserviceaccount.com
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Deploy rules + hosting
+        run: |
+          npm install -g firebase-tools
+          firebase deploy --only firestore:rules,hosting --project store-3384c --non-interactive
