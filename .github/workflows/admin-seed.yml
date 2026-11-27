@@ -33,6 +33,7 @@ on:
           - governorates-live
           - discounts-live
           - issue-test-preview
+          - issue-test-preview-all
           - list-previews
 
 permissions:
@@ -79,6 +80,9 @@ jobs:
               ;;
             issue-test-preview)
               node scripts/issue-test-preview.js
+              ;;
+            issue-test-preview-all)
+              node scripts/issue-test-preview.js --all
               ;;
             list-previews)
               node scripts/issue-test-preview.js --list
