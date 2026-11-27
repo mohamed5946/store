@@ -94,19 +94,26 @@ before(async () => {
     await setDoc(doc(db, 'inventory', 'prod-3'), {
       productId: 'prod-3', stock: 2, reserved: 2, minStock: 5, costPrice: 50,
     });
-    // prod-4: bad-shape + pricing tests (price 300, stock 10).
+    // prod-4: bad-shape + pricing tests (price 300, stock 20 —
+    // raised from 10 by the checks-reduction probe, P3 2026-11-27:
+    // the rewritten tests now reserve up to 14, and the reserve
+    // rule caps reserved <= stock, so 10 would deny the later
+    // tests. The cap itself is still pinned by the OOS tests on
+    // prod-oos-1 / prod-2, not by this seed value).
     await setDoc(doc(db, 'products', 'prod-4'), {
       name: 'جراب موبايل', price: 300, categoryId: 'cat-1', inStock: true,
     });
     await setDoc(doc(db, 'inventory', 'prod-4'), {
-      productId: 'prod-4', stock: 10, reserved: 0, minStock: 5, costPrice: 150,
+      productId: 'prod-4', stock: 20, reserved: 0, minStock: 5, costPrice: 150,
     });
-    // prod-5: manual-order tests (price 300, stock 10).
+    // prod-5: manual-order tests (price 300, stock 20 — raised
+    // from 10 by the checks-reduction probe, P3 2026-11-27, same
+    // reason as prod-4: the D1 no-threshold test now reserves 11).
     await setDoc(doc(db, 'products', 'prod-5'), {
       name: 'سماعة سلكية', price: 300, categoryId: 'cat-1', inStock: true,
     });
     await setDoc(doc(db, 'inventory', 'prod-5'), {
-      productId: 'prod-5', stock: 10, reserved: 0, minStock: 5, costPrice: 150,
+      productId: 'prod-5', stock: 20, reserved: 0, minStock: 5, costPrice: 150,
     });
     // prod-6: fractional-price test (correction 2026-11-26 — the
     // order rule uses `is number`, so a stored 19.99 price must not
@@ -688,7 +695,7 @@ test('No-functions: bad-shape orders are rejected (missing address, short phone,
   const db = anonDb();
   const base = {
     productId: 'prod-4', productName: 'جراب موبايل', price: 300,
-    qty: 1, stock: 10, reserved: 0,
+    qty: 1, stock: 20, reserved: 0,
   };
   // Missing customerAddress.
   await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-1', omit: ['customerAddress'] }));
@@ -1463,7 +1470,7 @@ test('Pricing A: a saleSavings mismatch now PASSES the rules (CUT-4 — savings 
   const db = anonDb();
   await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-pricing-sav-bad', productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 10, reserved: 7, basePrice: 500,
+    price: 300, qty: 1, stock: 20, reserved: 7, basePrice: 500,
     overrides: { saleSavings: 199, deliveryFee: 30, amountDue: 330 },
   }));
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-sav-bad'))).data();
@@ -1488,7 +1495,7 @@ test('Pricing A: a line priced below the DB price now PASSES the rules (CUT-2 �
   const db = anonDb();
   await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-pricing-poison', productId: 'prod-4', productName: 'جراب موبايل',
-    price: 299, qty: 1, stock: 10, reserved: 8, basePrice: 500,
+    price: 299, qty: 1, stock: 20, reserved: 8, basePrice: 500,
     overrides: { saleSavings: 201, deliveryFee: 30, amountDue: 329 },
   }));
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-poison'))).data();
@@ -1509,7 +1516,7 @@ test('Pricing A: an amountDue mismatch now PASSES the rules (CUT-6 — totals re
   const db = anonDb();
   await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-pricing-due-bad', productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 10, reserved: 9, basePrice: 500,
+    price: 300, qty: 1, stock: 20, reserved: 9, basePrice: 500,
     overrides: { saleSavings: 200, deliveryFee: 30, amountDue: 331 },
   }));
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-due-bad'))).data();
@@ -1529,7 +1536,7 @@ test('Pricing A: a deliveryFee != settings now PASSES the rules on an anonymous 
   // amountDue is consistent with the forged fee (300 + 40).
   await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-pricing-fee-bad', productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 10, reserved: 10, basePrice: 500,
+    price: 300, qty: 1, stock: 20, reserved: 10, basePrice: 500,
     overrides: { saleSavings: 200, deliveryFee: 40, amountDue: 340 },
   }));
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-fee-bad'))).data();
@@ -1541,7 +1548,7 @@ test('Pricing A: an order carrying one new key without the other two is denied',
   const db = anonDb();
   await assertFails(rawOrderBatch(db, {
     orderId: 'order-pricing-partial', productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 10, reserved: 5, basePrice: 500,
+    price: 300, qty: 1, stock: 20, reserved: 5, basePrice: 500,
     overrides: { saleSavings: 200, amountDue: 330 },
   }));
   assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-partial'))).exists(), false);
@@ -1773,7 +1780,7 @@ test('Pricing A: an order audit that does NOT cover the money fields no longer d
   const db = anonDb();
   const base = {
     productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 10, reserved: 12, basePrice: 500,
+    price: 300, qty: 1, stock: 20, reserved: 12, basePrice: 500,
     overrides: { saleSavings: 200, deliveryFee: 30, amountDue: 330 },
   };
   // Audit lists status/total/saleSavings/amountDue/items but not deliveryFee.
