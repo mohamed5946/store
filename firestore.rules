@@ -130,28 +130,32 @@
 //     this dual-shape version — a full revert to the pre-feature
 //     exact-key rules is NOT the rollback path (it would reject
 //     updates to orders created during the feature window).
-//   - New invariants (when present): total == subtotal;
-//     saleSavings == sum over lines of
-//     (basePrice - price) * qty; amountDue == total + deliveryFee;
-//     deliveryFee == the expected fee on ANONYMOUS storefront
-//     creates only (decision D2 keeps the fee split — manual
-//     orders are client-asserted, no fee get): the settings
-//     deliveryFee when set, else 0 (unset fee = free, Mohamed's
-//     decision 2026-11-27); 0 when total >= the settings
-//     freeDeliveryThreshold, when set > 0 (D1 waiver, same
-//     settings doc, no new get); basePrice ==
-//     null || basePrice >= price per line.
+//   - New invariants (when present) — CUT by the checks reduction
+//     (2026-11-27, owner-approved): total == subtotal, saleSavings
+//     == sum over lines of (basePrice - price) * qty, amountDue ==
+//     total + deliveryFee, and deliveryFee == the expected fee on
+//     ANONYMOUS storefront creates only (decision D2 kept the fee
+//     split — manual orders were client-asserted, no fee get; the
+//     settings deliveryFee when set, else 0 — unset fee = free,
+//     Mohamed's decision 2026-11-27; 0 when total >= the settings
+//     freeDeliveryThreshold, when set > 0 — D1 waiver, same settings
+//     doc, no new get) are ALL REMOVED. What stays: saleSavings /
+//     deliveryFee / amountDue are int >= 0 when present; total /
+//     subtotal are number >= 0; per-line basePrice is int when
+//     present (the basePrice >= price comparison is cut). The
+//     owner's manual review is the backstop for every forged value.
 //   - Product rule: basePrice == null || (basePrice is int &&
 //     basePrice >= price); a fractional basePrice is denied.
 //   - attemptId (string, optional) is present on storefront orders,
-//     omitted on manual orders. Exact order keys: old shape 22–26,
-//     new shape 25–30 (22 core + 3 money keys + optional
-//     operationId + optional attemptId); per-line keys 4 or 5.
-//     (Discount code REMOVED 2026-11-27: the three legacy code keys
-//     discountCode/discountPercent/discountAmount stay in the
-//     hasOnly allow-list with NO value checks, so orders created
-//     while the code existed stay updatable — new orders omit them,
-//     which is why the old-shape core is 22 keys, not 25.)
+//     omitted on manual orders. Order key SIZE windows (CUT-1: the
+//     33-key hasOnly list is cut): old shape 22–26, new shape 25–30
+//     (22 core + 3 money keys + optional operationId + optional
+//     attemptId); per-line keys 4 or 5. (Discount code REMOVED
+//     2026-11-27: the three legacy code keys
+//     discountCode/discountPercent/discountAmount are tolerated as
+//     junk keys inside the size windows, so orders created while
+//     the code existed stay updatable — new orders omit them, which
+//     is why the old-shape core is 22 keys, not 25.)
 //   - Attempt docs (analytics/attempts/items) are shape-checked on
 //     write (errorCode from the allowed set, seen values,
 //     clientOrderId, plus the contact fields the live storefront
@@ -294,19 +298,20 @@ service cloud.firestore {
     /* One order line: productId/name/price/qty, plus the optional
      * pricing basePrice (Phase A): an old-shape line has exactly the
      * 4 original keys; a new-shape line adds basePrice (5 keys) —
-     * null when no sale, or an int >= price. A basePrice below the
-     * charged price is a fake discount and is denied; a fractional
-     * basePrice is denied (integer rule, same as the product rule).
-     * price stays number, not int (correction 2026-11-26): a stored
-     * fractional price must not deny a legitimate order whose line
-     * price matches the DB exactly. Budget fix 2026-11-27: the
-     * 4-or-5-key size check is gone — hasOnly + the field checks
-     * below already deny a short line (a missing field errors or
-     * fails its type check); the productId/name .size() > 0 checks
-     * are gone too — an empty productId is no longer checked
-     * against the DB (CUT-2, 2026-11-27: the per-line DB price
-     * get is removed; the owner's manual review is the backstop),
-     * and name is display-only. Same verdicts. */
+     * null when no sale, or an int (CUT-7b, checks reduction
+     * 2026-11-27: the basePrice >= price comparison is cut — a
+     * basePrice below the charged price now passes; a fractional
+     * basePrice is still denied by the is-int check). price stays
+     * number, not int (correction 2026-11-26): a stored fractional
+     * price must not deny a legitimate order whose line price
+     * matches the DB exactly. Budget fix 2026-11-27: the 4-or-5-key
+     * size check is gone — hasOnly + the field checks below already
+     * deny a short line (a missing field errors or fails its type
+     * check); the productId/name .size() > 0 checks are gone too —
+     * an empty productId is no longer checked against the DB
+     * (CUT-2, 2026-11-27: the per-line DB price get is removed;
+     * the owner's manual review is the backstop), and name is
+     * display-only. Same verdicts. */
     function orderLineOk(item) {
       return item is map
         && item.keys().hasOnly(['productId', 'name', 'price', 'qty', 'basePrice'])
@@ -315,7 +320,7 @@ service cloud.firestore {
         && item.price is number && item.price > 0
         && item.qty is int && item.qty >= 1 && item.qty <= 20
         && (!('basePrice' in item) || item.basePrice == null
-          || (item.basePrice is int && item.basePrice >= item.price));
+          || item.basePrice is int);
     }
 
     /* One traversal for shape (budget fix 2026-11-27): the old
@@ -331,9 +336,9 @@ service cloud.firestore {
      * prices. CUT-3 (same round): the per-line inventory get is
      * REMOVED too — the reserve rule (separate operation) still
      * enforces reserved <= stock on every reserve write. Gets
-     * now: none in this walk (the fee get in orderFeeOk is the
-     * only get left on a storefront order; the audit getAfter
-     * left with the audit-split, M1). */
+     * now: none on a storefront order (the fee get in orderFeeOk
+     * is cut by CUT-5, 2026-11-27; the audit getAfter left with
+     * the audit-split, M1). */
     function orderLineValid(i) {
       let items = request.resource.data.items;
       return orderLineOk(items[i]);
@@ -397,51 +402,46 @@ service cloud.firestore {
         + (n <= 8 ? 0 : orderLineValue(8)) + (n <= 9 ? 0 : orderLineValue(9));
     }
 
-    /* Per-line saving of line i (pricing Phase A): (basePrice -
-     * price) * qty when the line carries a base price, else 0 — an
-     * absent or null basePrice means no sale on that line and
-     * contributes nothing. Exact integer math, never rounded. */
-    function orderLineSaving(i) {
-      let items = request.resource.data.items;
-      return (!('basePrice' in items[i]) || items[i].basePrice == null) ? 0
-        : (items[i].basePrice - items[i].price) * items[i].qty;
-    }
-
-    /* saleSavings must equal the unrolled sum of the per-line
-     * savings (the rules cannot loop). */
-    function orderSaleSavingsOk() {
-      let d = request.resource.data;
-      let n = d.items.size();
-      return d.saleSavings
-        == (n <= 0 ? 0 : orderLineSaving(0)) + (n <= 1 ? 0 : orderLineSaving(1))
-        + (n <= 2 ? 0 : orderLineSaving(2)) + (n <= 3 ? 0 : orderLineSaving(3))
-        + (n <= 4 ? 0 : orderLineSaving(4)) + (n <= 5 ? 0 : orderLineSaving(5))
-        + (n <= 6 ? 0 : orderLineSaving(6)) + (n <= 7 ? 0 : orderLineSaving(7))
-        + (n <= 8 ? 0 : orderLineSaving(8)) + (n <= 9 ? 0 : orderLineSaving(9));
-    }
+    /* REMOVED by CUT-4 (checks reduction, 2026-11-27, owner-approved):
+     * orderLineSaving + orderSaleSavingsOk verified saleSavings ==
+     * the unrolled sum of per-line (basePrice - price) * qty. The
+     * sum is cut — only `saleSavings is int && >= 0` is checked now.
+     * A forged savings figure passes the rules and is caught by the
+     * owner's manual review (it never enters amountDue). Kept in git
+     * history; do not re-add without a design decision. */
 
     /* The full order shape (contract §3 + pricing Phase A dual-shape):
-     * exact keys, field types and ranges, totals consistent,
-     * lifecycle fields null, timestamps == request.time, ids == the
-     * doc id, createdBy matching the source. Dual-shape: an order may
-     * omit ALL THREE new money keys (saleSavings, deliveryFee,
-     * amountDue) — an old-shape order, valid at 22–26 keys. An order
-     * carrying ANY ONE of the three must carry ALL THREE (new shape,
-     * 25–30 keys: 22 core + 3 money keys + optional operationId +
-     * optional attemptId) with all new invariants enforced. attemptId
-     * on its own (without the three money keys) is denied. Per-line
-     * basePrice may be absent (old-shape line) or present.
-     * Discount code REMOVED 2026-11-27: the three legacy code keys
-     * (discountCode, discountPercent, discountAmount) stay in the
-     * hasOnly allow-list below with NO value checks, so orders
+     * size-bounded keys (CUT-1, 2026-11-27 — the 33-key hasOnly list
+     * is cut; the dual-shape size windows are the bound), field types
+     * and ranges, lifecycle fields null, timestamps == request.time,
+     * ids == the doc id, createdBy matching the source. Dual-shape:
+     * an order may omit ALL THREE new money keys (saleSavings,
+     * deliveryFee, amountDue) — an old-shape order, valid at 22–26
+     * keys. An order carrying ANY ONE of the three must carry ALL
+     * THREE (new shape, 25–30 keys: 22 core + 3 money keys +
+     * optional operationId + optional attemptId) with all new
+     * invariants enforced. attemptId on its own (without the three
+     * money keys) is denied. Per-line basePrice may be absent
+     * (old-shape line) or present. Discount code REMOVED 2026-11-27:
+     * the three legacy code keys (discountCode, discountPercent,
+     * discountAmount) are tolerated as junk keys inside the size
+     * windows (CUT-1 removed the hasOnly allow-list), so orders
      * created while the code existed stay updatable — new orders
      * omit them, which is why the old-shape core is 22 keys, not
-     * 25. total == subtotal (no discount subtracted any more).
-     * Dual-shape contact (incomplete orders, 2026-11-27): either
-     * money shape may also carry customerPhone2 (optional backup
-     * phone), governorate (stable ID) and detailedAddress — 0 to 3
-     * extra keys (old shape 22–26 keys, new-money shape 25–30).
-     * customerAddress always carries the combined string. */
+     * 25. total == subtotal (no discount subtracted any more). Dual-shape contact (incomplete orders,
+     * 2026-11-27): either money shape may also carry customerPhone2
+     * (optional backup phone), governorate (stable ID) and
+     * detailedAddress — 0 to 3 extra keys (old shape 22–26 keys,
+     * new-money shape 25–30). customerAddress always carries the
+     * combined string. CUT-4/5/6/7 (checks reduction, 2026-11-27,
+     * owner-approved): the savings sum is cut (saleSavings only
+     * type-checked); the fee check is gone (orderFeeOk REMOVED — the
+     * fee is no longer rules-verified); the totals relations
+     * (total == subtotal, amountDue == total + deliveryFee) are
+     * cut (type checks stay); the phone2 regex, attemptId type
+     * check, shipping/tracking/notes type checks, and the per-line
+     * basePrice >= price comparison are cut. The owner's manual
+     * review is the backstop for every forged value above. */
     function orderShapeOk(doc) {
       let d = request.resource.data;
       let keys = d.keys();
@@ -452,11 +452,10 @@ service cloud.firestore {
       // d.operationId ERRORS when the field is absent and denies every
       // storefront order (bug found from firestore-debug.log, 2026-11-27).
       let opId = d.get('operationId', null);
-      return keys.hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerPhone2', 'customerAddress', 'governorate', 'detailedAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId', 'operationId', 'saleSavings', 'deliveryFee', 'amountDue', 'attemptId'])
-        && ((!hasMoney && keys.size() >= 22 && keys.size() <= 26 && !('attemptId' in d))
+      return ((!hasMoney && keys.size() >= 22 && keys.size() <= 26 && !('attemptId' in d))
           || (hasAllMoney && keys.size() >= 25 && keys.size() <= 30))
         && (opId == null || opId is string)
-        && (!('customerPhone2' in d) || d.customerPhone2 == null || (d.customerPhone2 is string && d.customerPhone2.matches('^01[0125][0-9]{8}$')))
+        && (!('customerPhone2' in d) || d.customerPhone2 == null || d.customerPhone2 is string)
         && (!('governorate' in d) || d.governorate == null || (d.governorate is string && d.governorate.size() >= 1 && d.governorate.size() <= 50))
         && (!('detailedAddress' in d) || d.detailedAddress == null || (d.detailedAddress is string && d.detailedAddress.size() <= 500))
         /* 'operationId' is optional (coordinator fix 2026-11-26):
@@ -470,21 +469,16 @@ service cloud.firestore {
         && d.items is list && d.items.size() >= 1 && d.items.size() <= 10
         && d.subtotal is number && d.subtotal >= 0
         && d.total is number && d.total >= 0
-        && d.total == d.subtotal
         && orderSubtotalOk()
-        && (!('saleSavings' in d) || (d.saleSavings is int && d.saleSavings >= 0 && orderSaleSavingsOk()))
+        && (!('saleSavings' in d) || (d.saleSavings is int && d.saleSavings >= 0))
         && (!('deliveryFee' in d) || (d.deliveryFee is int && d.deliveryFee >= 0))
-        && (!('amountDue' in d) || (d.amountDue is int && d.amountDue >= 0 && d.amountDue == d.total + d.deliveryFee))
-        && (!('attemptId' in d) || (d.attemptId is string && d.attemptId.size() > 0))
+        && (!('amountDue' in d) || (d.amountDue is int && d.amountDue >= 0))
         && d.status == 'new' && d.paymentStatus == 'cod_pending'
         && d.source in ['storefront', 'admin_manual']
         && ((d.source == 'storefront' && d.createdBy == null)
           || (d.source == 'admin_manual' && request.auth != null && d.createdBy == request.auth.uid))
         && d.acceptedAt == null && d.deliveredAt == null
         && d.cancelledAt == null && d.cancelReason == null
-        && (d.shippingCompanyId == null || d.shippingCompanyId is string)
-        && (d.trackingNumber == null || d.trackingNumber is string)
-        && (d.notes == null || d.notes is string)
         && d.createdAt == request.time && d.updatedAt == request.time;
     }
 
@@ -494,29 +488,14 @@ service cloud.firestore {
      * by the client after the order commits (best-effort). Kept
      * in git history; do not re-add without a design decision. */
 
-    /* Delivery-fee verification (pricing §4, decision D2 — the fee
-     * split): ANONYMOUS storefront creates only. The rule reads
-     * storeSettings/settings once (1 get, counted in the header
-     * table) and requires deliveryFee to equal the expected fee.
-     * Expected fee (fix round 2026-11-27, Mohamed's decision
-     * ~12:23): the settings `deliveryFee` when it is set (int >= 0),
-     * else 0 — an unset fee means FREE delivery, never a denial.
-     * D1 (same round): when `freeDeliveryThreshold` (read from the
-     * SAME settings doc — no new get) is set (> 0) and the order
-     * `total` reaches it, the fee is waived: expected fee is 0.
-     * Manual orders are client-asserted and pay no fee get; old-shape
-     * orders carry no deliveryFee and pay no fee get either. */
-    function orderFeeOk() {
-      let d = request.resource.data;
-      let settings = (request.auth == null && d.source == 'storefront' && 'deliveryFee' in d)
-        ? get(/databases/$(database)/documents/storeSettings/settings) : null;
-      let rawFee = settings == null ? null : settings.data.get('deliveryFee', null);
-      let fee = rawFee is int && rawFee >= 0 ? rawFee : 0;
-      let rawThreshold = settings == null ? null : settings.data.get('freeDeliveryThreshold', null);
-      let waived = rawThreshold is int && rawThreshold > 0 && d.total >= rawThreshold;
-      return request.auth != null || d.source != 'storefront' || !('deliveryFee' in d)
-        || d.deliveryFee == (waived ? 0 : fee);
-    }
+    /* REMOVED by CUT-5 (checks reduction, 2026-11-27, owner-approved):
+     * orderFeeOk verified deliveryFee against storeSettings/settings
+     * (the fee get + the D1 threshold waiver). The fee check is cut
+     * entirely — no fee get, no fee relation — so a forged fee
+     * passes the rules and is caught by the owner's manual review
+     * (one number per order, shown in admin next to his setting).
+     * The client computes the fee exactly for honest orders. Kept in
+     * git history; do not re-add without a design decision. */
 
     /* Manual orders: admin, or manager with orders_create_manual.
      * (1 get, cached with the role checks in the same request.) */
@@ -1225,7 +1204,6 @@ service cloud.firestore {
       // order has a matching audit entry" is best-effort now, with
       // the admin orphan-order repair as the backstop.
       allow create: if orderShapeOk(doc)
-        && orderFeeOk()
         && (request.resource.data.source == 'storefront' || manualOrderAllowed());
       allow get: if isAdminOrManager()
         || (request.auth == null && resource == null);

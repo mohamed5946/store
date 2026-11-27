@@ -671,7 +671,20 @@ test('No-functions: an anonymous order reserving MORE than available is rejected
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-2'))).data().reserved, 2);
 });
 
-test('No-functions: an anonymous order with a BAD shape is rejected', async () => {
+/* CUT-1 + CUT-6 (checks reduction, 2026-11-27, owner-approved):
+ * order-bad-5 (one extra field) now PASSES — the 33-key hasOnly
+ * list is cut, only the dual-shape size windows bound the key
+ * set; order-bad-4 (total != subtotal) now PASSES — the
+ * total == subtotal relation is cut. Both OLD verdicts (denied)
+ * are REPLACED by the new rules, not weakened: the rules
+ * themselves changed. The size bound is pinned instead: an order
+ * with 26 extra junk keys (48 total, above the old-shape 22–26
+ * window) is still denied (order-bad-6). Backstop for both
+ * tolerated values: the totals are the numbers the owner reviews
+ * on every order, and a junk key carries no meaning. Both flips
+ * reserve prod-4 (bad-4: 0 -> 1, bad-5: 1 -> 2), which the later
+ * matrix / mismatch / audit tests pin in their reserved chain. */
+test('No-functions: bad-shape orders are rejected (missing address, short phone, qty 0, oversized key set) — the CUT-1 extra-field and CUT-6 total-mismatch cases now pass', async () => {
   const db = anonDb();
   const base = {
     productId: 'prod-4', productName: 'جراب موبايل', price: 300,
@@ -683,14 +696,25 @@ test('No-functions: an anonymous order with a BAD shape is rejected', async () =
   await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-2', overrides: { customerPhone: '010123456' } }));
   // qty 0.
   await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-3', overrides: { items: [{ productId: 'prod-4', name: 'جراب موبايل', price: 300, qty: 0 }] } }));
-  // Total does not match subtotal.
-  await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-4', overrides: { total: 999 } }));
-  // Extra field outside the exact key list.
-  await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-5', overrides: { extraField: 1 } }));
-  for (const id of ['order-bad-1', 'order-bad-2', 'order-bad-3', 'order-bad-4', 'order-bad-5']) {
+  // CUT-6: total != subtotal now PASSES (the relation is cut) —
+  // the order creates and reserves prod-4 (0 -> 1).
+  await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-bad-4', overrides: { total: 999 } }));
+  const bad4 = (await getDoc(doc(adminDb(), 'orders', 'order-bad-4'))).data();
+  assert.equal(bad4.total, 999);
+  assert.equal(bad4.subtotal, 300);
+  // CUT-1: one extra field now PASSES (size window 22–26) — the
+  // order creates and reserves prod-4 (1 -> 2).
+  await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-bad-5', reserved: 1, overrides: { extraField: 1 } }));
+  const bad5 = (await getDoc(doc(adminDb(), 'orders', 'order-bad-5'))).data();
+  assert.equal(bad5.total, 300);
+  assert.equal(bad5.extraField, 1);
+  // CUT-1: the size bound still holds — 26 extra junk keys (48
+  // total) exceed the old-shape 22–26 window and are denied.
+  await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-6', overrides: Object.fromEntries(Array.from({ length: 26 }, (_, i) => ['junk' + i, 1])) }));
+  for (const id of ['order-bad-1', 'order-bad-2', 'order-bad-3', 'order-bad-6']) {
     assert.equal((await getDoc(doc(adminDb(), 'orders', id))).exists(), false);
   }
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 0);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 2);
 });
 
 // Discount code REMOVED 2026-11-27: this was the valid-code test.
@@ -1355,7 +1379,7 @@ test('Pricing A (matrix A): a storefront order with a sale + fee passes', async 
   assert.equal(order.amountDue, 330);
   assert.equal(order.items[0].basePrice, 500);
   assert.equal(order.attemptId, 'a-pricing-A');
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 1);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 3);
 });
 
 test('Pricing A (matrix B): a storefront order with fee 0 passes', async () => {
@@ -1381,7 +1405,7 @@ test('Pricing A (matrix B): a storefront order with fee 0 passes', async () => {
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-B'))).data();
   assert.equal(order.deliveryFee, 0);
   assert.equal(order.amountDue, 300);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 2);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 4);
   await testEnv.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 30 });
@@ -1391,7 +1415,7 @@ test('Pricing A (matrix B): a storefront order with fee 0 passes', async () => {
 // Discount code REMOVED 2026-11-27: matrix C was the code-on-a-sale
 // case. It is now the same sale + fee order with NO code, kept
 // because the later matrix-D / mismatch / no-fee tests pin prod-4
-// reserved at 3 after this order — deleting it outright would break
+// reserved at 5 after this order — deleting it outright would break
 // those assertions.
 test('Pricing A (matrix C): a storefront order with a sale + fee passes (no code)', async () => {
   const db = anonDb();
@@ -1404,7 +1428,7 @@ test('Pricing A (matrix C): a storefront order with a sale + fee passes (no code
   assert.equal(order.saleSavings, 200);
   assert.equal(order.total, 300);
   assert.equal(order.amountDue, 330);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 3);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 5);
 });
 
 test('Pricing A (matrix D): a multi-line storefront order passes', async () => {
@@ -1424,18 +1448,27 @@ test('Pricing A (matrix D): a multi-line storefront order passes', async () => {
   assert.equal(order.amountDue, 780);
   assert.equal(order.items[0].basePrice, 500);
   assert.equal(order.items[1].basePrice, null);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 5);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 7);
 });
 
-test('Pricing A: a saleSavings mismatch is denied', async () => {
+/* CUT-4 (checks reduction, 2026-11-27, owner-approved): the savings
+ * sum is REMOVED — only `saleSavings is int && >= 0` is checked —
+ * so a saleSavings mismatch now PASSES the rules. This test's OLD
+ * verdict (denied) is REPLACED by the new rule, not weakened: the
+ * rule itself changed. Backstop: none needed for money —
+ * saleSavings never enters amountDue; a forged figure is a display
+ * lie on a tampered order, visible next to the reviewed line
+ * prices. The client computes savings exactly for honest orders. */
+test('Pricing A: a saleSavings mismatch now PASSES the rules (CUT-4 — savings sum cut)', async () => {
   const db = anonDb();
-  await assertFails(rawOrderBatch(db, {
+  await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-pricing-sav-bad', productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 10, reserved: 5, basePrice: 500,
+    price: 300, qty: 1, stock: 10, reserved: 7, basePrice: 500,
     overrides: { saleSavings: 199, deliveryFee: 30, amountDue: 330 },
   }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-sav-bad'))).exists(), false);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 5);
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-sav-bad'))).data();
+  assert.equal(order.saleSavings, 199);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 8);
 });
 
 /* CUT-2 (checks reduction, 2026-11-27, owner-approved): the per-line
@@ -1455,35 +1488,53 @@ test('Pricing A: a line priced below the DB price now PASSES the rules (CUT-2 �
   const db = anonDb();
   await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-pricing-poison', productId: 'prod-4', productName: 'جراب موبايل',
-    price: 299, qty: 1, stock: 10, reserved: 5, basePrice: 500,
+    price: 299, qty: 1, stock: 10, reserved: 8, basePrice: 500,
     overrides: { saleSavings: 201, deliveryFee: 30, amountDue: 329 },
   }));
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-poison'))).data();
   assert.equal(order.items[0].price, 299);
   assert.equal(order.subtotal, 299);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 6);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 9);
 });
 
-test('Pricing A: an amountDue mismatch is denied', async () => {
+/* CUT-6 (checks reduction, 2026-11-27, owner-approved): the totals
+ * relations (`total == subtotal`, `amountDue == total +
+ * deliveryFee`) are REMOVED — only the type/range checks stay — so
+ * an amountDue mismatch now PASSES the rules. This test's OLD
+ * verdict (denied) is REPLACED by the new rule, not weakened: the
+ * rule itself changed. Backstop: the owner's manual review — the
+ * total is the number he checks on every order. The client
+ * computes exactly for honest orders. */
+test('Pricing A: an amountDue mismatch now PASSES the rules (CUT-6 — totals relations cut; owner review is the backstop)', async () => {
   const db = anonDb();
-  await assertFails(rawOrderBatch(db, {
+  await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-pricing-due-bad', productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 10, reserved: 5, basePrice: 500,
+    price: 300, qty: 1, stock: 10, reserved: 9, basePrice: 500,
     overrides: { saleSavings: 200, deliveryFee: 30, amountDue: 331 },
   }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-due-bad'))).exists(), false);
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-due-bad'))).data();
+  assert.equal(order.amountDue, 331);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 10);
 });
 
-test('Pricing A: a deliveryFee != settings is denied on an anonymous create', async () => {
+/* CUT-5 (checks reduction, 2026-11-27, owner-approved): the fee
+ * check (orderFeeOk) is REMOVED entirely, so a deliveryFee !=
+ * settings now PASSES the rules. This test's OLD verdict (denied)
+ * is REPLACED by the new rule, not weakened: the rule itself
+ * changed. Backstop: the owner's manual review — the fee is one
+ * number per order, shown in admin next to his setting. The
+ * client computes the fee exactly for honest orders. */
+test('Pricing A: a deliveryFee != settings now PASSES the rules on an anonymous create (CUT-5 — fee check cut; owner review is the backstop)', async () => {
   const db = anonDb();
-  // amountDue is consistent with the forged fee (300 + 40) — only
-  // the fee check against settings (30) must deny it.
-  await assertFails(rawOrderBatch(db, {
+  // amountDue is consistent with the forged fee (300 + 40).
+  await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-pricing-fee-bad', productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 10, reserved: 5, basePrice: 500,
+    price: 300, qty: 1, stock: 10, reserved: 10, basePrice: 500,
     overrides: { saleSavings: 200, deliveryFee: 40, amountDue: 340 },
   }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-fee-bad'))).exists(), false);
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-fee-bad'))).data();
+  assert.equal(order.deliveryFee, 40);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 11);
 });
 
 test('Pricing A: an order carrying one new key without the other two is denied', async () => {
@@ -1496,16 +1547,16 @@ test('Pricing A: an order carrying one new key without the other two is denied',
   assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-partial'))).exists(), false);
 });
 
-test('Pricing A: a missing fee field means FREE on a storefront create (fee 0 passes, fee > 0 denied); manual create still passes', async () => {
+test('Pricing A: a missing fee field means FREE on a storefront create (fee 0 passes, fee > 0 now passes — CUT-5; manual create still passes)', async () => {
   // Fee-default-free (fix round 2026-11-27, Mohamed's decision):
   // the settings doc carries NO deliveryFee field, so the expected
-  // fee is 0 — a storefront order with deliveryFee 0 succeeds and
-  // one with deliveryFee > 0 is denied as a forged fee. This test's
-  // OLD verdict (a storefront create denied with any fee while the
-  // field was missing) is REPLACED by the new rule, not weakened:
-  // the rule itself changed. The storefront success uses prod-5
-  // (not prod-4) so the prod-4 reserved chain the later
-  // audit-split test pins is untouched.
+  // fee is 0. CUT-5 (checks reduction, 2026-11-27): the fee check
+  // is REMOVED entirely, so a storefront order with deliveryFee >
+  // 0 now PASSES too — this test's OLD verdict (fee > 0 denied)
+  // is REPLACED by the new rule, not weakened: the rule itself
+  // changed. Backstop: the owner's manual review. The storefront
+  // success uses prod-5 (not prod-4) so the prod-4 reserved chain
+  // the later audit-split test pins is untouched.
   // Clear the fee field from the settings doc (rules-disabled).
   await testEnv.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
@@ -1517,10 +1568,11 @@ test('Pricing A: a missing fee field means FREE on a storefront create (fee 0 pa
   // restore never ran and settings stayed {} for the REST of the
   // suite, so every later anon new-money order failed orderFeeOk
   // (null != 30) — that is what killed tests 60/84 and the probes,
-  // not the orders themselves. Reserved is 7 here: 3 from the
-  // matrix (47/48/49) + 2 from test 50 (2-line, now passing after
-  // CUT-2) + 1 from the poison test (now passing after CUT-2) + 1
-  // manual.
+  // not the orders themselves. Reserved is 12 after this test: 2
+  // from test 4 (bad-4 + bad-5, now passing after CUT-6/CUT-1) + 3
+  // from the matrix (A/B/C) + 2 from test 50 (matrix D, 2-line) +
+  // 1 saleSavings + 1 poison + 1 amountDue + 1 fee (all now passing
+  // after CUT-4/2/6/5) + 1 manual.
   try {
     const anon = anonDb();
     await assertSucceeds(placePricingOrderTx(anon, {
@@ -1531,13 +1583,16 @@ test('Pricing A: a missing fee field means FREE on a storefront create (fee 0 pa
     const sfOrder = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-sf'))).data();
     assert.equal(sfOrder.deliveryFee, 0);
     assert.equal(sfOrder.amountDue, 300);
-    // A fee above the expected 0 is still a forged fee.
-    await assertFails(placePricingOrderTx(anon, {
+    // CUT-5: a fee above the expected 0 now passes too — the fee
+    // is no longer rules-checked.
+    await assertSucceeds(placePricingOrderTx(anon, {
       orderId: 'order-pricing-nofee-sf-bad',
       lines: [{ productId: 'prod-5', qty: 1, basePrice: null }],
       deliveryFee: 30,
     }));
-    assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-sf-bad'))).exists(), false);
+    const sfBad = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-sf-bad'))).data();
+    assert.equal(sfBad.deliveryFee, 30);
+    assert.equal(sfBad.amountDue, 330);
     // The manual path is client-asserted (fee split, decision D2):
     // no fee get, so the same order shape passes without a fee field.
     const admin = adminDb();
@@ -1552,7 +1607,7 @@ test('Pricing A: a missing fee field means FREE on a storefront create (fee 0 pa
     const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-manual'))).data();
     assert.equal(order.deliveryFee, 30);
     assert.equal(order.amountDue, 330);
-    assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 7);
+    assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 12);
   } finally {
     // Restore the fee field for the tests below, even on failure.
     await testEnv.withSecurityRulesDisabled(async (context) => {
@@ -1562,15 +1617,18 @@ test('Pricing A: a missing fee field means FREE on a storefront create (fee 0 pa
   }
 });
 
-/* D1 (fix round 2026-11-27): the free-delivery-threshold waiver is
- * enforced in the rules — orderFeeOk reads freeDeliveryThreshold
- * from the same settings doc as the fee (no new get) and requires
- * fee 0 when total >= threshold. Settings are seeded with fee 30
- * + threshold 500 and restored to fee 30 (no threshold) in a
- * finally, so the later matrix tests (totals 700/800 with fee 30)
- * are unaffected — a leftover threshold would deny them. prod-5
- * (price 300) is used so the prod-4 reserved chain the later
- * audit-split test pins is untouched. */
+/* D1 (fix round 2026-11-27): the free-delivery-threshold waiver
+ * WAS enforced in the rules by orderFeeOk. CUT-5 (checks reduction,
+ * 2026-11-27): the fee check is REMOVED, so the waiver is now
+ * client-enforced only — the rules no longer deny on fee, and all
+ * three tests below pass whatever fee the order carries. The tests
+ * pin the new behaviour (a fee-0 order passes with or without the
+ * threshold set) instead of the old denial. Settings are seeded
+ * with fee 30 + threshold 500 and restored to fee 30 (no threshold)
+ * in a finally, to keep the seed clean for the tests below — no
+ * fee check reads it any more. prod-5 (price 300) is used so the
+ * prod-4 reserved chain the later audit-split test pins is
+ * untouched. */
 test('Pricing A (D1): a threshold-waived order succeeds (fee 30, threshold 500, total >= 500, deliveryFee 0)', async () => {
   await testEnv.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
@@ -1595,19 +1653,26 @@ test('Pricing A (D1): a threshold-waived order succeeds (fee 30, threshold 500, 
   }
 });
 
-test('Pricing A (D1): a threshold-not-met order with fee 0 is DENIED (fee 30, threshold 500, total < 500, deliveryFee 0)', async () => {
+/* CUT-5 (checks reduction, 2026-11-27, owner-approved): the fee
+ * check is REMOVED, so a threshold-not-met order with fee 0 now
+ * PASSES the rules — the waiver is client-enforced only. This
+ * test's OLD verdict (denied) is REPLACED by the new rule, not
+ * weakened: the rule itself changed. */
+test('Pricing A (D1): a threshold-not-met order with fee 0 now PASSES the rules (CUT-5 — fee check cut; waiver is client-enforced only)', async () => {
   await testEnv.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 30, freeDeliveryThreshold: 500 });
   });
   try {
     const db = anonDb();
-    await assertFails(placePricingOrderTx(db, {
+    await assertSucceeds(placePricingOrderTx(db, {
       orderId: 'order-pricing-d1-notmet',
       lines: [{ productId: 'prod-5', qty: 1, basePrice: null }],
       deliveryFee: 0,
     }));
-    assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-d1-notmet'))).exists(), false);
+    const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-d1-notmet'))).data();
+    assert.equal(order.deliveryFee, 0);
+    assert.equal(order.amountDue, 300);
   } finally {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       const db = context.firestore();
@@ -1616,7 +1681,11 @@ test('Pricing A (D1): a threshold-not-met order with fee 0 is DENIED (fee 30, th
   }
 });
 
-test('Pricing A (D1): with no threshold set, the fee rule behaves as before (fee 30 passes, fee 0 denied)', async () => {
+/* CUT-5 (checks reduction, 2026-11-27, owner-approved): the fee
+ * check is REMOVED, so with no threshold set a fee-0 order now
+ * PASSES too — the old "fee 0 denied" verdict is REPLACED by the
+ * new rule, not weakened: the rule itself changed. */
+test('Pricing A (D1): with no threshold set, the fee rule is gone (fee 30 passes, fee 0 now passes too — CUT-5)', async () => {
   // No settings change needed: the seed is { deliveryFee: 30 } with
   // no freeDeliveryThreshold — the D1 tests above restore exactly
   // that in their finally blocks.
@@ -1629,20 +1698,24 @@ test('Pricing A (D1): with no threshold set, the fee rule behaves as before (fee
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-d1-nothreshold-ok'))).data();
   assert.equal(order.deliveryFee, 30);
   assert.equal(order.amountDue, 330);
-  await assertFails(placePricingOrderTx(db, {
+  await assertSucceeds(placePricingOrderTx(db, {
     orderId: 'order-pricing-d1-nothreshold-bad',
     lines: [{ productId: 'prod-5', qty: 1, basePrice: null }],
     deliveryFee: 0,
   }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-d1-nothreshold-bad'))).exists(), false);
+  const bad = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-d1-nothreshold-bad'))).data();
+  assert.equal(bad.deliveryFee, 0);
+  assert.equal(bad.amountDue, 300);
 });
 
-test('Pricing A: an 8-line storefront order WITHOUT a code passes (8 product gets + 1 fee get)', async () => {
+test('Pricing A: an 8-line storefront order WITHOUT a code passes (no gets left on the order — CUT-2/3/5 cut the product, inventory and fee gets)', async () => {
   const db = anonDb();
   const lines = [];
   for (let n = 7; n <= 14; n++) lines.push({ productId: `prod-${n}`, qty: 1, basePrice: null });
-  // Control for the 8-with-code denial above: 8 product gets + 1 fee
-  // get = 9 (the audit getAfter left with the audit-split, M1).
+  // Control for the 8-with-code denial above: the order itself
+  // carries no gets any more (the audit getAfter left with the
+  // audit-split, M1; CUT-2/3/5 cut the product, inventory and fee
+  // gets) — only the per-line expression cost remains.
   await assertSucceeds(placePricingOrderTx(db, {
     orderId: 'order-pricing-sf-8-nocode',
     lines, deliveryFee: 30,
@@ -1700,23 +1773,23 @@ test('Pricing A: an order audit that does NOT cover the money fields no longer d
   const db = anonDb();
   const base = {
     productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 10, reserved: 7, basePrice: 500,
+    price: 300, qty: 1, stock: 10, reserved: 12, basePrice: 500,
     overrides: { saleSavings: 200, deliveryFee: 30, amountDue: 330 },
   };
   // Audit lists status/total/saleSavings/amountDue/items but not deliveryFee.
   await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-pricing-audit-1', auditOmit: ['deliveryFee'] }));
   // Audit lists the money fields but not 'items' — the line carries
   // a base price, so the audit must cover 'items' too (old rule).
-  // Checks-reduction probe (P1, CUT-2, 2026-11-27): audit-2 must
-  // use reserved 8, not the shared base 7 — after audit-1 the
-  // stored reserved IS 8, so a second write of 7+1 = 8 fails
-  // `reserved strictly increases` (8 > 8 is false) and the batch
-  // is denied. Final reserved is 9.
-  await assertSucceeds(rawOrderBatch(db, { ...base, reserved: 8, orderId: 'order-pricing-audit-2', auditOmit: ['items'] }));
+  // Checks-reduction probe (P3, 2026-11-27): audit-2 must use
+  // reserved 13, not the shared base 12 — after audit-1 the stored
+  // reserved IS 13, so a second write of 12+1 = 13 fails
+  // `reserved strictly increases` (13 > 13 is false) and the batch
+  // is denied. Final reserved is 14.
+  await assertSucceeds(rawOrderBatch(db, { ...base, reserved: 13, orderId: 'order-pricing-audit-2', auditOmit: ['items'] }));
   for (const id of ['order-pricing-audit-1', 'order-pricing-audit-2']) {
     assert.equal((await getDoc(doc(adminDb(), 'orders', id))).exists(), true);
   }
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 9);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 14);
 });
 
 /* ---------- Pricing Phase A: attempt-doc shape check (§11 / M21) ---------- */
