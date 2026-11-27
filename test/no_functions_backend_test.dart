@@ -106,33 +106,13 @@ void main() {
   });
 
   group('computeOrderTotals (contract §1 step 4)', () {
-    test('totals come from database prices, no discount', () {
+    test('totals come from database prices', () {
       final t = Backend.computeOrderTotals([
         {'price': 100, 'qty': 2},
         {'price': 50, 'qty': 1},
-      ], null);
+      ]);
       expect(t.subtotal, 250);
-      expect(t.discountPercent, isNull);
-      expect(t.discountAmount, 0);
       expect(t.total, 250);
-    });
-
-    test('discount rounds to the nearest pound', () {
-      // 333 * 10% = 33.3 -> 33.
-      final t = Backend.computeOrderTotals([
-        {'price': 333, 'qty': 1},
-      ], 10);
-      expect(t.subtotal, 333);
-      expect(t.discountAmount, 33);
-      expect(t.total, 300);
-    });
-
-    test('100% discount zeroes the total', () {
-      final t = Backend.computeOrderTotals([
-        {'price': 100, 'qty': 1},
-      ], 100);
-      expect(t.discountAmount, 100);
-      expect(t.total, 0);
     });
   });
 

@@ -1,0 +1,522 @@
+/* Scroll bundle — feed theme. White #FFFFFF / signal green #16A34A / ink #111111.
+   Browsing surfaces only. Transform/opacity motion only, max 1500ms.
+   RTL logical properties throughout. */
+
+@keyframes scrollZoom {
+  from { transform: scale(1); }
+  to { transform: scale(1.08); }
+}
+
+@keyframes scrollPulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+
+@keyframes scrollRise {
+  from { transform: translateY(24px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+/* Slim sticky top bar (hero) */
+.scroll-hero {
+  background-color: #FFFFFF;
+  color: #111111;
+  font-family: Tajawal, Inter, sans-serif;
+  direction: rtl;
+}
+
+.scroll-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background-color: #FFFFFF;
+  border: 1px solid rgba(17, 17, 17, 0.08);
+}
+
+.scroll-brand-mini {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #111111;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scroll-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.scroll-icon-btn {
+  background-color: #FFFFFF;
+  color: #111111;
+  border: 1px solid rgba(17, 17, 17, 0.12);
+  border-radius: 24px;
+  padding: 8px 14px;
+  font-family: Tajawal, Inter, sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 300ms, opacity 300ms;
+}
+
+.scroll-cart-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: #16A34A;
+  color: #FFFFFF;
+  border: 1px solid #16A34A;
+  border-radius: 24px;
+  padding: 8px 14px;
+  font-family: Tajawal, Inter, sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 300ms, opacity 300ms;
+}
+
+.scroll-cart-count {
+  background-color: #111111;
+  color: #FFFFFF;
+  border-radius: 24px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.scroll-hero-title {
+  margin: 0;
+  padding: 10px 16px 16px;
+  text-align: center;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: #111111;
+}
+
+/* Marquee band (COD message, repeated) */
+.scroll-marquee {
+  background-color: #16A34A;
+  color: #FFFFFF;
+  overflow: hidden;
+  direction: rtl;
+}
+
+.scroll-marquee-track {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.scroll-marquee-item {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.scroll-marquee-dot {
+  font-size: 15px;
+  font-weight: 700;
+  opacity: 0.7;
+}
+
+/* Sticky chip row + filter button */
+.scroll-categories {
+  background-color: #FFFFFF;
+  direction: rtl;
+}
+
+.scroll-chip-row {
+  position: sticky;
+  top: 57px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  background-color: #FFFFFF;
+  overflow-x: auto;
+}
+
+.scroll-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  background-color: #FFFFFF;
+  color: #111111;
+  border: 1px solid rgba(17, 17, 17, 0.12);
+  border-radius: 24px;
+  padding: 8px 14px;
+  font-family: Tajawal, Inter, sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 300ms, opacity 300ms;
+}
+
+.scroll-chip-all {
+  background-color: #111111;
+  color: #FFFFFF;
+  border: 1px solid #111111;
+}
+
+.scroll-chip-img {
+  width: 28px;
+  height: 28px;
+  object-fit: cover;
+  border-radius: 24px;
+}
+
+.scroll-filter-btn {
+  flex-shrink: 0;
+  background-color: #16A34A;
+  color: #FFFFFF;
+  border: 1px solid #16A34A;
+  border-radius: 24px;
+  padding: 8px 16px;
+  font-family: Tajawal, Inter, sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 300ms, opacity 300ms;
+}
+
+/* Section titles */
+.scroll-section-title {
+  margin: 0;
+  padding: 20px 16px 12px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #111111;
+}
+
+/* Featured spot + promo card */
+.scroll-featured {
+  background-color: #FFFFFF;
+  direction: rtl;
+}
+
+.scroll-featured-spot {
+  padding: 0 16px 8px;
+}
+
+.scroll-offers {
+  background-color: #FFFFFF;
+  direction: rtl;
+}
+
+.scroll-promo-card {
+  margin: 16px;
+  min-height: 140px;
+  border-radius: 24px;
+  background-color: #F5F5F5;
+}
+
+/* The feed: one full-screen card per screen, snap scrolling */
+.scroll-feed {
+  background-color: #FFFFFF;
+  direction: rtl;
+}
+
+.scroll-feed-list {
+  scroll-snap-type: y mandatory;
+  scroll-behavior: smooth;
+}
+
+.scroll-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 88vh;
+  margin: 12px;
+  overflow: hidden;
+  background-color: #FFFFFF;
+  border: 1px solid rgba(17, 17, 17, 0.08);
+  border-radius: 24px;
+  box-shadow: 0 8px 24px rgba(17, 17, 17, 0.08);
+  scroll-snap-align: start;
+  animation: scrollRise 600ms;
+}
+
+.scroll-card-img {
+  width: 100%;
+  flex-grow: 1;
+  min-height: 320px;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  animation: scrollZoom 1500ms;
+}
+
+.scroll-badge-featured {
+  position: absolute;
+  top: 16px;
+  inset-inline-start: 16px;
+  z-index: 5;
+  background-color: #16A34A;
+  color: #FFFFFF;
+  border-radius: 24px;
+  padding: 6px 12px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.scroll-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 20px 24px;
+}
+
+.scroll-card-name {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #111111;
+}
+
+.scroll-card-price-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.scroll-card-price {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #16A34A;
+}
+
+.scroll-card-old {
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: #5B6470;
+}
+
+.scroll-buy-btn {
+  background-color: #16A34A;
+  color: #FFFFFF;
+  border: 1px solid #16A34A;
+  border-radius: 24px;
+  padding: 16px;
+  font-family: Tajawal, Inter, sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  cursor: pointer;
+  animation: scrollPulse 1200ms infinite;
+  transition: transform 300ms, opacity 300ms;
+}
+
+/* Secondary action on the card: same shape as .scroll-buy-btn,
+   inverted (outline instead of solid) and never pulsing — opens
+   the product modal. */
+.scroll-details-btn {
+  background-color: #FFFFFF;
+  color: #16A34A;
+  border: 1px solid #16A34A;
+  border-radius: 24px;
+  padding: 16px;
+  font-family: Tajawal, Inter, sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  cursor: pointer;
+  transition: transform 300ms, opacity 300ms;
+}
+
+/* Trust-moment card (delivery fee, shell-filled; hidden when fee unset) */
+.scroll-trust-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: 16px;
+  padding: 20px;
+  background-color: #F5F5F5;
+  border-radius: 24px;
+  text-align: center;
+  scroll-snap-align: start;
+  animation: scrollRise 600ms;
+}
+
+.scroll-trust-label {
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: #5B6470;
+}
+
+.scroll-trust-card {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #16A34A;
+}
+
+/* Feed-end: delivery (COD) band */
+.scroll-delivery {
+  background-color: #F5F5F5;
+  padding: 28px 20px;
+  text-align: center;
+  direction: rtl;
+}
+
+.scroll-delivery-text {
+  margin: 0;
+  padding: 0 0 16px;
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.6;
+  color: #111111;
+}
+
+.scroll-delivery-fee {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 0 16px;
+}
+
+.scroll-delivery-fee-label {
+  font-size: 16px;
+  font-weight: 500;
+  color: #5B6470;
+}
+
+.scroll-delivery-fee-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: #16A34A;
+}
+
+.scroll-delivery-note {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.6;
+  color: #111111;
+}
+
+/* Feed-end: contact / complaint */
+.scroll-contact {
+  background-color: #FFFFFF;
+  padding: 28px 20px;
+  text-align: center;
+  direction: rtl;
+}
+
+.scroll-contact-text {
+  margin: 0;
+  padding: 0 0 12px;
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.6;
+  color: #111111;
+}
+
+.scroll-contact-number {
+  display: flex;
+  justify-content: center;
+  padding: 0 0 12px;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #16A34A;
+  direction: ltr;
+}
+
+.scroll-contact-note {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.6;
+  color: #5B6470;
+}
+
+/* Feed-end: about + brand slot */
+.scroll-about {
+  background-color: #F5F5F5;
+  padding: 28px 20px;
+  text-align: center;
+  direction: rtl;
+}
+
+.scroll-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 16px;
+}
+
+.scroll-brand-logo {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 24px;
+}
+
+.scroll-brand-name {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #111111;
+}
+
+.scroll-brand-tagline {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.6;
+  color: #5B6470;
+}
+
+.scroll-brand-cod {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.6;
+  color: #16A34A;
+}
+
+.scroll-brand-whatsapp {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #111111;
+  direction: ltr;
+}
+
+.scroll-about-text {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.7;
+  color: #111111;
+}

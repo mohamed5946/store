@@ -1,0 +1,48 @@
+{
+  "behaviours": [
+    "countdown-strip"
+  ],
+  "bundleHash": "9e6e0694b5f8548f45379cd0accb3ae8c9d1fa65a045fd8e3bd9bc31ae5905b5",
+  "cartLayout": "drawer",
+  "dark": "light-only",
+  "dataNeeds": [
+    "oldPrice"
+  ],
+  "fonts": [
+    {
+      "family": "Tajawal",
+      "origin": "self",
+      "weights": [
+        700,
+        800
+      ]
+    },
+    {
+      "family": "Inter",
+      "origin": "self",
+      "weights": [
+        400,
+        700
+      ]
+    }
+  ],
+  "id": "bazaar",
+  "modalLayout": "default",
+  "motion": "lively",
+  "nameAr": "بازار",
+  "nameEn": "Deal Bazaar",
+  "previewImageUrl": "https://store-3384c.web.app/templates/bazaar/1.0.0/preview.png",
+  "sections": [
+    "marquee",
+    "hero",
+    "featured",
+    "offers",
+    "categories",
+    "products",
+    "delivery",
+    "contact",
+    "about"
+  ],
+  "shellMinVersion": "1.0.0",
+  "version": "1.0.0"
+}

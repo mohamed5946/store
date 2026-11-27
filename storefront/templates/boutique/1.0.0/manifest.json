@@ -1,0 +1,46 @@
+{
+  "behaviours": [],
+  "bundleHash": "74f512607c3a0798e7b86b6257494f6e8745259d92a1214108ea7dd9df19437a",
+  "cartLayout": "drawer",
+  "dark": "light-only",
+  "dataNeeds": [],
+  "fonts": [
+    {
+      "family": "Tajawal",
+      "origin": "self",
+      "weights": [
+        400,
+        500,
+        700
+      ]
+    },
+    {
+      "family": "Inter",
+      "origin": "self",
+      "weights": [
+        400,
+        500,
+        700
+      ]
+    }
+  ],
+  "id": "boutique",
+  "modalLayout": "default",
+  "motion": "calm",
+  "nameAr": "الدكان",
+  "nameEn": "Warm Boutique",
+  "previewImageUrl": "https://store-3384c.web.app/templates/boutique/1.0.0/preview.png",
+  "sections": [
+    "marquee",
+    "hero",
+    "categories",
+    "featured",
+    "offers",
+    "products",
+    "about",
+    "delivery",
+    "contact"
+  ],
+  "shellMinVersion": "1.0.0",
+  "version": "1.0.0"
+}

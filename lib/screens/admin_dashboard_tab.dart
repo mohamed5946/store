@@ -27,19 +27,25 @@ class _DashboardTab extends StatelessWidget {
           const SizedBox(height: 16),
           const StaggeredItem(
             index: 5,
-            child: FlowSectionHeader(title: 'الطلبات الأخيرة'),
+            child: FlowSectionHeader(title: 'طلبات ناقصة وزيارات'),
           ),
-          const StaggeredItem(index: 6, child: _RecentOrders()),
+          const StaggeredItem(index: 6, child: _DraftsFunnelCard()),
           const SizedBox(height: 16),
           const StaggeredItem(
             index: 7,
+            child: FlowSectionHeader(title: 'الطلبات الأخيرة'),
+          ),
+          const StaggeredItem(index: 8, child: _RecentOrders()),
+          const SizedBox(height: 16),
+          const StaggeredItem(
+            index: 9,
             child: Text(
               'اللي بدأ طلب ومكملوش (ومعانا بياناته من خطوة مكتملة)',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
           const SizedBox(height: 8),
-          const StaggeredItem(index: 8, child: _AbandonedList()),
+          const StaggeredItem(index: 10, child: _AbandonedList()),
         ],
       ),
     );
@@ -286,6 +292,66 @@ class _FunnelSection extends StatelessWidget {
                 ),
               ),
           ],
+        );
+      },
+    );
+  }
+}
+
+/// Incomplete drafts + visits funnel card (2026-11-27). Drafts with
+/// a phone today and today's orders come from Firestore; visits come
+/// from GA4 ONLY — there is no invented Firestore visit count, and
+/// the card links out to the GA4 dashboard (selectable text — this
+/// app has no url_launcher dependency). It states plainly that
+/// visits are not recorded until Mohamed creates the GA4 property
+/// and pastes its measurement ID into the storefront config.
+class _DraftsFunnelCard extends StatelessWidget {
+  const _DraftsFunnelCard();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<int>(
+      future: Backend.instance.draftsWithPhoneTodayCount(),
+      builder: (context, draftsSnap) {
+        return FutureBuilder<int>(
+          future: Backend.instance.ordersTodayCount(),
+          builder: (context, ordersSnap) {
+            final drafts = draftsSnap.data;
+            final orders = ordersSnap.data;
+            return FlowCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      const Expanded(
+                          child: Text('مسودات فيها رقم موبايل (اليوم)')),
+                      Text(drafts == null ? '…' : '$drafts'),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Expanded(
+                          child: Text('طلبات اليوم (غير الملغاة)')),
+                      Text(orders == null ? '…' : '$orders'),
+                    ],
+                  ),
+                  const Divider(height: 24),
+                  const Text('الزيارات اليومية من Google Analytics (GA4) — '
+                      'الأرقام الكاملة في لوحة GA4:'),
+                  const SizedBox(height: 4),
+                  const SelectableText('https://analytics.google.com'),
+                  const SizedBox(height: 4),
+                  Text(
+                    'لو لسه مفيش معرّف GA4 في إعدادات المتجر، الزيارات مش بتتسجل — لازم يتنشئ خاصية GA4 ويتلصق الـ ID في إعدادات واجهة المتجر.',
+                    style: TextStyle(
+                        color: StoreGlass.of(context).textSecondary),
+                  ),
+                ],
+              ),
+            );
+          },
         );
       },
     );

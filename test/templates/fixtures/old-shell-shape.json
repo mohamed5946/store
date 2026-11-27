@@ -1,0 +1,32 @@
+{
+  "id": "old-shell-shape",
+  "kind": "old-shell",
+  "templateId": "bazaar",
+  "expected": {
+    "verdict": "pass",
+    "reasons": [],
+    "fallback": "classic",
+    "oldGatewayPasses": false
+  },
+  "registryDoc": {
+    "id": "bazaar",
+    "nameAr": "بازار",
+    "nameEn": "Deal Bazaar",
+    "version": "1.0.0",
+    "shellMinVersion": "1.0.0",
+    "bundleHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "status": "active",
+    "approval": {
+      "approver": "admin-uid",
+      "timestamp": "2026-11-27T00:00:00.000Z",
+      "shellVersion": "1.0.0",
+      "bundleHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "previewImageUrl": "https://store-3384c.web.app/templates/bazaar/1.0.0/preview.png",
+    "bodyPath": "templates/bazaar/1.0.0"
+  },
+  "manifest": null,
+  "sections": null,
+  "styles": null,
+  "tokens": null
+}

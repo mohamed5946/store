@@ -13,6 +13,7 @@ class _SettingsTab extends StatefulWidget {
 
 class _SettingsTabState extends State<_SettingsTab> {
   String _version = '';
+  String? _role;
   final _brand = TextEditingController();
   final _tagline = TextEditingController();
   bool _brandLoaded = false;
@@ -31,13 +32,31 @@ class _SettingsTabState extends State<_SettingsTab> {
   bool _savedWhatsappEnabled = false;
   String _savedWhatsappNumber = Backend.defaultWhatsAppNumber;
 
+  // Delivery fee (pricing, Technical Plan §2/§9 + decision D3):
+  // one fixed fee for all orders + the admin-set free-delivery
+  // threshold, both on storeSettings/settings. Same draft pattern
+  // as brand/WhatsApp: nothing writes until Save; Cancel restores
+  // the last-saved values. Fee-default-free (decision 2026-11-27):
+  // an unset fee means delivery is free — the tab says so, with
+  // no blocking language.
+  bool _feeLoaded = false;
+  final _fee = TextEditingController();
+  final _feeThreshold = TextEditingController();
+  int? _savedFee;
+  int? _savedThreshold;
+
   @override
   void dispose() {
     _brand.dispose();
     _tagline.dispose();
+    _heroTitle.dispose();
+    _heroAccent.dispose();
+    _heroSubtitle.dispose();
     _deliveryTitle.dispose();
     _deliverySubtitle.dispose();
     _whatsappNumber.dispose();
+    _fee.dispose();
+    _feeThreshold.dispose();
     super.dispose();
   }
 
@@ -70,6 +89,15 @@ class _SettingsTabState extends State<_SettingsTab> {
   String _savedHeroAccent = '';
   String _savedHeroSubtitle = '';
 
+  // M42: the homepage hero fields ARE editable here — but only
+  // while classic is live. When the pointer names a non-classic
+  // template the bundle hero wins and these fields are greyed out
+  // with the note "controlled by the active template". They are
+  // NOT migrated or deleted: classic still renders them.
+  final _heroTitle = TextEditingController();
+  final _heroAccent = TextEditingController();
+  final _heroSubtitle = TextEditingController();
+
   // Diagnostics viewer: how many entries are shown (30 at a time;
   // "show more" adds another 30). Reset when the log is cleared.
   int _diagnosticsShown = 30;
@@ -79,6 +107,9 @@ class _SettingsTabState extends State<_SettingsTab> {
     super.initState();
     PackageInfo.fromPlatform().then((info) {
       if (mounted) setState(() => _version = '${info.version} (${info.buildNumber})');
+    });
+    Backend.instance.currentUserRole().then((r) {
+      if (mounted) setState(() => _role = r);
     });
   }
 
@@ -213,11 +244,21 @@ class _SettingsTabState extends State<_SettingsTab> {
         const SizedBox(height: 16),
         StaggeredItem(
           index: 5,
-          child: _homepageSection(),
+          child: _deliveryFeeSection(),
         ),
         const SizedBox(height: 16),
         StaggeredItem(
           index: 6,
+          child: _homepageSection(),
+        ),
+        const SizedBox(height: 16),
+        StaggeredItem(
+          index: 7,
+          child: _templatePointerSection(),
+        ),
+        const SizedBox(height: 16),
+        StaggeredItem(
+          index: 8,
           child: FilledButton.tonal(
             onPressed: () async {
               try {
@@ -247,7 +288,7 @@ class _SettingsTabState extends State<_SettingsTab> {
         ),
         const SizedBox(height: 12),
         StaggeredItem(
-          index: 7,
+          index: 9,
           child: FilledButton.tonalIcon(
             icon: const Icon(Icons.download_outlined),
             label: const Text('تصدير نسخة احتياطية (JSON)'),
@@ -282,10 +323,33 @@ class _SettingsTabState extends State<_SettingsTab> {
         ),
         const SizedBox(height: 12),
         // v1.1.2: Updates row, exactly like the sibling rows.
-        const StaggeredItem(index: 8, child: UpdatesSettingsRow()),
+        const StaggeredItem(index: 10, child: UpdatesSettingsRow()),
+        const SizedBox(height: 16),
+        // Incomplete orders (2026-11-27): governorate activation,
+        // scheduled draft deletion, and the quota meter — each its
+        // own section with the same draft pattern (typing only,
+        // explicit save, merge-only).
+        const StaggeredItem(
+          index: 10,
+          child: FlowSectionHeader(title: 'مناطق التوصيل (المحافظات)'),
+        ),
+        const StaggeredItem(index: 12, child: _GovernoratesSettings()),
+        const SizedBox(height: 16),
+        const StaggeredItem(
+          index: 12,
+          child: FlowSectionHeader(title: 'حذف الطلبات الناقصة تلقائياً'),
+        ),
+        const StaggeredItem(index: 14, child: _DeletionSettings()),
+        const SizedBox(height: 16),
+        const StaggeredItem(
+          index: 14,
+          child: FlowSectionHeader(title: 'استهلاك الكتابة (الحصة)'),
+        ),
+        const StaggeredItem(index: 16, child: _QuotaSettings()),
+        const SizedBox(height: 16),
         const Divider(height: 32),
         StaggeredItem(
-          index: 9,
+          index: 17,
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -356,7 +420,7 @@ class _SettingsTabState extends State<_SettingsTab> {
               style: TextStyle(color: tokens.textMuted)),
         const SizedBox(height: 12),
         StaggeredItem(
-          index: 10,
+          index: 18,
           child: OutlinedButton(
             onPressed: () async {
               if (await _confirm(context, 'متأكد إنك عايز تسجل الخروج؟')) {
@@ -461,6 +525,138 @@ class _SettingsTabState extends State<_SettingsTab> {
     );
   }
 
+  // Delivery fee + free-delivery threshold (pricing, Technical
+  // Plan §2/§9 + decision D3) on storeSettings/settings. Draft
+  // pattern like WhatsApp: typing only changes state, Save writes
+  // via Backend.setDeliveryFee, Cancel restores the last-saved
+  // values. Fee-default-free (decision 2026-11-27): while no fee
+  // is set the tab shows delivery as free, never as blocked.
+  Widget _deliveryFeeSection() {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: Backend.instance.brandStream(),
+      builder: (context, snap) {
+        if (!_feeLoaded && snap.hasData && snap.data!.exists) {
+          final parsed = Backend.parseDeliveryFeeSettings(
+              snap.data!.data());
+          _savedFee = parsed.deliveryFee;
+          _savedThreshold = parsed.freeDeliveryThreshold;
+          _fee.text =
+              parsed.deliveryFee == null ? '' : '${parsed.deliveryFee}';
+          _feeThreshold.text = parsed.freeDeliveryThreshold == null
+              ? ''
+              : '${parsed.freeDeliveryThreshold}';
+          _feeLoaded = true;
+        }
+        if (snap.hasError) return _streamError(snap.error!);
+        final feeUnset = _feeLoaded && _savedFee == null;
+        return FlowCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('رسوم التوصيل',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+              if (feeUnset)
+                Container(
+                  margin: const EdgeInsets.only(top: 8),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: StoreGlass.of(context)
+                        .success
+                        .withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'رسوم التوصيل غير محددة — التوصيل مجاني حالياً.',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _fee,
+                keyboardType: TextInputType.number,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(
+                  labelText: 'رسوم التوصيل (ج.م)',
+                  hintText: 'مثال: 30 — فاضي أو صفر يعني التوصيل مجاني',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _feeThreshold,
+                keyboardType: TextInputType.number,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(
+                  labelText: 'حد التوصيل المجاني (اختياري)',
+                  hintText: 'فاضي = مفيش حد — فوق المبلغ ده التوصيل مجاني',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: () async {
+                        final fee = int.tryParse(_fee.text.trim());
+                        if (fee == null || fee < 0) {
+                          _snack(context,
+                              'رسوم التوصيل لازم تكون رقم صحيح صفر أو أكتر',
+                              error: true);
+                          return;
+                        }
+                        int? threshold;
+                        final thresholdRaw = _feeThreshold.text.trim();
+                        if (thresholdRaw.isNotEmpty) {
+                          threshold = int.tryParse(thresholdRaw);
+                          if (threshold == null || threshold < 0) {
+                            _snack(context,
+                                'حد التوصيل المجاني لازم يكون رقم صحيح صفر أو أكتر',
+                                error: true);
+                            return;
+                          }
+                        }
+                        try {
+                          await Backend.instance.setDeliveryFee(
+                            deliveryFee: fee,
+                            freeDeliveryThreshold: threshold,
+                          );
+                          if (context.mounted) {
+                            setState(() {
+                              _savedFee = fee;
+                              _savedThreshold = threshold;
+                            });
+                            _snack(context, 'تم حفظ رسوم التوصيل');
+                          }
+                        } catch (e) {
+                          if (context.mounted) {
+                            _snack(context, e.toString(), error: true);
+                          }
+                        }
+                      },
+                      child: const Text('حفظ رسوم التوصيل'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton(
+                    onPressed: () => setState(() {
+                      _fee.text =
+                          _savedFee == null ? '' : '$_savedFee';
+                      _feeThreshold.text = _savedThreshold == null
+                          ? ''
+                          : '$_savedThreshold';
+                    }),
+                    child: const Text('إلغاء'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   // ---------------- v1.1.2 scope #8: homepage editor ----------------
   //
   // Edits storeSettings/homepage (the website builder's contract doc).
@@ -492,6 +688,9 @@ class _SettingsTabState extends State<_SettingsTab> {
     _deliveryTitle.text = _savedDeliveryTitle;
     _deliverySubtitle.text = _savedDeliverySubtitle;
     _deliveryImage = _savedDeliveryImage;
+    _heroTitle.text = _savedHeroTitle;
+    _heroAccent.text = _savedHeroAccent;
+    _heroSubtitle.text = _savedHeroSubtitle;
     _homepageLoaded = true;
   }
 
@@ -504,6 +703,9 @@ class _SettingsTabState extends State<_SettingsTab> {
       _deliveryTitle.text = _savedDeliveryTitle;
       _deliverySubtitle.text = _savedDeliverySubtitle;
       _deliveryImage = _savedDeliveryImage;
+      _heroTitle.text = _savedHeroTitle;
+      _heroAccent.text = _savedHeroAccent;
+      _heroSubtitle.text = _savedHeroSubtitle;
     });
   }
 
@@ -518,12 +720,14 @@ class _SettingsTabState extends State<_SettingsTab> {
           'subtitle': _deliverySubtitle.text.trim(),
           'imageUrl': _deliveryImage,
         },
-        // The hero overrides are not editable here yet — pass the
-        // last-saved values through so Save never wipes them.
+        // M42: the hero fields ARE editable here while classic is
+        // live (the fields are greyed out under any other template,
+        // so their values cannot change then). heroImageUrl still
+        // has no editor — it round-trips unchanged.
         heroImageUrl: _savedHeroImageUrl,
-        heroTitle: _savedHeroTitle,
-        heroAccent: _savedHeroAccent,
-        heroSubtitle: _savedHeroSubtitle,
+        heroTitle: _heroTitle.text.trim(),
+        heroAccent: _heroAccent.text.trim(),
+        heroSubtitle: _heroSubtitle.text.trim(),
       );
       await Backend.instance.setHomepage(doc);
       if (mounted) {
@@ -535,6 +739,9 @@ class _SettingsTabState extends State<_SettingsTab> {
           _savedDeliveryTitle = _deliveryTitle.text.trim();
           _savedDeliverySubtitle = _deliverySubtitle.text.trim();
           _savedDeliveryImage = _deliveryImage;
+          _savedHeroTitle = _heroTitle.text.trim();
+          _savedHeroAccent = _heroAccent.text.trim();
+          _savedHeroSubtitle = _heroSubtitle.text.trim();
         });
         _snack(context, 'تم حفظ واجهة الموقع');
       }
@@ -544,7 +751,17 @@ class _SettingsTabState extends State<_SettingsTab> {
   }
 
   Widget _homepageSection() {
+    // M42: the live pointer decides whether the hero fields are
+    // editable — a non-classic template owns the hero, so the
+    // fields grey out with the note below. Classic re-enables them.
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: TemplatesService.instance.activeTemplatePointerStream(),
+      builder: (context, pointerSnap) {
+        final liveId =
+            (pointerSnap.data?.data()?['templateId'] as String?) ??
+                'classic';
+        final heroDisabled = liveId != 'classic';
+        return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: Backend.instance.homepageStream(),
       builder: (context, snap) {
         if (!_homepageLoaded && snap.hasData) {
@@ -883,6 +1100,49 @@ class _SettingsTabState extends State<_SettingsTab> {
                       ],
                     ),
                     const SizedBox(height: 16),
+                    const Text('عنوان الواجهة (هيرو)',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                    if (heroDisabled)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          'القالب المفعّل ($liveId) بيتحكم في عنوان الواجهة — الحقول دي مقفولة لحد ما الكلاسيكي يرجع.',
+                          style: TextStyle(
+                              color: StoreGlass.of(context).textMuted,
+                              fontSize: 13),
+                        ),
+                      ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _heroTitle,
+                      enabled: !heroDisabled,
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(
+                        labelText: 'عنوان الواجهة',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _heroAccent,
+                      enabled: !heroDisabled,
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(
+                        labelText: 'الكلمة المميزة في العنوان',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _heroSubtitle,
+                      enabled: !heroDisabled,
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(
+                        labelText: 'سطر الواجهة',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
                     HomepagePreview(
                       heroProducts: heroDisplay,
                       featuredProduct: featuredDisplay,
@@ -916,6 +1176,141 @@ class _SettingsTabState extends State<_SettingsTab> {
           },
         );
       },
+        );
+      },
+    );
+  }
+
+  // Entry 13 — minimal pointer action (D7, kept permanently as the
+  // admin-only advanced action): activate (template id + version,
+  // from the approved registry) + rollback + current pointer
+  // display. Same approval-hash check + same history as the card UI
+  // — it is not an unguarded back door: both go through
+  // TemplatesService.activateTemplate / rollbackTemplate.
+  String? _pointerSelectedId;
+
+  Widget _templatePointerSection() {
+    final isAdmin = _role == 'admin';
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: TemplatesService.instance.activeTemplatePointerStream(),
+      builder: (context, pointerSnap) {
+        final pointer = pointerSnap.data?.data();
+        final liveId = (pointer?['templateId'] as String?) ?? 'classic';
+        final liveVersion =
+            (pointer?['bundleVersion'] as String?) ?? '';
+        final liveHash = (pointer?['bundleHash'] as String?) ?? '';
+        final history = pointer?['history'];
+        final historyLength = history is List ? history.length : 0;
+        return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: TemplatesService.instance.templatesStream(),
+          builder: (context, snap) {
+            final records = (snap.data?.docs ?? [])
+                .map((d) => parseTemplateDoc(d.id, d.data()))
+                .where((r) =>
+                    r.validationPassed &&
+                    (r.status == 'approved' || r.status == 'active'))
+                .toList();
+            if (_pointerSelectedId != null &&
+                !records.any((r) => r.id == _pointerSelectedId)) {
+              _pointerSelectedId = null;
+            }
+            return FlowCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('القالب المفعّل (إجراء متقدم — للأدمن)',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    'الحالي: $liveId'
+                    '${liveVersion.isEmpty ? '' : ' — إصدار $liveVersion'}'
+                    '${liveHash.isEmpty ? '' : ' — هاش ${liveHash.length >= 12 ? liveHash.substring(0, 12) : liveHash}'}'
+                    ' — سجل التفعيل: $historyLength خطوة',
+                  ),
+                  const SizedBox(height: 12),
+                  if (!isAdmin)
+                    const Text(
+                        'التفعيل والرجوع للأدمن بس — العرض هنا للاطلاع.'),
+                  if (isAdmin) ...[
+                    DropdownButtonFormField<String>(
+                      initialValue: _pointerSelectedId,
+                      items: [
+                        for (final r in records)
+                          DropdownMenuItem(
+                            value: r.id,
+                            child: Text(
+                                '${r.displayNameAr} (${r.isBundle ? r.bundleVersion : 'v${r.version}'}) — ${r.status == 'approved' ? 'معتمد' : 'جاهز'}'),
+                          ),
+                      ],
+                      onChanged: (v) =>
+                          setState(() => _pointerSelectedId = v),
+                      decoration: const InputDecoration(
+                          labelText: 'قالب معتمد للتفعيل'),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton(
+                            onPressed: _pointerSelectedId == null ||
+                                    _pointerSelectedId == liveId
+                                ? null
+                                : () async {
+                                    final id = _pointerSelectedId!;
+                                    final confirm = await _confirm(
+                                        context,
+                                        'هتفعّل قالب "$id"؟ الموقع هيتغير شكله للزوار الجدد.');
+                                    if (confirm != true) return;
+                                    try {
+                                      await TemplatesService.instance
+                                          .activateTemplate(
+                                              templateId: id);
+                                      if (context.mounted) {
+                                        _snack(context, 'القالب اتفعّل');
+                                      }
+                                    } catch (e) {
+                                      if (context.mounted) {
+                                        _snack(context, e.toString(),
+                                            error: true);
+                                      }
+                                    }
+                                  },
+                            child: const Text('تفعيل القالب'),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        OutlinedButton(
+                          onPressed: historyLength < 2
+                              ? null
+                              : () async {
+                                  final confirm = await _confirm(context,
+                                      'هترجع للقالب السابق؟ التفعيل الحالي هيتلغي في خطوة واحدة.');
+                                  if (confirm != true) return;
+                                  try {
+                                    await TemplatesService.instance
+                                        .rollbackTemplate();
+                                    if (context.mounted) {
+                                      _snack(
+                                          context, 'رجعت للقالب السابق');
+                                    }
+                                  } catch (e) {
+                                    if (context.mounted) {
+                                      _snack(context, e.toString(),
+                                          error: true);
+                                    }
+                                  }
+                                },
+                          child: const Text('رجوع للقالب السابق'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 
@@ -931,6 +1326,10 @@ class _SettingsTabState extends State<_SettingsTab> {
     final title = TextEditingController(text: (existing?['title'] ?? '') as String);
     final subtitle =
         TextEditingController(text: (existing?['subtitle'] ?? '') as String);
+    // D2: the real promo end date (ISO 8601 date-time, Africa/Cairo).
+    // Empty = no end date = no countdown, never a tick toward nothing.
+    final endDate =
+        TextEditingController(text: (existing?['endDate'] ?? '') as String);
     final link = TextEditingController();
     var imageUrl = (existing?['imageUrl'] ?? '') as String;
     var linkType = (existing?['linkType'] ?? 'none') as String;
@@ -1061,6 +1460,17 @@ class _SettingsTabState extends State<_SettingsTab> {
                         const InputDecoration(labelText: 'سطر البانر'),
                   ),
                   const SizedBox(height: 8),
+                  TextField(
+                    controller: endDate,
+                    decoration: const InputDecoration(
+                      labelText: 'تاريخ انتهاء العرض (اختياري)',
+                      hintText: '2026-12-01T23:59:00+02:00',
+                      helperText:
+                          'بتوقيت القاهرة (ISO 8601). فاضي = مفيش عد تنازلي — العد بيشتغل على موعد حقيقي بس.',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
                   DropdownButtonFormField<String>(
                     initialValue: linkType,
                     items: const [
@@ -1098,21 +1508,383 @@ class _SettingsTabState extends State<_SettingsTab> {
                   onPressed: () => Navigator.pop(c),
                   child: const Text('إلغاء')),
               FilledButton(
-                onPressed: () => Navigator.pop(
-                    c,
-                    promoBannerMap(
-                      imageUrl: imageUrl,
-                      title: title.text.trim(),
-                      subtitle: subtitle.text.trim(),
-                      linkType: linkType,
-                      linkId: linkId,
-                    )),
+                onPressed: () {
+                  final endError = validatePromoEndDate(endDate.text);
+                  if (endError != null) {
+                    setState(() => errorText = endError);
+                    return;
+                  }
+                  Navigator.pop(
+                      c,
+                      promoBannerMap(
+                        imageUrl: imageUrl,
+                        title: title.text.trim(),
+                        subtitle: subtitle.text.trim(),
+                        linkType: linkType,
+                        linkId: linkId,
+                        endDate: endDate.text.trim(),
+                      ));
+                },
                 child: const Text('تم'),
               ),
             ],
           );
         },
       ),
+    );
+  }
+}
+
+// ---------------- Incomplete orders settings (2026-11-27) ----------------
+//
+// Three sections, each with the same draft pattern as brand/fee:
+// typing/toggling only changes state, Save writes (merge-only),
+// Cancel restores the last-saved values.
+
+/// Governorate activation: 27 toggles from
+/// storeSettings/governorates. A missing doc resolves to all 27
+/// active (the storefront fallback); saving writes the full list.
+class _GovernoratesSettings extends StatefulWidget {
+  const _GovernoratesSettings();
+
+  @override
+  State<_GovernoratesSettings> createState() => _GovernoratesSettingsState();
+}
+
+class _GovernoratesSettingsState extends State<_GovernoratesSettings> {
+  Map<String, bool>? _draft;
+  Map<String, bool>? _saved;
+  bool _saving = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: Backend.instance.governoratesStream(),
+      builder: (context, snap) {
+        if (_draft == null && snap.hasData) {
+          final resolved = Backend.governorateFallback(
+            snap.data!.data()?['entries'] as List<dynamic>?,
+          );
+          final activeIds =
+              resolved.entries.map((g) => g['id']).toSet();
+          _draft = {
+            for (final g in Backend.governorates27)
+              g['id']!: activeIds.contains(g['id']),
+          };
+          // A missing doc falls back to all 27 active, so the saved
+          // baseline is the same full-active map.
+          _saved = Map.of(_draft!);
+        }
+        if (snap.hasError) return _streamError(snap.error!);
+        final draft = _draft;
+        if (draft == null) return _loading();
+        final activeCount = draft.values.where((v) => v).length;
+        return FlowCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'المحافظات اللي التوصيل متاح ليها: $activeCount من 27. '
+                'المحافظة المقفولة مش بتظهر للعميل في صفحة الطلب.',
+                style: TextStyle(
+                    color: StoreGlass.of(context).textSecondary),
+              ),
+              const SizedBox(height: 8),
+              for (final g in Backend.governorates27)
+                SwitchListTile(
+                  dense: true,
+                  title: Text(g['name']!),
+                  value: draft[g['id']] ?? false,
+                  onChanged: (v) =>
+                      setState(() => draft[g['id']!] = v),
+                ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: _saving
+                          ? null
+                          : () async {
+                              setState(() => _saving = true);
+                              try {
+                                await Backend.instance.saveGovernorates([
+                                  for (final g in Backend.governorates27)
+                                    {
+                                      'id': g['id']!,
+                                      'name': g['name']!,
+                                      'active': draft[g['id']] ?? false,
+                                    },
+                                ]);
+                                if (context.mounted) {
+                                  setState(() {
+                                    _saved = Map.of(draft);
+                                    _saving = false;
+                                  });
+                                  _snack(
+                                      context, 'تم حفظ مناطق التوصيل');
+                                }
+                              } catch (e) {
+                                if (context.mounted) {
+                                  setState(() => _saving = false);
+                                  _snack(context, e.toString(), error: true);
+                                }
+                              }
+                            },
+                      child: const Text('حفظ مناطق التوصيل'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton(
+                    onPressed: () => setState(() {
+                      if (_saved != null) _draft = Map.of(_saved!);
+                    }),
+                    child: const Text('إلغاء'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Scheduled auto-delete of checkout drafts (storeSettings/deletion).
+/// X days, 0 = manual only. The deletion itself runs from the PC
+/// admin program on start; this tab only holds the number.
+class _DeletionSettings extends StatefulWidget {
+  const _DeletionSettings();
+
+  @override
+  State<_DeletionSettings> createState() => _DeletionSettingsState();
+}
+
+class _DeletionSettingsState extends State<_DeletionSettings> {
+  final _days = TextEditingController();
+  int _savedDays = 0;
+  bool _loaded = false;
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    _days.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: Backend.instance.deletionConfigStream(),
+      builder: (context, snap) {
+        if (!_loaded && snap.hasData) {
+          final raw = snap.data!.data()?['autoDeleteDays'];
+          _savedDays = raw is num ? raw.toInt() : 0;
+          _days.text = '$_savedDays';
+          _loaded = true;
+        }
+        if (snap.hasError) return _streamError(snap.error!);
+        if (!_loaded) return _loading();
+        return FlowCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'المسودات بتفضل لحد ما تمسحها يدوياً من تبويب الطلبات الناقصة، '
+                'أو حدد عدد أيام للحذف التلقائي (بيتنفذ من برنامج الكمبيوتر عند التشغيل). '
+                'صفر يعني يدوي بس.',
+                style: TextStyle(
+                    color: StoreGlass.of(context).textSecondary),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _days,
+                keyboardType: TextInputType.number,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(
+                  labelText: 'حذف تلقائي بعد (أيام) — 0 = يدوي بس',
+                  hintText: 'مثال: 30',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: FilledButton(
+                      onPressed: _saving
+                          ? null
+                          : () async {
+                              final days =
+                                  int.tryParse(_days.text.trim());
+                              if (days == null || days < 0 || days > 365) {
+                                _snack(
+                                    context,
+                                    'عدد الأيام لازم يكون رقم صحيح بين 0 و 365',
+                                    error: true);
+                                return;
+                              }
+                              setState(() => _saving = true);
+                              try {
+                                await Backend.instance
+                                    .saveDeletionConfig(days);
+                                if (context.mounted) {
+                                  setState(() {
+                                    _savedDays = days;
+                                    _saving = false;
+                                  });
+                                  _snack(context,
+                                      'تم حفظ إعداد الحذف التلقائي');
+                                }
+                              } catch (e) {
+                                if (context.mounted) {
+                                  setState(() => _saving = false);
+                                  _snack(context, e.toString(), error: true);
+                                }
+                              }
+                            },
+                      child: const Text('حفظ إعداد الحذف'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  OutlinedButton(
+                    onPressed: () =>
+                        setState(() => _days.text = '$_savedDays'),
+                    child: const Text('إلغاء'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Quota meter + manual cut-off (storeSettings/quota). The estimate
+/// is computed from today's drafts + journey summaries (rough: ~2
+/// writes each) — visits are GA4, never counted here. The cut-off
+/// is a manual flip; order writes are never cut.
+class _QuotaSettings extends StatefulWidget {
+  const _QuotaSettings();
+
+  @override
+  State<_QuotaSettings> createState() => _QuotaSettingsState();
+}
+
+class _QuotaSettingsState extends State<_QuotaSettings> {
+  String? _cutoff;
+  String? _savedCutoff;
+  bool _saving = false;
+
+  static const Map<String, String> _cutoffLabels = {
+    'none': 'مفيش إيقاف',
+    'journeys': 'إيقاف كتابة الرحلات',
+    'drafts': 'إيقاف مزامنة المسودات كمان',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: Backend.instance.quotaStream(),
+      builder: (context, snap) {
+        if (_cutoff == null && snap.hasData) {
+          final raw = snap.data!.data()?['cutoffLevel'];
+          _savedCutoff =
+              (raw is String && _cutoffLabels.containsKey(raw))
+                  ? raw
+                  : 'none';
+          _cutoff = _savedCutoff;
+        }
+        if (snap.hasError) return _streamError(snap.error!);
+        final cutoff = _cutoff;
+        if (cutoff == null) return _loading();
+        return FutureBuilder<
+            ({int draftsToday, int journeysToday, int estimatedWrites})>(
+          future: Backend.instance.dailyWriteEstimate(),
+          builder: (context, estSnap) {
+            final est = estSnap.data;
+            final estimated = est?.estimatedWrites ?? 0;
+            final pct =
+                (estimated / 20000 * 100).toStringAsFixed(1);
+            return FlowCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                      'الكتابة المقدرة اليوم: $estimated (مسودات اليوم: ${est?.draftsToday ?? '…'}، رحلات اليوم: ${est?.journeysToday ?? '…'})'),
+                  const SizedBox(height: 4),
+                  Text(
+                    'حد Spark اليومي: 20,000 كتابة — الاستهلاك الحالي حوالي $pct٪. '
+                    'الاستهلاك المعتاد ~500/يوم (2.5٪)، و~5,000/يوم لو الزوار ×10 (25٪).',
+                    style: TextStyle(
+                        color: StoreGlass.of(context).textSecondary),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: cutoff,
+                    items: _cutoffLabels.entries
+                        .map((e) => DropdownMenuItem(
+                            value: e.key, child: Text(e.value)))
+                        .toList(),
+                    onChanged: (v) =>
+                        setState(() => _cutoff = v ?? 'none'),
+                    decoration: const InputDecoration(
+                        labelText: 'إيقاف الكتابة عند الضغط'),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'الإيقاف يدوي — الطلبات عمرها ما بتتوقف. إيقاف الرحلات بيوقف تسجيل رحلات الزوار؛ '
+                    'إيقاف المسودات بيوقف مزامنتها للسيرفر (النسخة المحلية في متصفح العميل بتفضل شغالة).',
+                    style: TextStyle(
+                        color: StoreGlass.of(context).textSecondary),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: _saving
+                              ? null
+                              : () async {
+                                  setState(() => _saving = true);
+                                  try {
+                                    await Backend.instance
+                                        .setQuotaCutoff(cutoff);
+                                    if (context.mounted) {
+                                      setState(() {
+                                        _savedCutoff = cutoff;
+                                        _saving = false;
+                                      });
+                                      _snack(context, 'تم حفظ إعداد الحصة');
+                                    }
+                                  } catch (e) {
+                                    if (context.mounted) {
+                                      setState(() => _saving = false);
+                                      _snack(context, e.toString(),
+                                          error: true);
+                                    }
+                                  }
+                                },
+                          child: const Text('حفظ إعداد الحصة'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      OutlinedButton(
+                        onPressed: () => setState(
+                            () => _cutoff = _savedCutoff ?? 'none'),
+                        child: const Text('إلغاء'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }

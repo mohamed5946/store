@@ -11,8 +11,10 @@
 // square image, name, blue price and an "add to cart" button.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../services/cloudinary.dart';
+import '../theme/store_design.dart';
 
 const Color _previewText = Color(0xFF1D1D1F);
 const Color _previewBlue = Color(0xFF0A84FF);
@@ -396,12 +398,19 @@ class StorefrontProductCardPreview extends StatelessWidget {
     super.key,
     required this.name,
     required this.priceText,
+    this.basePriceText,
     this.imageUrl,
     this.tokens = const PreviewTokens(),
   });
 
   final String name;
   final String priceText;
+
+  /// Optional "السعر قبل الخصم" draft (Model P): when it parses to
+  /// a base strictly above the price, the card shows the struck
+  /// through base + % badge + "وفّر X", exactly like the live site.
+  /// Null/empty/equal means no sale.
+  final String? basePriceText;
   final String? imageUrl;
 
   /// Template tokens (file 12); the default keeps the old look.
@@ -411,6 +420,20 @@ class StorefrontProductCardPreview extends StatelessWidget {
   Widget build(BuildContext context) {
     final displayName = name.trim().isEmpty ? 'اسم المنتج' : name.trim();
     final url = (imageUrl ?? '').trim();
+    // Sale display (Technical Plan §8). This file stays pure — no
+    // backend calls — so the % math is the same integer formula as
+    // Backend.salePercent, kept in sync with it: round halves up,
+    // badge suppressed when rounded % × base ≠ exact saving
+    // (base 199 → 149 shows only "وفّر 50", never a 25% badge).
+    final price = int.tryParse(priceText.trim());
+    final base = int.tryParse((basePriceText ?? '').trim());
+    final onSale = price != null && base != null && base > price;
+    final saving = onSale ? base - price : 0;
+    final pct = onSale
+        ? (((base - price) * 200 + base) ~/ (base * 2))
+        : null;
+    final showPct =
+        onSale && pct != null && pct * base == saving * 100;
     return Container(
       key: const Key('storefront-product-card-preview'),
       decoration: BoxDecoration(
@@ -478,13 +501,63 @@ class StorefrontProductCardPreview extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(height: 4),
-                  Text(
-                    '$priceText ج.م',
-                    style: TextStyle(
-                      color: tokens.accent,
-                      fontWeight: FontWeight.w800,
+                  if (onSale)
+                    Wrap(
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 8,
+                      children: [
+                        Text(
+                          '$priceText ج.م',
+                          style: TextStyle(
+                            color: tokens.accent,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        Text(
+                          '$basePriceText ج.م',
+                          style: TextStyle(
+                            color: tokens.muted,
+                            decoration: TextDecoration.lineThrough,
+                          ),
+                        ),
+                        if (showPct)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: tokens.accent,
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                            child: Text(
+                              'خصم $pct٪',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                      ],
+                    )
+                  else
+                    Text(
+                      '$priceText ج.م',
+                      style: TextStyle(
+                        color: tokens.accent,
+                        fontWeight: FontWeight.w800,
+                      ),
                     ),
-                  ),
+                  if (onSale)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        'وفّر $saving ج.م',
+                        style: TextStyle(
+                          color: tokens.accent,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
                   const SizedBox(height: 8),
                   Container(
                     alignment: Alignment.center,
@@ -503,6 +576,103 @@ class StorefrontProductCardPreview extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Real template preview link (spec entry 15 — REPLACES the
+/// hand-built mock preview for templates).
+///
+/// The old mock rendered a hand-built header + product card in the
+/// template's tokens and misrepresented exactly the templates that
+/// differ most from classic, so it is deleted from the template
+/// screen. This widget shows the real `?preview=<slug>` link
+/// instead: opening it renders the real shell + the real bundle +
+/// the real live products, visibly stamped as a preview. The
+/// preview checkout is a dry run through the frozen shell (info →
+/// review, stopping at confirm) — no preview action may call
+/// placeOrderTx or reserve stock.
+///
+/// NOTE on scope: the PreviewTokens widgets above (header / homepage
+/// / product-card previews) stay — they serve the brand editor and
+/// the product editor, which preview draft field values, not
+/// templates. Only the template-screen mock usage is deleted.
+class RealTemplatePreviewLink extends StatelessWidget {
+  const RealTemplatePreviewLink({
+    super.key,
+    required this.previewUrl,
+    required this.templateName,
+    this.onCopy,
+  });
+
+  /// The full ?preview= URL (unguessable slug; never linked from
+  /// the live site, never indexed).
+  final String previewUrl;
+  final String templateName;
+  final VoidCallback? onCopy;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokens = StoreGlass.of(context);
+    return Container(
+      key: const Key('real-template-preview-link'),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: tokens.cardTop,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: tokens.cardBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.visibility_outlined, color: tokens.accent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'معاينة حقيقية — $templateName',
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'الرابط ده بيفتح الموقع الحقيقي بالقالب ده والمنتجات والأسعار الحقيقية، وعليه ختم "معاينة".',
+            style: TextStyle(fontSize: 13),
+          ),
+          const SizedBox(height: 8),
+          SelectableText(
+            previewUrl,
+            style: TextStyle(
+              fontSize: 13,
+              color: tokens.accent,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  icon: const Icon(Icons.copy_outlined, size: 18),
+                  label: const Text('نسخ رابط المعاينة'),
+                  onPressed: () async {
+                    await Clipboard.setData(
+                        ClipboardData(text: previewUrl));
+                    onCopy?.call();
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'المعاينة تجربة بس: خطوة الدفع بتقف عند المراجعة ومفيش طلب بيتعمل ولا مخزون بيتحجز ولا كود خصم بيتسحب.',
+            style: TextStyle(fontSize: 12),
+          ),
+        ],
       ),
     );
   }

@@ -1,0 +1,11 @@
+<!-- speclab delivery: the MANDATORY COD band. Always present.
+     Delivery fee: the shell fills the delivery-fee slot with the whole fee
+     line (e.g. "رسوم التوصيل: ٢٠ ج.م") from the real
+     storeSettings/settings.deliveryFee field, or leaves it empty — the empty
+     line is hidden by CSS. The COD message itself is always shown. -->
+<section class="sl-page sl-band sl-reveal-4" data-section="delivery">
+  <p class="sl-sec-title-mono">CASH ON DELIVERY</p>
+  <h2 class="sl-band-title">الدفع عند الاستلام</h2>
+  <p class="sl-band-text" data-slot="cod-message"></p>
+  <p class="sl-band-text sl-fee" data-slot="delivery-fee"></p>
+</section>

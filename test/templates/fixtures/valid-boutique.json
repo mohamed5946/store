@@ -1,0 +1,65 @@
+{
+  "id": "valid-boutique",
+  "kind": "valid-bundle",
+  "templateId": "boutique",
+  "expected": {
+    "verdict": "pass",
+    "reasons": []
+  },
+  "manifest": {
+    "id": "boutique",
+    "nameAr": "الدكان",
+    "nameEn": "Warm Boutique",
+    "version": "1.0.0",
+    "shellMinVersion": "1.0.0",
+    "bundleHash": "792a8d6f9d741760854a4f2cd96c602cf2085b385de78cc23bc35dd7ef5771bc",
+    "motion": "calm",
+    "dark": "light-only",
+    "behaviours": [],
+    "sections": [
+      "hero",
+      "marquee",
+      "products",
+      "delivery",
+      "contact"
+    ],
+    "dataNeeds": [],
+    "cartLayout": "bottom-sheet",
+    "modalLayout": "default",
+    "fonts": [
+      {
+        "family": "Tajawal",
+        "weights": [
+          400,
+          700
+        ],
+        "origin": "self"
+      }
+    ],
+    "previewImageUrl": "https://store-3384c.web.app/templates/boutique/1.0.0/preview.png"
+  },
+  "sections": {
+    "hero.html": "<section data-section=\"header\"><div data-section=\"brand\"><img data-slot=\"brand-logo\" src=\"/logo.png\" alt=\"\"><span data-slot=\"brand-name\"></span><span data-slot=\"brand-tagline\"></span><span data-slot=\"whatsapp-number\"></span><span data-slot=\"cod-message\"></span></div><button data-action=\"search\">بحث</button><button data-action=\"open-cart\">السلة</button></section>",
+    "products.html": "<section><div data-slot=\"product-card\"><img data-slot=\"product-image\" src=\"/p.png\" alt=\"\"><h3 data-slot=\"product-name\"></h3><span data-slot=\"product-price\"></span><span data-slot=\"product-old-price\"></span><button data-action=\"add-to-cart\">أضف</button><button data-action=\"open-product\">عرض</button></div></section>",
+    "delivery.html": "<section><span data-slot=\"delivery-fee\"></span><span data-slot=\"cod-message\"></span></section>",
+    "contact.html": "<section><p>تواصل معنا</p><span data-slot=\"whatsapp-number\"></span></section>",
+    "marquee.html": "<section><span data-slot=\"brand-tagline\"></span></section>"
+  },
+  "styles": ".hero { background: #ffffff; color: #111111; transition: transform 0.3s, opacity 0.3s; }\n.card { opacity: 1; transform: translateY(0); }\n.grid { width: 100%; display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }\n.price { color: #111111; font-weight: 700; }",
+  "tokens": {
+    "light": {
+      "bg": "#f4f6f8",
+      "bg2": "#eaeff3",
+      "surface": "rgba(255,255,255,0.55)",
+      "surfaceStrong": "rgba(255,255,255,0.82)",
+      "border": "rgba(20,30,45,0.08)",
+      "text": "#1b2430",
+      "textSoft": "#5b6878",
+      "accent": "#3f7f8c",
+      "accent2": "#8fb8b0",
+      "warm": "#c9a57a",
+      "radius": "24px",
+      "font": "Tajawal"
+    }
+  }
+}

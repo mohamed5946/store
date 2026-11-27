@@ -1,0 +1,79 @@
+<!-- speclab products: Grid/List toggle → product list/grid → comparison strip.
+     SHELL FILL CONTRACT (the loader implements this; the bundle has no JS):
+     - The toggle buttons use data-action="toggle-grid-list"; the shell swaps the
+       container class between sl-view-list and sl-view-grid.
+     - The shell renders every product TWICE from the card template below: once
+       as a list row (.sl-row, inside .sl-list-wrap) and once as a grid card
+       (.sl-card, inside .sl-grid-wrap). Both carry data-slot="product-card".
+     - Spec rows: the shell clones the hidden .sl-spec-template row once per
+       entry of the product's real `specs` map (label → value). A product with
+       no `specs` field renders NO spec rows and the .sl-specs block stays empty
+       (CSS hides :empty) — never invented, never guessed.
+     - List-row spec summary (.sl-spec-summary): the shell fills it with the
+       first spec values joined on one line, or leaves it empty (hidden).
+     - Old price (.sl-old-price, data-slot="product-old-price"): filled ONLY
+       from a real basePrice greater than price; otherwise left empty (hidden).
+     - "متوفر" (.sl-stock): shown only when the product is orderable
+       (inStock is not false); hidden otherwise. Counts are never shown.
+     - Compare: data-action="toggle-compare" on a card marks it for comparison;
+       the shell renders the marked products side by side in .sl-compare-cols
+       and removes the .sl-compare-empty note.
+     - Empty catalogue: the shell owns the empty state (it is not in this file). -->
+<section class="sl-page sl-products sl-reveal-3" data-section="products">
+  <div class="sl-viewbar">
+    <span class="sl-viewbar-label">PRODUCTS // الكل</span>
+    <div class="sl-toggle">
+      <button class="sl-toggle-btn sl-toggle-btn-on" data-action="toggle-grid-list">قائمة</button>
+      <button class="sl-toggle-btn" data-action="toggle-grid-list">شبكة</button>
+    </div>
+  </div>
+
+  <div class="sl-view-list">
+    <div class="sl-list-wrap">
+      <div class="sl-row" data-slot="product-card">
+        <img class="sl-row-thumb" data-slot="product-image" src="" alt="" />
+        <div class="sl-row-body">
+          <h3 class="sl-row-title" data-slot="product-name"></h3>
+          <p class="sl-spec-summary"></p>
+          <div class="sl-row-foot">
+            <span class="sl-price" data-slot="product-price"></span>
+            <span class="sl-old-price" data-slot="product-old-price"></span>
+            <span class="sl-stock">متوفر</span>
+            <button class="sl-add" data-action="add-to-cart">أضف للسلة</button>
+            <button class="sl-compare-btn" data-action="toggle-compare">قارن</button>
+            <button class="sl-compare-btn" data-action="open-product">التفاصيل</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sl-grid-wrap">
+      <div class="sl-card" data-slot="product-card">
+        <img class="sl-card-img" data-slot="product-image" src="" alt="" />
+        <div class="sl-card-body">
+          <h3 class="sl-card-title" data-slot="product-name"></h3>
+          <div class="sl-specs">
+            <div class="sl-spec-row sl-spec-template"><span class="sl-spec-k"></span><span class="sl-spec-v"></span></div>
+          </div>
+          <div class="sl-card-foot">
+            <span class="sl-price" data-slot="product-price"></span>
+            <span class="sl-old-price" data-slot="product-old-price"></span>
+            <span class="sl-stock">متوفر</span>
+            <button class="sl-add" data-action="add-to-cart">أضف للسلة</button>
+            <button class="sl-compare-btn" data-action="toggle-compare">قارن</button>
+            <button class="sl-compare-btn" data-action="open-product">التفاصيل</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sl-compare">
+    <div class="sl-compare-box">
+      <p class="sl-compare-title">COMPARE // مقارنة</p>
+      <div class="sl-compare-cols">
+        <p class="sl-compare-empty">اختار منتجين أو أكثر من زر «قارن» عشان تشوف مواصفاتهم جنب بعض.</p>
+      </div>
+    </div>
+  </div>
+</section>

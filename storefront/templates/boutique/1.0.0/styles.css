@@ -1,0 +1,533 @@
+/* Warm Boutique — الدكان. Warm cream / cocoa / terracotta. Calm motion:
+   transform + opacity only. No url(), no @import, no blur. */
+
+.btq-marquee {
+  background: #5b3a29;
+  color: #faf6f0;
+  overflow: hidden;
+  padding: 10px 0;
+  margin: 0;
+}
+
+.btq-marquee-track {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  width: max-content;
+  white-space: nowrap;
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  animation: btq-marquee 20s linear infinite;
+}
+
+@keyframes btq-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(50%); }
+}
+
+.btq-marquee-dot {
+  color: #c96f4a;
+  font-size: 15px;
+}
+
+.btq-header {
+  background: #ffffff;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  box-shadow: 0 4px 20px rgba(91, 58, 41, 0.08);
+}
+
+.btq-brand {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  flex-grow: 1;
+}
+
+.btq-brand-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #faf6f0;
+}
+
+.btq-brand-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.btq-brand-name {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #5b3a29;
+}
+
+.btq-brand-tagline {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: #8a6d5c;
+}
+
+.btq-brand-meta {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: #8a6d5c;
+}
+
+.btq-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btq-icon-btn {
+  background: #faf6f0;
+  color: #5b3a29;
+  border: 1px solid rgba(91, 58, 41, 0.12);
+  border-radius: 999px;
+  padding: 10px 16px;
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: transform 150ms ease;
+}
+
+.btq-cart-btn {
+  background: #c96f4a;
+  color: #ffffff;
+  border: 1px solid #c96f4a;
+  border-radius: 999px;
+  padding: 10px 20px;
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 150ms ease;
+}
+
+.btq-icon-btn:active,
+.btq-cart-btn:active,
+.btq-add:active,
+.btq-hero-cta:active,
+.btq-wa-btn:active {
+  transform: scale(0.97);
+}
+
+.btq-hero-block {
+  background: #5b3a29;
+  color: #faf6f0;
+  border-radius: 24px;
+  margin: 16px;
+  padding: 32px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.btq-hero-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.btq-hero-title {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #faf6f0;
+  margin: 0;
+}
+
+.btq-hero-sub {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1.8;
+  color: #f3e2d3;
+  margin: 0;
+}
+
+.btq-hero-cta {
+  background: #c96f4a;
+  color: #ffffff;
+  border-radius: 999px;
+  padding: 14px 28px;
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 17px;
+  font-weight: 700;
+  text-align: center;
+  display: inline-block;
+  transition: transform 150ms ease;
+}
+
+.btq-hero-media {
+  border-radius: 24px;
+  overflow: hidden;
+  background: #faf6f0;
+  display: flex;
+  flex-direction: column;
+}
+
+.btq-hero-img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  animation: btq-zoom 10s ease-in-out infinite alternate;
+}
+
+@keyframes btq-zoom {
+  from { transform: scale(1); }
+  to { transform: scale(1.06); }
+}
+
+.btq-hero-name {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 17px;
+  font-weight: 500;
+  color: #5b3a29;
+  padding: 14px 18px;
+  text-align: center;
+}
+
+.btq-cats,
+.btq-featured,
+.btq-products,
+.btq-about,
+.btq-delivery,
+.btq-contact {
+  margin: 28px 16px;
+}
+
+.btq-sec-title {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #5b3a29;
+  margin: 0 0 6px 0;
+}
+
+.btq-sec-sub {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.7;
+  color: #8a6d5c;
+  margin: 0 0 18px 0;
+}
+
+.btq-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.btq-tile {
+  background: #ffffff;
+  border-radius: 24px;
+  padding: 28px 16px;
+  min-height: 150px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  cursor: pointer;
+  box-shadow: 0 6px 24px rgba(91, 58, 41, 0.07);
+  transition: transform 150ms ease;
+}
+
+.btq-tile:active {
+  transform: scale(0.97);
+}
+
+.btq-tile-media {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: #faf6f0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.btq-tile-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.btq-tile-name {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 19px;
+  font-weight: 700;
+  color: #5b3a29;
+  text-align: center;
+}
+
+.btq-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.btq-card {
+  background: #ffffff;
+  border-radius: 24px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 6px 24px rgba(91, 58, 41, 0.07);
+  animation: btq-rise 600ms ease both;
+}
+
+.btq-grid .btq-card:nth-child(2) {
+  animation: btq-rise 600ms ease 120ms both;
+}
+
+.btq-grid .btq-card:nth-child(3) {
+  animation: btq-rise 600ms ease 240ms both;
+}
+
+.btq-grid .btq-card:nth-child(4) {
+  animation: btq-rise 600ms ease 360ms both;
+}
+
+@keyframes btq-rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.btq-card-media {
+  border-radius: 16px;
+  overflow: hidden;
+  background: #faf6f0;
+  aspect-ratio: 1 / 1;
+}
+
+.btq-card-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.btq-card-name {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.6;
+  color: #5b3a29;
+  margin: 0;
+}
+
+.btq-card-price {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 20px;
+  font-weight: 700;
+  color: #c96f4a;
+  margin: 0;
+}
+
+.btq-card-old {
+  font-size: 14px;
+  font-weight: 400;
+  color: #8a6d5c;
+}
+
+.btq-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.btq-add {
+  background: #5b3a29;
+  color: #ffffff;
+  border: 1px solid #5b3a29;
+  border-radius: 999px;
+  padding: 12px 16px;
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  width: 100%;
+  transition: transform 150ms ease;
+}
+
+/* Secondary action on the card: same pill as .btq-add, inverted
+   (outline instead of solid) — opens the product modal. */
+.btq-open {
+  background: transparent;
+  color: #5b3a29;
+  border: 1px solid #5b3a29;
+  border-radius: 999px;
+  padding: 12px 16px;
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  width: 100%;
+  transition: transform 150ms ease;
+}
+
+.btq-wa {
+  color: #c96f4a;
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: center;
+  text-decoration: none;
+  padding: 8px;
+}
+
+.btq-about {
+  background: #ffffff;
+  border-radius: 24px;
+  padding: 28px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.btq-about-text {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1.9;
+  color: #5b3a29;
+  margin: 0;
+}
+
+.btq-wa-btn {
+  background: #c96f4a;
+  color: #ffffff;
+  border-radius: 999px;
+  padding: 14px 28px;
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 17px;
+  font-weight: 700;
+  text-align: center;
+  text-decoration: none;
+  display: inline-block;
+  transition: transform 150ms ease;
+}
+
+.btq-delivery {
+  background: #c96f4a;
+  border-radius: 24px;
+  padding: 28px 24px;
+  text-align: center;
+}
+
+.btq-delivery .btq-sec-title {
+  color: #ffffff;
+}
+
+.btq-delivery-text {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1.8;
+  color: #fff3ec;
+  margin: 0;
+}
+
+.btq-delivery-fee {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  color: #ffffff;
+  margin: 10px 0 0 0;
+}
+
+.btq-contact {
+  background: #ffffff;
+  border-radius: 24px;
+  padding: 28px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+  text-align: center;
+}
+
+.btq-contact-text {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 17px;
+  font-weight: 400;
+  line-height: 1.9;
+  color: #5b3a29;
+  margin: 0;
+}
+
+.btq-contact-note {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.7;
+  color: #8a6d5c;
+  margin: 0;
+}
+
+.btq-footer {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+}
+
+.btq-footer-brand {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 19px;
+  font-weight: 700;
+  color: #5b3a29;
+}
+
+.btq-footer-tag {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  color: #8a6d5c;
+}
+
+.btq-footer-cod {
+  font-family: 'Tajawal', 'Inter', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: #c96f4a;
+  margin: 0;
+}
+
+.btq-offers {
+  margin: 28px 16px;
+}
+
+.btq-offer {
+  border-radius: 24px;
+  overflow: hidden;
+}

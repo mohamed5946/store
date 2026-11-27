@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl" data-theme="light" data-shell-version="1.0.0">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>المتجر</title>
+  <meta name="description" content="اطلب دلوقتي وادفع عند الاستلام" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com https://www.googletagmanager.com; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://res.cloudinary.com; connect-src 'self' https://firestore.googleapis.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://www.google-analytics.com https://www.googletagmanager.com; frame-src 'none'; object-src 'none'; base-uri 'self'" />
+  <meta property="og:title" content="المتجر" />
+  <meta property="og:description" content="الدفع عند الاستلام — ادفع لما طلبك يوصلك" />
+  <link rel="preload" href="fonts/tajawal-arabic-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="fonts/tajawal-arabic-700.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="firebase-config.js"></script>
+</head>
+<body>
+  <!-- Preview stamp (templates): shown only on ?preview= renders;
+       filled by the shell. Hidden on the live site. -->
+  <div class="preview-stamp" id="previewStamp" hidden></div>
+
+  <div class="ambient" aria-hidden="true">
+    <span class="orb orb-1"></span>
+    <span class="orb orb-2"></span>
+    <span class="orb orb-3"></span>
+  </div>
+
+  <div class="announce" id="announce" hidden></div>
+
+  <header class="topbar glass" id="topbar">
+    <div class="container nav-inner">
+      <a href="#top" class="brand" aria-label="المتجر">
+        <span class="brand-mark" id="brandMark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path d="M2 12h4l2-6 4 12 2-6h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span class="brand-text">
+          <strong id="brandName">المتجر</strong>
+          <small id="brandTag">تسوق</small>
+        </span>
+      </a>
+
+      <nav class="nav-links" aria-label="القائمة الرئيسية">
+        <a href="#categories">الأقسام</a>
+        <a href="#featured">الأكثر مبيعاً</a>
+        <a href="#offers">العروض</a>
+        <a href="#about">عن المتجر</a>
+        <a href="#contact">تواصل معنا</a>
+      </nav>
+
+      <div class="nav-actions">
+        <button class="icon-btn" id="searchToggle" aria-label="بحث">
+          <svg viewBox="0 0 24 24" width="20" height="20"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20l-4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+        <button class="icon-btn" id="themeToggle" aria-label="تبديل الوضع">
+          <svg class="icon-moon" viewBox="0 0 24 24" width="20" height="20"><path d="M21 13A9 9 0 1111 3a7 7 0 0010 10z" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+          <svg class="icon-sun" viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+        <button class="cart-btn" id="cartToggle" aria-label="السلة">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M3 4h2l2.4 11.2a1 1 0 001 .8h9.2a1 1 0 001-.8L21 8H6" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="9" cy="20" r="1.4" fill="currentColor"/><circle cx="18" cy="20" r="1.4" fill="currentColor"/></svg>
+          <span class="cart-count" id="cartCount">0</span>
+        </button>
+      </div>
+    </div>
+    <div class="search-bar" id="searchBar">
+      <div class="container">
+        <input type="search" id="searchInput" placeholder="ابحث عن سماعة، شاحن، باور بانك..." aria-label="بحث" />
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero container" data-mount="hero">
+      <div class="hero-copy reveal">
+        <span class="eyebrow">مجموعة جديدة — 2026</span>
+        <h1><span id="heroTitleLine">نبض التكنولوجيا</span><br /><span class="accent" id="heroAccentLine">في كل تفصيلة</span></h1>
+        <p id="heroSubtitle">سماعات، شواحن، باور بانك وإكسسوارات مختارة بعناية، بجودة تستحق ثقتك وتوصيل يصلك لباب البيت.</p>
+        <div class="hero-cta">
+          <a href="#featured" class="btn btn-primary">تسوق الآن</a>
+          <a href="#categories" class="btn btn-ghost">استعرض الأقسام</a>
+        </div>
+        <ul class="hero-stats" id="heroStats"></ul>
+      </div>
+
+      <div class="hero-visual reveal" aria-hidden="true">
+        <div class="glass hero-card">
+          <div class="hero-media" id="heroMedia" hidden></div>
+          <div class="pulse-ring"></div>
+          <svg class="hero-earbud" id="heroEarbuds" viewBox="0 0 200 200">
+            <defs>
+              <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="var(--accent-2)" />
+                <stop offset="1" stop-color="var(--accent)" />
+              </linearGradient>
+            </defs>
+            <path d="M70 40c-20 0-34 16-34 36v50c0 18 14 34 34 34" fill="none" stroke="url(#g1)" stroke-width="10" stroke-linecap="round"/>
+            <rect x="60" y="112" width="34" height="56" rx="17" fill="url(#g1)" />
+            <path d="M130 40c20 0 34 16 34 36v50c0 18-14 34-34 34" fill="none" stroke="url(#g1)" stroke-width="10" stroke-linecap="round" opacity=".6"/>
+            <rect x="106" y="112" width="34" height="56" rx="17" fill="url(#g1)" opacity=".6"/>
+          </svg>
+          <div class="float-chip chip-a">شحن سريع 65W</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="container marquee" id="marqueeSection" data-mount="marquee" aria-hidden="true">
+      <div class="marquee-track" id="marqueeTrack"></div>
+    </section>
+
+    <section id="categories" class="container section" data-mount="categories">
+      <header class="section-head reveal">
+        <h2>تسوق حسب القسم</h2>
+        <p>كل ما يحتاجه جهازك في مكان واحد</p>
+      </header>
+      <div class="categories-grid" id="categoriesGrid"></div>
+    </section>
+
+    <section id="featured" class="container section" data-mount="featured">
+      <header class="section-head reveal">
+        <h2>الأكثر مبيعاً</h2>
+        <div class="filter-pills" id="filterPills" role="tablist"></div>
+        <div class="filter-controls">
+          <label class="filter-field"><span>السعر من</span><input id="priceMin" type="number" min="0" inputmode="numeric" placeholder="0" /></label>
+          <label class="filter-field"><span>إلى</span><input id="priceMax" type="number" min="0" inputmode="numeric" placeholder="الأعلى" /></label>
+          <label class="filter-field"><span>ترتيب</span><select id="sortSelect">
+            <option value="none">الافتراضي</option>
+            <option value="price-asc">السعر: من الأقل للأعلى</option>
+            <option value="price-desc">السعر: من الأعلى للأقل</option>
+          </select></label>
+        </div>
+      </header>
+      <div id="featuredSpot"></div>
+      <!-- Products mount lives inside the featured section in the
+           shell DOM (the grid belongs under the featured header);
+           the loader preserves nested mounts on injection. -->
+      <div data-mount="products">
+        <div class="products-grid" id="productsGrid"></div>
+        <div class="grid-more" id="gridMoreWrap"></div>
+      </div>
+    </section>
+
+    <section id="offers" class="container section" data-mount="offers">
+      <div id="promoWrap"></div>
+    </section>
+
+    <section id="delivery" class="container section" data-mount="delivery">
+      <div id="deliveryWrap"></div>
+    </section>
+
+    <section id="contact" class="container section" data-mount="contact">
+      <header class="section-head reveal">
+        <h2>تواصل معنا</h2>
+        <p>عندك شكوى أو اقتراح؟ ابعتهالنا.</p>
+      </header>
+      <div class="glass contact-card">
+        <form id="fbForm" novalidate>
+          <div class="fb-row">
+            <label class="field"><span>الاسم</span><input id="fbName" type="text" autocomplete="name" name="name" maxlength="100" placeholder="اسمك" /></label>
+            <label class="field"><span>الإيميل</span><input id="fbEmail" type="email" dir="ltr" autocomplete="email" name="email" style="text-align:right" maxlength="100" placeholder="example@mail.com" /></label>
+          </div>
+          <label class="field"><span>رقم الموبايل</span><input id="fbPhone" type="tel" dir="ltr" autocomplete="tel" name="phone" maxlength="20" placeholder="01xxxxxxxxx" /></label>
+          <label class="field"><span>الشكوى</span><textarea id="fbMessage" rows="4" name="message" placeholder="اكتب شكواك هنا (من 10 لـ 2000 حرف)"></textarea></label>
+          <button class="btn btn-primary" id="fbSubmit" type="submit">إرسال</button>
+          <p class="fb-result" id="fbResult" hidden></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="about" class="container section about reveal" data-mount="about">
+      <div class="glass about-card">
+        <h2 id="aboutTitle">لماذا المتجر؟</h2>
+        <div class="features">
+          <div class="feature"><span>🚚</span><h3>الدفع عند الاستلام</h3><p>ادفع كاش لما طلبك يوصلك لحد البيت.</p></div>
+          <div class="feature"><span>🛍️</span><h3>تشكيلة متجددة</h3><p id="aboutCatalog">منتجات وأقسام بتتحدث من البرنامج.</p></div>
+          <div class="feature"><span>⚡</span><h3>اطلب في خطوتين</h3><p>بياناتك، مراجعة، وتأكيد — وطلبك يتحرك.</p></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container footer-inner">
+      <div>
+        <strong class="brand-footer" id="footerBrand">المتجر</strong>
+        <p id="footerTag">الدفع عند الاستلام — ادفع لما طلبك يوصلك</p>
+      </div>
+      <div class="footer-links">
+        <a href="#categories">الأقسام</a>
+        <a href="#featured">المنتجات</a>
+        <a href="#about">عن المتجر</a>
+        <a href="#contact">تواصل معنا</a>
+        <a href="#contact" id="footerFeedbackLink">عندك ملاحظة؟ قلّنا رأيك</a>
+      </div>
+    </div>
+    <p class="copy">© <span id="year"></span> <span id="copyBrand">المتجر</span>. جميع الحقوق محفوظة.</p>
+  </footer>
+
+  <aside class="cart-drawer glass" id="cartDrawer" aria-hidden="true">
+    <div class="drawer-head">
+      <h3>السلة</h3>
+      <button class="icon-btn" id="cartClose" aria-label="إغلاق">✕</button>
+    </div>
+    <div class="cart-items" id="cartItems"></div>
+    <div class="cart-foot">
+      <div class="row"><span>الإجمالي</span><strong id="cartTotal">0 ج.م</strong></div>
+      <button class="btn btn-primary btn-block" id="checkoutBtn">إتمام الطلب</button>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+
+  <div class="modal" id="modal" aria-hidden="true">
+    <div class="modal-sheet glass" id="modalSheet"></div>
+  </div>
+
+  <div class="journey" id="journey" aria-hidden="true">
+    <p class="j-title">طلبك اتأكد واتحرك!</p>
+    <div class="j-road">
+      <div class="j-progress"></div>
+      <div class="j-van">
+        <svg viewBox="0 0 120 64" width="110" height="58" aria-hidden="true">
+          <rect x="4" y="12" width="62" height="36" rx="4" fill="#ffffff" stroke="rgba(20,30,45,.15)"/>
+          <rect x="66" y="24" width="34" height="24" rx="4" fill="#eef2f5" stroke="rgba(20,30,45,.15)"/>
+          <rect x="72" y="28" width="16" height="12" rx="2" style="fill:var(--accent)"/>
+          <rect x="14" y="20" width="26" height="16" rx="2" style="fill:var(--accent-2)"/>
+          <circle class="wheel" cx="24" cy="50" r="8" fill="#1b2430" stroke="#5b6878" stroke-width="2"/>
+          <circle class="wheel" cx="84" cy="50" r="8" fill="#1b2430" stroke="#5b6878" stroke-width="2"/>
+        </svg>
+      </div>
+    </div>
+    <p class="j-sub">العربية ماشية لحد ما توصل لآخر الطريق…</p>
+    <button class="btn btn-ghost" id="jSkip">تخطي</button>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Bundle gateway (templates): pure validation, loaded before app.js. -->
+  <script src="bundle-gateway.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
