@@ -303,8 +303,10 @@ service cloud.firestore {
      * 4-or-5-key size check is gone — hasOnly + the field checks
      * below already deny a short line (a missing field errors or
      * fails its type check); the productId/name .size() > 0 checks
-     * are gone too — an empty productId fails the DB price get in
-     * linePriceOk, and name is display-only. Same verdicts. */
+     * are gone too — an empty productId is no longer checked
+     * against the DB (CUT-2, 2026-11-27: the per-line DB price
+     * get is removed; the owner's manual review is the backstop),
+     * and name is display-only. Same verdicts. */
     function orderLineOk(item) {
       return item is map
         && item.keys().hasOnly(['productId', 'name', 'price', 'qty', 'basePrice'])
@@ -316,36 +318,36 @@ service cloud.firestore {
           || (item.basePrice is int && item.basePrice >= item.price));
     }
 
-    /* One traversal for shape + DB price + availability (budget fix
+    /* One traversal for shape + availability (budget fix
      * 2026-11-27): the old code walked the 10 slots THREE times
      * (orderLinesOk, orderPricesOk, orderAvailabilityOk), each with
      * its own size guard and items[i] fetch. Now a single
-     * orderLineValue does shape + price get + availability get per
+     * orderLineValue does shape + availability get per
      * present line (M1: the validity walk is fused into the
      * subtotal sum via the poison value), with the size guard
      * hoisted to the call site so an absent slot costs one
-     * comparison. Same checks, same gets (1 product get per line;
-     * 1 inventory get per line only when the order has at most 3
-     * lines — the OOS guard's 10-get budget note: worst case 3
-     * price + 3 inventory + 1 fee = 7 (the code get is gone,
-     * 2026-11-27; the audit getAfter left with the audit-split,
-     * M1); larger orders keep the transaction + reserve-rule
-     * guards, exactly as before). */
+     * comparison. CUT-2 (checks reduction, 2026-11-27): the
+     * per-line DB price get is REMOVED from this walk — the
+     * owner's manual review is the backstop for forged line
+     * prices. Gets now: 1 inventory get per line only when the
+     * order has at most 3 lines — the OOS guard's budget note:
+     * worst case 3 inventory + 1 fee = 4 (the product gets are
+     * gone with CUT-2, the code get is gone, 2026-11-27; the
+     * audit getAfter left with the audit-split, M1); larger
+     * orders keep the transaction + reserve-rule guards,
+     * exactly as before). */
     function orderLineValid(i) {
       let items = request.resource.data.items;
       return orderLineOk(items[i])
-        && linePriceOk(i)
         && (items.size() > 3 || lineAvailOk(i));
     }
 
-    /* Line i's price must equal the products doc price (one get per
-     * line — rules have no loop). Called only for i < items.size(),
-     * after orderLineOk proved productId is a string. */
-    function linePriceOk(i) {
-      let items = request.resource.data.items;
-      let prod = get(/databases/$(database)/documents/products/$(items[i].productId));
-      return prod != null && prod.data.price == items[i].price;
-    }
+    /* CUT-2 (checks reduction, 2026-11-27, owner-approved): the
+     * per-line DB price get (linePriceOk) is REMOVED — a forged
+     * line price now passes the rules. Backstop: the owner's
+     * manual review of every order's line prices. The client
+     * still computes from DB prices, so honest orders are exact.
+     * Do not re-add without a design decision. */
 
     /* Per-line availability guard [OOS]: qty <= stock - reserved on
      * the matching inventory doc — the backstop against a forged
@@ -360,7 +362,7 @@ service cloud.firestore {
 
     /* POISON-VALUE line check (Option 1, M1 2026-11-27): the fused
      * validity + subtotal traversal. Returns price*qty of line i
-     * when the line is valid (shape + DB price + availability, via
+     * when the line is valid (shape + availability, via
      * orderLineValid), otherwise the poison value -10^15. Validity
      * is then implied by the sum: a poisoned term makes the total
      * hugely negative, and subtotal >= 0 is enforced, so
@@ -1211,9 +1213,12 @@ service cloud.firestore {
     // are the idempotency probe only: get of a doc that does not
     // exist yet — an existing order stays unreadable anonymously. ----
     match /orders/{doc} {
-      // Price + availability per line live inside orderShapeOk's
+      // Availability per line lives inside orderShapeOk's
       // subtotal sum (Option 1, M1 2026-11-27): the poison-value
       // traversal proves validity AND the subtotal in one walk.
+      // CUT-2 (checks reduction, 2026-11-27): the per-line DB
+      // price check is removed — the owner's manual review is
+      // the backstop for forged line prices.
       // Audit-split (M1, approved 2026-11-27): the order rule no
       // longer verifies an audit entry — the audit is written by
       // the client AFTER the order commits (best-effort); "every

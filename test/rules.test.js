@@ -1424,24 +1424,30 @@ test('Pricing A: a saleSavings mismatch is denied', async () => {
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 5);
 });
 
-/* Poison-value pin (Option 1, M1 2026-11-27, design §2.6): a line
- * priced below the DB price returns the poison value in the fused
- * subtotal sum, so the order is denied by the SUBTOTAL mismatch —
- * the totals here are consistent with the forged price (subtotal
- * == 299 == price*qty, savings 201 == (500-299)*1, amountDue 329
- * == 299+30), so no other conjunct can be the denier: the shape,
- * availability and fee checks all pass on this batch. If a future
- * change ever allows negative prices, this trick breaks silently —
- * this test is the tripwire. */
-test('Pricing A: a line priced below the DB price is denied by the poisoned subtotal sum', async () => {
+/* CUT-2 (checks reduction, 2026-11-27, owner-approved): the per-line
+ * DB price get is REMOVED, so a line priced below the DB price now
+ * PASSES the rules — the totals here are consistent with the forged
+ * price (subtotal == 299 == price*qty, savings 201 == (500-299)*1,
+ * amountDue 329 == 299+30), and no other conjunct denies it. This
+ * test's OLD verdict (denied by the poisoned subtotal sum) is
+ * REPLACED by the new rule, not weakened: the rule itself changed.
+ * Backstop: the owner's manual review — the forged line price (299
+ * for a 300 product) is visible in the order he reviews, and he
+ * cancels it. The poison mechanism is still pinned by test 4's
+ * order-bad-3 (a SHAPE-invalid line, qty 0, is still denied via
+ * the poisoned sum) — that pin holds as long as CUT-8 is not
+ * applied (CUT-8 drops the shape check; see the bare-sum test). */
+test('Pricing A: a line priced below the DB price now PASSES the rules (CUT-2 — price re-verification cut; owner review is the backstop)', async () => {
   const db = anonDb();
-  await assertFails(rawOrderBatch(db, {
+  await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-pricing-poison', productId: 'prod-4', productName: 'جراب موبايل',
     price: 299, qty: 1, stock: 10, reserved: 5, basePrice: 500,
     overrides: { saleSavings: 201, deliveryFee: 30, amountDue: 329 },
   }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-poison'))).exists(), false);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 5);
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-poison'))).data();
+  assert.equal(order.items[0].price, 299);
+  assert.equal(order.subtotal, 299);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 6);
 });
 
 test('Pricing A: an amountDue mismatch is denied', async () => {
@@ -1497,9 +1503,10 @@ test('Pricing A: a missing fee field means FREE on a storefront create (fee 0 pa
   // restore never ran and settings stayed {} for the REST of the
   // suite, so every later anon new-money order failed orderFeeOk
   // (null != 30) — that is what killed tests 60/84 and the probes,
-  // not the orders themselves. Reserved is 4 here, not 6: 3 from
-  // the matrix (47/48/49) + 1 manual — test 50 reserves nothing
-  // (2-line budget failure).
+  // not the orders themselves. Reserved is 7 here: 3 from the
+  // matrix (47/48/49) + 2 from test 50 (2-line, now passing after
+  // CUT-2) + 1 from the poison test (now passing after CUT-2) + 1
+  // manual.
   try {
     const anon = anonDb();
     await assertSucceeds(placePricingOrderTx(anon, {
@@ -1531,7 +1538,7 @@ test('Pricing A: a missing fee field means FREE on a storefront create (fee 0 pa
     const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-manual'))).data();
     assert.equal(order.deliveryFee, 30);
     assert.equal(order.amountDue, 330);
-    assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 4);
+    assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 7);
   } finally {
     // Restore the fee field for the tests below, even on failure.
     await testEnv.withSecurityRulesDisabled(async (context) => {
@@ -1679,22 +1686,23 @@ test('Pricing A: an order audit that does NOT cover the money fields no longer d
   const db = anonDb();
   const base = {
     productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 10, reserved: 6, basePrice: 500,
+    price: 300, qty: 1, stock: 10, reserved: 7, basePrice: 500,
     overrides: { saleSavings: 200, deliveryFee: 30, amountDue: 330 },
   };
   // Audit lists status/total/saleSavings/amountDue/items but not deliveryFee.
   await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-pricing-audit-1', auditOmit: ['deliveryFee'] }));
   // Audit lists the money fields but not 'items' — the line carries
   // a base price, so the audit must cover 'items' too (old rule).
-  // Step 3 probe fix: audit-2 must use reserved 7, not the shared
-  // base 6 — after audit-1 the stored reserved IS 7, so a second
-  // write of 6+1 = 7 fails `reserved strictly increases` (7 > 7
-  // is false) and the batch is denied. Final reserved is 8.
-  await assertSucceeds(rawOrderBatch(db, { ...base, reserved: 7, orderId: 'order-pricing-audit-2', auditOmit: ['items'] }));
+  // Checks-reduction probe (P1, CUT-2, 2026-11-27): audit-2 must
+  // use reserved 8, not the shared base 7 — after audit-1 the
+  // stored reserved IS 8, so a second write of 7+1 = 8 fails
+  // `reserved strictly increases` (8 > 8 is false) and the batch
+  // is denied. Final reserved is 9.
+  await assertSucceeds(rawOrderBatch(db, { ...base, reserved: 8, orderId: 'order-pricing-audit-2', auditOmit: ['items'] }));
   for (const id of ['order-pricing-audit-1', 'order-pricing-audit-2']) {
     assert.equal((await getDoc(doc(adminDb(), 'orders', id))).exists(), true);
   }
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 8);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 9);
 });
 
 /* ---------- Pricing Phase A: attempt-doc shape check (§11 / M21) ---------- */
