@@ -1417,7 +1417,12 @@ function fillProductInto(scope, p) {
   const oldEl = scope.querySelector('[data-slot="product-old-price"]');
   if (oldEl) {
     if (isOnSale(p)) oldEl.textContent = money(p.basePrice);
-    else if (oldEl.parentElement) oldEl.parentElement.style.display = 'none';
+    // 2026-11-27 (price-row fix): hide ONLY the old-price element.
+    // Hiding oldEl.parentElement hid the whole .bz-price-row div,
+    // which also holds the [data-slot="product-price"] span — so a
+    // non-sale product showed NO price in every bundle template's
+    // cards (classic is unaffected: its own renderers). The price
+    // span is filled by salePriceHtml above and must stay visible.
     else oldEl.style.display = 'none';
   }
   fillSlotImage(scope, 'product-image', coverUrl(p), p.name || '');
