@@ -715,13 +715,14 @@ function newClientOrderId() {
 let ordering = false;
 let theme = localStorage.getItem('sp-theme') || 'light';
 /* Delivery fee (storeSettings/settings.deliveryFee, int >= 0).
- * null = the settings doc has NO fee field: missing != 0, checkout
- * is blocked until the admin sets it once. freeDeliveryThreshold is
- * the D3 admin setting (see the pricing-helper note); null = no
- * waiver. Both ride the existing boot settings read — no new reads. */
+ * null = the settings doc has NO fee field: missing means FREE
+ * (fee-default-free, Mohamed's decision 2026-11-27) — the pricing
+ * helper treats it as 0, exactly like an explicit fee of 0.
+ * freeDeliveryThreshold is the D3 admin setting (see the
+ * pricing-helper note); null = no waiver. Both ride the existing
+ * boot settings read — no new reads. */
 let deliveryFee = null;
 let freeDeliveryThreshold = null;
-function feeIsSet() { return Number.isInteger(deliveryFee) && deliveryFee >= 0; }
 /* The canonical pricing of the current cart, through the one helper:
  * cart lines + the fee state. */
 function currentPricing() {
@@ -854,8 +855,8 @@ function maxDiscountPct(list) {
 }
 /* lines: [{ price, basePrice (int|null), qty }].
  * opts: { deliveryFee (int|null — null means the settings doc has
- *   no fee field: missing != 0, unset), freeDeliveryThreshold
- *   (int|null) }.
+ *   no fee field: missing means FREE, treated as 0 — fee-default-free
+ *   2026-11-27), freeDeliveryThreshold (int|null) }.
  * Returns every figure the storefront, review, transaction and
  * WhatsApp quote share — one computation, no divergent copies. */
 function computePricing(lines, opts) {
@@ -879,8 +880,13 @@ function computePricing(lines, opts) {
   const threshold = (Number.isInteger(o.freeDeliveryThreshold) && o.freeDeliveryThreshold > 0)
     ? o.freeDeliveryThreshold : null;
   const feeWaived = !feeUnset && threshold != null && total >= threshold;
-  const deliveryFee = feeUnset ? null : (feeWaived ? 0 : o.deliveryFee);
-  const amountDue = feeUnset ? null : total + deliveryFee;
+  // Missing fee = free (fee-default-free 2026-11-27): the effective
+  // fee is 0, so amountDue / insteadOf are always numbers — never
+  // null — and the fee line reads free, exactly as for fee 0.
+  // feeUnset stays in the return as "the fee field was absent" for
+  // display callers; it no longer blocks anything.
+  const deliveryFee = feeUnset ? 0 : (feeWaived ? 0 : o.deliveryFee);
+  const amountDue = total + deliveryFee;
   return {
     perLine,
     baseSubtotal,
@@ -892,15 +898,15 @@ function computePricing(lines, opts) {
     feeWaived,
     amountDue,
     savingTotal: saleSavings,
-    insteadOf: feeUnset ? null : baseSubtotal + deliveryFee,
+    insteadOf: baseSubtotal + deliveryFee,
   };
 }
 /* Fee line text. Browsing surfaces say "توصيل", the review modal
  * (the confirm-order step) says "شحن" — one term per screen, never
- * mixed. Fee 0 reads free; unset reads the missing-fee message. */
+ * mixed. Fee 0 reads free; an unset fee (null) reads free too —
+ * missing means free (fee-default-free 2026-11-27). */
 function feeLineText(effectiveFee, screen) {
-  if (effectiveFee == null) return 'رسوم التوصيل غير محددة بعد';
-  if (effectiveFee === 0) return screen === 'review' ? 'الشحن مجانًا' : 'التوصيل مجاني';
+  if (effectiveFee == null || effectiveFee === 0) return screen === 'review' ? 'الشحن مجانًا' : 'التوصيل مجاني';
   return screen === 'review' ? `الشحن: ${money(effectiveFee)}` : `التوصيل: ${money(effectiveFee)}`;
 }
 /* PRICING-HELPER-END */
@@ -1454,14 +1460,8 @@ function fillBundleSlots() {
     if (el.tagName === 'IMG') el.style.display = 'none';
   });
   // Delivery fee slot (Scroll trust card): fee 0 -> "التوصيل مجاني";
-  // a missing fee field hides the trust card (Scroll cannot be
-  // approved before the field exists).
+  // a missing fee field reads free too (fee-default-free).
   document.querySelectorAll('[data-slot="delivery-fee"]').forEach((el) => {
-    if (!feeIsSet()) {
-      const card = el.closest('[data-trust-card]') || el;
-      card.style.display = 'none';
-      return;
-    }
     el.textContent = feeLineText(deliveryFee, 'browse');
   });
   // Max-discount claim (Bazaar): the real max sale % from the
@@ -1643,15 +1643,14 @@ function renderBundleProducts() {
       if (isFeed) card.querySelectorAll('[data-add]').forEach((b) => b.classList.add('pulse-buy'));
     }
     frag.appendChild(card);
-    // Trust-moment card every 4 products (shell-inserted, real fee).
+    // Trust-moment card every 4 products (shell-inserted, real fee);
+    // a missing fee reads free (fee-default-free).
     if (isFeed && (i + 1) % 4 === 0) {
-      if (feeIsSet()) {
-        const trust = document.createElement('div');
-        trust.className = 'trust-card';
-        trust.setAttribute('data-trust-card', '');
-        trust.innerHTML = `<strong>${deliveryFee === 0 ? 'التوصيل مجاني' : 'التوصيل: ' + esc(money(deliveryFee))}</strong><span>الدفع عند الاستلام</span>`;
-        frag.appendChild(trust);
-      }
+      const trust = document.createElement('div');
+      trust.className = 'trust-card';
+      trust.setAttribute('data-trust-card', '');
+      trust.innerHTML = `<strong>${deliveryFee == null || deliveryFee === 0 ? 'التوصيل مجاني' : 'التوصيل: ' + esc(money(deliveryFee))}</strong><span>الدفع عند الاستلام</span>`;
+      frag.appendChild(trust);
     }
   });
   // Keep the template node in place; append cards after it.
@@ -2236,8 +2235,8 @@ function renderCart() {
   /* Breakdown under the total (fee line from the first render):
    * subtotal is the products total; savings, fee and amount due are
    * their own lines. With no sale items there is no "وفّرت" line;
-   * with the fee unset the cart shows the missing-fee message and
-   * checkout stays blocked. */
+   * with the fee unset the cart shows "التوصيل مجاني" and checkout
+   * stays open (fee-default-free 2026-11-27). */
   const pr = currentPricing();
   let breakdown = $('#cartBreakdown');
   if (!breakdown) {
@@ -2255,7 +2254,7 @@ function renderCart() {
   }
   $('#cartTotal').textContent = money(cartTotal());
   const checkoutBtn = $('#checkoutBtn');
-  if (checkoutBtn) checkoutBtn.disabled = (items.length > 0 && !feeIsSet()) || cartBlocked;
+  if (checkoutBtn) checkoutBtn.disabled = cartBlocked;
   const badge = $('#cartCount');
   badge.textContent = count;
   badge.classList.toggle('show', count > 0);
@@ -2501,19 +2500,6 @@ function showInfoForm(err = '') {
 function showReview(customer, notice = '') {
   const lines = cartLines();
   const pr = currentPricing();
-  /* Missing-fee block, defensive (checkout is already blocked before
-   * the info step): the review step cannot be entered while the fee
-   * is unset — no order, no WhatsApp quote. */
-  if (pr.feeUnset) {
-    openModal(`
-      <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
-      <h2>مراجعة الطلب</h2>
-      <p class="form-err">رسوم التوصيل غير محددة بعد — حدّدها من الإعدادات</p>
-      <p style="color:var(--text-soft)">مش هنقدر نأكد الطلب لحد ما تتحدد رسوم التوصيل.</p>
-      <button class="btn btn-primary btn-block" id="feeBlockClose">تمام</button>`);
-    $('#feeBlockClose').addEventListener('click', closeModal);
-    return;
-  }
   openModal(`
     <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
     <h2>مراجعة الطلب</h2>
@@ -2556,11 +2542,10 @@ function showReview(customer, notice = '') {
 /* WhatsApp order: no order doc is created — the pre-filled message
  * (identical breakdown through the same canonical helper) opens in
  * WhatsApp for the store to take. No transaction, no guard, no stock
- * check. The button is hidden at the review step while the fee is
- * unset (the review itself is unreachable then). */
+ * check. A missing fee quotes free (fee-default-free), like the
+ * in-app review. */
 function orderViaWhatsApp(customer) {
   const pr = currentPricing();
-  if (pr.feeUnset) { toast('رسوم التوصيل غير محددة بعد'); return; }
   const lines = cartLines();
   const text = [
     'طلب جديد من المتجر',
@@ -2710,16 +2695,17 @@ async function placeOrderTx({ clientOrderId: orderId, items, customer, seenPrice
     }
     /* Delivery fee: one re-read of the settings doc inside the
      * transaction (the extra read per order in the quota budget).
-     * Missing fee field fails closed — the client blocks checkout
-     * before this point, so reaching here means the fee was removed
-     * mid-checkout. The threshold waiver (decision D3) applies on
-     * the `total`, exactly like the display helper. */
+     * A missing fee field means FREE (fee-default-free 2026-11-27):
+     * the effective fee is 0, exactly like the display helper —
+     * a fee removed mid-checkout still creates a free-delivery
+     * order (the seen-fee guard below catches the change and
+     * re-renders the review instead). The threshold waiver
+     * (decision D3) applies on the `total`, exactly like the
+     * display helper. */
     const settingsSnap = await tx.get(doc(db, 'storeSettings', 'settings'));
     const settingsData = settingsSnap.exists() ? settingsSnap.data() : {};
-    const settingsFee = settingsData.deliveryFee;
-    if (!Number.isInteger(settingsFee) || settingsFee < 0) {
-      throw new OrderError('FEE_UNSET', 'رسوم التوصيل غير محددة بعد');
-    }
+    const settingsFee = (Number.isInteger(settingsData.deliveryFee) && settingsData.deliveryFee >= 0)
+      ? settingsData.deliveryFee : 0;
     const settingsThreshold = (Number.isInteger(settingsData.freeDeliveryThreshold) && settingsData.freeDeliveryThreshold > 0)
       ? settingsData.freeDeliveryThreshold : null;
     /* Totals from the DATABASE prices through the ONE canonical
@@ -2934,9 +2920,10 @@ async function recordOrderAudit(order) {
  * — error code, the seen values, and the current database prices/fee
  * — so a price failure leaves a trace. Best-effort: a denied write
  * must never mask the error the customer already sees.
- * NOTE: `FEE_UNSET` is not in the spec's §11 allowed errorCode set;
- * the Phase A rules entry must add it, or this one update is denied
- * (silently — the checkout error itself is unaffected). */
+ * NOTE: `FEE_UNSET` stays in the rules' §11 allowed errorCode set
+ * even though this storefront no longer throws it (fee-default-free
+ * 2026-11-27 removed the throw) — an older client can still record
+ * it, and this update is best-effort either way. */
 async function recordAttemptFailure(code, seen, details) {
   if (!attemptId) return;
   try {
@@ -3079,12 +3066,6 @@ async function submitOrder(customer) {
         : code === 'PRICE_CHANGED'
           ? 'اتغير سعر منتج من اللي شفتهم — دي الأسعار الجديدة، راجع الإجمالي وأكد تاني'
           : 'اتغير الإجمالي — راجع الإجمالي الجديد وأكد تاني');
-      return;
-    }
-    if (code === 'FEE_UNSET') {
-      deliveryFee = null;
-      renderCart();
-      showReview(customer, 'رسوم التوصيل غير محددة بعد');
       return;
     }
     if (code === 'INSUFFICIENT_STOCK') {
@@ -3251,9 +3232,6 @@ $('#checkoutBtn').addEventListener('click', () => {
     return av && av.state !== 'ok';
   });
   if (blockedNow) { toast('في منتجات خلصت من المخزون — شيلها أو قلل الكمية'); openCart(true); return; }
-  /* Missing-fee block (§5/§10): checkout cannot be entered while
-   * the fee is unset — missing != 0, ever. */
-  if (!feeIsSet()) { toast('رسوم التوصيل غير محددة بعد'); openCart(true); return; }
   recordStep('checkout');
   journeyNoteCheckoutStart();
   // Attempt doc WITHOUT contact on checkout open — contact comes only
@@ -3495,8 +3473,8 @@ async function boot() {
           whatsappNumber = d.whatsappNumber.trim();
         }
         // Delivery fee + free-delivery threshold (pricing): ride this
-        // existing read. A missing fee field leaves deliveryFee null
-        // (missing != 0 — checkout stays blocked until it is set).
+        // existing read. A missing fee field leaves deliveryFee null,
+        // which the pricing helper treats as free (fee-default-free).
         if (Number.isInteger(d.deliveryFee) && d.deliveryFee >= 0) deliveryFee = d.deliveryFee;
         if (Number.isInteger(d.freeDeliveryThreshold) && d.freeDeliveryThreshold > 0) {
           freeDeliveryThreshold = d.freeDeliveryThreshold;
