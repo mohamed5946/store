@@ -708,9 +708,13 @@ test('No-functions: bad-shape orders are rejected (missing address, short phone,
   // Phone shorter than 10 digits.
   await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-2', overrides: { customerPhone: '010123456' } }));
   // CUT-8: qty 0 now PASSES the order rule (the bare sum is
-  // satisfied: 300*0 = 0 == subtotal 0). No reserve write — a
-  // qty-0 order reserves nothing.
-  await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-bad-3', overrides: { items: [{ productId: 'prod-4', name: 'جراب موبايل', price: 300, qty: 0 }] }, skipInventory: true }));
+  // satisfied: 300*0 = 0 == subtotal 0). The qty is passed in the
+  // base (not as an items override) so the helper computes the
+  // subtotal from the same qty-0 line — an items override would
+  // leave the helper's subtotal at 300 and the bare sum would
+  // (correctly) deny the mismatch. No reserve write — a qty-0
+  // order reserves nothing.
+  await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-bad-3', qty: 0, skipInventory: true }));
   const bad3 = (await getDoc(doc(adminDb(), 'orders', 'order-bad-3'))).data();
   assert.equal(bad3.items[0].qty, 0);
   assert.equal(bad3.subtotal, 0);
