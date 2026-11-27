@@ -1479,33 +1479,45 @@ test('Pricing A: a missing fee field denies a storefront create but allows a man
     const db = context.firestore();
     await setDoc(doc(db, 'storeSettings', 'settings'), {});
   });
-  const anon = anonDb();
-  await assertFails(placePricingOrderTx(anon, {
-    orderId: 'order-pricing-nofee-sf',
-    lines: [{ productId: 'prod-4', qty: 1, basePrice: 500 }],
-    deliveryFee: 30,
-  }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-sf'))).exists(), false);
-  // The manual path is client-asserted (fee split, decision D2):
-  // no fee get, so the same order shape passes without a fee field.
-  const admin = adminDb();
-  await assertSucceeds(placePricingOrderTx(admin, {
-    orderId: 'order-pricing-nofee-manual',
-    lines: [{ productId: 'prod-4', qty: 1, basePrice: 500 }],
-    deliveryFee: 30,
-    source: 'admin_manual', createdBy: ADMIN_UID,
-    actor: ADMIN_UID, actorName: 'Admin', operation: 'manual_order_create',
-    movementSource: 'createManualOrder',
-  }));
-  const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-manual'))).data();
-  assert.equal(order.deliveryFee, 30);
-  assert.equal(order.amountDue, 330);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 6);
-  // Restore the fee field for the tests below.
-  await testEnv.withSecurityRulesDisabled(async (context) => {
-    const db = context.firestore();
-    await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 30 });
-  });
+  // Step 3 fix: the restore MUST run in a finally. The old version
+  // restored after the assertions — when the reserved assertion
+  // threw (4 !== 6: test 50's 2-line order never reserved), the
+  // restore never ran and settings stayed {} for the REST of the
+  // suite, so every later anon new-money order failed orderFeeOk
+  // (null != 30) — that is what killed tests 60/84 and the probes,
+  // not the orders themselves. Reserved is 4 here, not 6: 3 from
+  // the matrix (47/48/49) + 1 manual — test 50 reserves nothing
+  // (2-line budget failure).
+  try {
+    const anon = anonDb();
+    await assertFails(placePricingOrderTx(anon, {
+      orderId: 'order-pricing-nofee-sf',
+      lines: [{ productId: 'prod-4', qty: 1, basePrice: 500 }],
+      deliveryFee: 30,
+    }));
+    assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-sf'))).exists(), false);
+    // The manual path is client-asserted (fee split, decision D2):
+    // no fee get, so the same order shape passes without a fee field.
+    const admin = adminDb();
+    await assertSucceeds(placePricingOrderTx(admin, {
+      orderId: 'order-pricing-nofee-manual',
+      lines: [{ productId: 'prod-4', qty: 1, basePrice: 500 }],
+      deliveryFee: 30,
+      source: 'admin_manual', createdBy: ADMIN_UID,
+      actor: ADMIN_UID, actorName: 'Admin', operation: 'manual_order_create',
+      movementSource: 'createManualOrder',
+    }));
+    const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-manual'))).data();
+    assert.equal(order.deliveryFee, 30);
+    assert.equal(order.amountDue, 330);
+    assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 4);
+  } finally {
+    // Restore the fee field for the tests below, even on failure.
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 30 });
+    });
+  }
 });
 
 test('Pricing A: an 8-line storefront order WITHOUT a code passes (8 product gets + 1 fee get)', async () => {
@@ -1558,82 +1570,6 @@ test('Pricing A: a 7-line manual order WITHOUT a code passes', async () => {
   assert.equal(order.subtotal, 700);
   assert.equal(order.total, 700);
   assert.equal(order.amountDue, 730);
-});
-
-/* TEMPORARY PROBES (Step 3, remove after the gate answers): the
- * isolated rawOrderBatch still fails even with the correct reserve
- * param, so split the batch apart — B writes ONLY the order (no
- * reserve), C writes ONLY the reserve (no order), on untouched
- * prod-7 / prod-8 (stock 30, reserved 0; the 7/8-line tests that
- * use them fail without reserving). Whichever of B/C fails is the
- * denied write; if both pass and the combined probe still fails,
- * the combination itself is the problem. */
-test('PROBE B: order-only batch (1-line sale+fee, prod-7) succeeds', async () => {
-  const db = anonDb();
-  await assertSucceeds(rawOrderBatch(db, {
-    orderId: 'order-probe-B', productId: 'prod-7', productName: 'منتج 7',
-    price: 100, qty: 1, stock: 30, reserved: 0, basePrice: 150,
-    overrides: { saleSavings: 50, deliveryFee: 30, amountDue: 130 },
-    skipInventory: true,
-  }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-probe-B'))).exists(), true);
-});
-
-/* PROBES D/E (Step 3): B proved the order create itself is denied
- * in a writeBatch while the same shape passes in a transaction
- * (test 47). The two remaining differences are attemptId (47 has
- * it, B does not) and batch-vs-transaction. D is B + attemptId;
- * E is the same order via transaction WITHOUT attemptId. */
-test('PROBE D: order-only batch WITH attemptId (prod-7) succeeds', async () => {
-  const db = anonDb();
-  await assertSucceeds(rawOrderBatch(db, {
-    orderId: 'order-probe-D', productId: 'prod-7', productName: 'منتج 7',
-    price: 100, qty: 1, stock: 30, reserved: 0, basePrice: 150,
-    overrides: { saleSavings: 50, deliveryFee: 30, amountDue: 130, attemptId: 'a-probe-D' },
-    skipInventory: true,
-  }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-probe-D'))).exists(), true);
-});
-
-test('PROBE E: transaction WITHOUT attemptId (prod-7) succeeds', async () => {
-  const db = anonDb();
-  await assertSucceeds(placePricingOrderTx(db, {
-    orderId: 'order-probe-E',
-    lines: [{ productId: 'prod-7', qty: 1, basePrice: 150 }],
-    deliveryFee: 30,
-  }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-probe-E'))).exists(), true);
-});
-
-test('PROBE C: reserve-only batch (prod-8, 0 -> 1) succeeds', async () => {
-  const db = anonDb();
-  const now = serverTimestamp();
-  const batch = writeBatch(db);
-  batch.set(doc(db, 'inventory', 'prod-8'), {
-    productId: 'prod-8', stock: 30, reserved: 1,
-    minStock: 5, costPrice: 50, updatedAt: now,
-  }, { merge: true });
-  await assertSucceeds(batch.commit());
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-8'))).data().reserved, 1);
-});
-
-/* TEMPORARY PROBE (Step 3, remove after the gate answers): an
- * isolated rawOrderBatch 1-line sale+fee order on prod-5 — NOTE
- * prod-5 is NOT fresh: the manual-order tests already reserved it
- * to 4, so the probe must use reserved 4 (writing 5), not 0. The
- * first probe run used 0 and failed on `reserved strictly
- * increases` (1 > 4 false) — that failure is now understood; this
- * run tells whether rawOrderBatch itself is fine once the reserve
- * param matches the stored state. */
-test('PROBE: isolated rawOrderBatch 1-line sale+fee on prod-5 succeeds', async () => {
-  const db = anonDb();
-  await assertSucceeds(rawOrderBatch(db, {
-    orderId: 'order-probe-1', productId: 'prod-5', productName: 'سماعة سلكية',
-    price: 300, qty: 1, stock: 10, reserved: 4, basePrice: 500,
-    overrides: { saleSavings: 200, deliveryFee: 30, amountDue: 330 },
-  }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-probe-1'))).exists(), true);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, 5);
 });
 
 /* Audit-split (M1 2026-11-27, approved): the order rule no longer
