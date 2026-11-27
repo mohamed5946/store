@@ -875,7 +875,7 @@ service cloud.firestore {
 
     function templateShapeOk(doc) {
       let d = request.resource.data;
-      return d.keys().hasOnly(['id', 'nameAr', 'nameEn', 'version', 'shellMinVersion', 'bundleHash', 'status', 'approval', 'previewImageUrl', 'bodyPath', 'createdAt', 'updatedAt', 'operationId'])
+      return d.keys().hasOnly(['id', 'nameAr', 'nameEn', 'version', 'shellMinVersion', 'bundleHash', 'status', 'approval', 'previewImageUrl', 'bodyPath', 'validation', 'createdAt', 'updatedAt', 'operationId'])
         && d.get('id', null) == doc
         && d.get('id', null) in ['bazaar', 'gallery', 'scroll', 'speclab', 'boutique', 'classic']
         && d.get('nameAr', null) is string && d.get('nameAr', null).size() > 0
@@ -886,7 +886,28 @@ service cloud.firestore {
         && d.get('status', null) in ['draft', 'preview', 'approved', 'active', 'retired']
         && templateApprovalOk()
         && (d.get('previewImageUrl', null) == null || d.get('previewImageUrl', null) is string)
-        && (d.get('bodyPath', null) == null || d.get('bodyPath', null) is string);
+        && (d.get('bodyPath', null) == null || d.get('bodyPath', null) is string)
+        && validationOk();
+    }
+
+    /* Validation report (D3 fix 2026-11-27): the gateway report the
+     * admin apps store on the template doc — Flutter runValidation
+     * writes {passed, checks, at: serverTimestamp} and its record
+     * map writes {passed, checks} without `at`. Shape pin: exactly
+     * those three keys, `passed` a bool, `checks` a list (the rules
+     * language cannot check list element types — same limit as the
+     * attempt-doc seen maps). The `at` TYPE is deliberately
+     * unpinned: the PC app's `at` fields elsewhere are ISO strings
+     * (D2 pattern) and its saveTemplateValidation write could not
+     * be verified from this VM, so a timestamp pin might deny the
+     * PC write; the key is still bounded by the hasOnly above. */
+    function validationOk() {
+      let v = request.resource.data.get('validation', null);
+      return v == null
+        || (v is map
+          && v.keys().hasOnly(['passed', 'checks', 'at'])
+          && v.get('passed', null) is bool
+          && v.get('checks', null) is list);
     }
 
     /* The status machine: draft -> preview -> approved -> active, with
