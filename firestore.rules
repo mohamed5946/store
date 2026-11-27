@@ -295,54 +295,36 @@ service cloud.firestore {
 
     /* ---- No-functions order helpers (contract §3) ---- */
 
-    /* One order line: productId/name/price/qty, plus the optional
-     * pricing basePrice (Phase A): an old-shape line has exactly the
-     * 4 original keys; a new-shape line adds basePrice (5 keys) —
-     * null when no sale, or an int (CUT-7b, checks reduction
-     * 2026-11-27: the basePrice >= price comparison is cut — a
-     * basePrice below the charged price now passes; a fractional
-     * basePrice is still denied by the is-int check). price stays
-     * number, not int (correction 2026-11-26): a stored fractional
-     * price must not deny a legitimate order whose line price
-     * matches the DB exactly. Budget fix 2026-11-27: the 4-or-5-key
-     * size check is gone — hasOnly + the field checks below already
-     * deny a short line (a missing field errors or fails its type
-     * check); the productId/name .size() > 0 checks are gone too —
-     * an empty productId is no longer checked against the DB
-     * (CUT-2, 2026-11-27: the per-line DB price get is removed;
-     * the owner's manual review is the backstop), and name is
-     * display-only. Same verdicts. */
-    function orderLineOk(item) {
-      return item is map
-        && item.keys().hasOnly(['productId', 'name', 'price', 'qty', 'basePrice'])
-        && item.productId is string
-        && item.name is string
-        && item.price is number && item.price > 0
-        && item.qty is int && item.qty >= 1 && item.qty <= 20
-        && (!('basePrice' in item) || item.basePrice == null
-          || item.basePrice is int);
-    }
-
-    /* One traversal for shape (budget fix 2026-11-27): the old
-     * code walked the 10 slots THREE times (orderLinesOk,
-     * orderPricesOk, orderAvailabilityOk), each with its own size
-     * guard and items[i] fetch. Now a single orderLineValue does
-     * the shape check per present line (M1: the validity walk is
-     * fused into the subtotal sum via the poison value), with the
-     * size guard hoisted to the call site so an absent slot costs
-     * one comparison. CUT-2 (checks reduction, 2026-11-27): the
-     * per-line DB price get is REMOVED from this walk — the
-     * owner's manual review is the backstop for forged line
-     * prices. CUT-3 (same round): the per-line inventory get is
-     * REMOVED too — the reserve rule (separate operation) still
-     * enforces reserved <= stock on every reserve write. Gets
-     * now: none on a storefront order (the fee get in orderFeeOk
-     * is cut by CUT-5, 2026-11-27; the audit getAfter left with
-     * the audit-split, M1). */
-    function orderLineValid(i) {
-      let items = request.resource.data.items;
-      return orderLineOk(items[i]);
-    }
+    /* REMOVED by CUT-8 (checks reduction, 2026-11-27, owner-approved):
+     * orderLineOk + orderLineValid checked each line's shape (5-key
+     * hasOnly, productId/name `is string`, price `is number && > 0`,
+     * qty `is int && 1–20`, basePrice absent/null/`is int`) and
+     * fused that validity into the subtotal sum via the poison
+     * value (a shape-invalid line contributed -10^15, so the sum
+     * could never match). The shape check is cut — orderLineValue
+     * now returns the bare price*qty. What goes: the qty 1–20
+     * range, price > 0, productId/name `is string`, the 5-key
+     * hasOnly, and the poison mechanism. What stays: the bare sum
+     * still proves subtotal == Σ asserted price × qty, and it
+     * still type-checks price/qty — a non-number price or qty
+     * errors the multiplication → deny — so admin display cannot
+     * crash on a string price/qty. A forged line with qty 0 / qty
+     * 999 / negative price / non-string productId or name passes
+     * the rules (as long as the subtotal matches the asserted
+     * lines); the owner's manual review is the backstop — an
+     * absurd qty or a negative price is visible in the order he
+     * reviews. CUT-8 verification (§3.3, done by the build round
+     * before shipping): SAFE, no client changes — Flutter
+     * `invoiceItemLine` (backend.dart:527) renders name by
+     * interpolation and casts qty/price only `as num?` (which the
+     * bare sum guarantees); the order list/detail never strictly
+     * casts a line's productId/name (`as String` appears only on
+     * customer/category fields). PC `escHtml` (index.html:2122)
+     * uses String(), `fmt` (2107) uses parseFloat, and the order
+     * invoice row (3820) + orders list (2554) use `||` fallbacks —
+     * a forged non-string name/productId renders visibly, never
+     * crashes. Kept in git history; do not re-add without a design
+     * decision. */
 
     /* CUT-3 (checks reduction, 2026-11-27, owner-approved): the
      * per-line inventory get (lineAvailOk) is REMOVED — an order
@@ -362,35 +344,27 @@ service cloud.firestore {
      * still computes from DB prices, so honest orders are exact.
      * Do not re-add without a design decision. */
 
-    /* POISON-VALUE line check (Option 1, M1 2026-11-27): the fused
-     * validity + subtotal traversal. Returns price*qty of line i
-     * when the line is valid (shape, via
-     * orderLineValid), otherwise the poison value -10^15. Validity
-     * is then implied by the sum: a poisoned term makes the total
-     * hugely negative, and subtotal >= 0 is enforced, so
-     * subtotal == sum(lineValue) can never hold when any line is
-     * invalid. Correct ONLY while no legitimate line value or
-     * subtotal can be negative (prices and quantities are
-     * non-negative, subtotal >= 0 is enforced) — if a future
-     * change allows negative prices (e.g. a refund line), this
-     * trick breaks silently: the dedicated poison test in
-     * test/rules.test.js pins the behaviour. Unguarded —
-     * orderSubtotalOk only calls it for i < items.size(). */
+    /* BARE-SUM line value (CUT-8, checks reduction 2026-11-27): the
+     * shape check + poison mechanism are cut — returns price*qty
+     * of line i directly. The sum still proves subtotal == Σ
+     * asserted price × qty, and a non-number price or qty errors
+     * the multiplication → deny. Unguarded — orderSubtotalOk only
+     * calls it for i < items.size(). */
     function orderLineValue(i) {
       let items = request.resource.data.items;
-      return orderLineValid(i) ? items[i].price * items[i].qty : -1000000000000000;
+      return items[i].price * items[i].qty;
     }
 
     /* subtotal must equal the unrolled sum of price*qty (the rules
-     * cannot loop). The sum runs over orderLineValue, so validity
-     * is encoded in it (Option 1, M1 2026-11-27): the separate
-     * orderLinesValid traversal is gone — a poisoned term from an
-     * invalid line makes this sum mismatch, so this one check
-     * proves both the subtotal AND that every present line is
-     * valid. Added beyond the contract's letter — the contract
-     * lists the total relation but not the subtotal
-     * sum, and without it a forged low subtotal (with a matching
-     * total) would pass. Costs 0 extra reads. */
+     * cannot loop). CUT-8 (checks reduction, 2026-11-27): this is
+     * now a BARE arithmetic sum — it proves the subtotal matches
+     * the asserted lines, but it no longer proves the lines are
+     * well-formed (the poison mechanism is cut). A shape-invalid
+     * line (qty 0, negative price, non-string productId/name)
+     * passes as long as the subtotal matches; the owner's manual
+     * review is the backstop. The sum still type-checks price/qty
+     * (a non-number errors the multiplication → deny). Costs 0
+     * extra reads. */
     function orderSubtotalOk() {
       let d = request.resource.data;
       let n = d.items.size();

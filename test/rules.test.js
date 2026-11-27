@@ -678,20 +678,26 @@ test('No-functions: an anonymous order reserving MORE than available is rejected
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-2'))).data().reserved, 2);
 });
 
-/* CUT-1 + CUT-6 (checks reduction, 2026-11-27, owner-approved):
- * order-bad-5 (one extra field) now PASSES — the 33-key hasOnly
- * list is cut, only the dual-shape size windows bound the key
- * set; order-bad-4 (total != subtotal) now PASSES — the
- * total == subtotal relation is cut. Both OLD verdicts (denied)
- * are REPLACED by the new rules, not weakened: the rules
- * themselves changed. The size bound is pinned instead: an order
- * with 26 extra junk keys (48 total, above the old-shape 22–26
- * window) is still denied (order-bad-6). Backstop for both
- * tolerated values: the totals are the numbers the owner reviews
- * on every order, and a junk key carries no meaning. Both flips
- * reserve prod-4 (bad-4: 0 -> 1, bad-5: 1 -> 2), which the later
- * matrix / mismatch / audit tests pin in their reserved chain. */
-test('No-functions: bad-shape orders are rejected (missing address, short phone, qty 0, oversized key set) — the CUT-1 extra-field and CUT-6 total-mismatch cases now pass', async () => {
+/* CUT-1 + CUT-6 + CUT-8 (checks reduction, 2026-11-27,
+ * owner-approved): order-bad-5 (one extra field) now PASSES —
+ * the 33-key hasOnly list is cut, only the dual-shape size
+ * windows bound the key set; order-bad-4 (total != subtotal) now
+ * PASSES — the total == subtotal relation is cut; order-bad-3
+ * (qty 0) now PASSES the ORDER rule — the per-line shape check
+ * is cut (CUT-8), so the bare sum (300*0 = 0 == subtotal 0) is
+ * satisfied. All three OLD verdicts (denied) are REPLACED by the
+ * new rules, not weakened: the rules themselves changed. The size
+ * bound is pinned instead: an order with 26 extra junk keys (48
+ * total, above the old-shape 22–26 window) is still denied
+ * (order-bad-6). Backstop for the tolerated values: the totals
+ * and the absurd qty are the numbers the owner reviews on every
+ * order, and a junk key carries no meaning. bad-3 carries NO
+ * reserve write (skipInventory — a qty-0 order reserves nothing,
+ * and the reserve rule requires a strictly-increasing reserve),
+ * so it does not disturb the chain; bad-4 + bad-5 reserve prod-4
+ * (bad-4: 0 -> 1, bad-5: 1 -> 2), which the later matrix /
+ * mismatch / audit tests pin in their reserved chain. */
+test('No-functions: bad-shape orders are rejected (missing address, short phone, oversized key set) — the CUT-1 extra-field, CUT-6 total-mismatch and CUT-8 qty-0 cases now pass', async () => {
   const db = anonDb();
   const base = {
     productId: 'prod-4', productName: 'جراب موبايل', price: 300,
@@ -701,8 +707,13 @@ test('No-functions: bad-shape orders are rejected (missing address, short phone,
   await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-1', omit: ['customerAddress'] }));
   // Phone shorter than 10 digits.
   await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-2', overrides: { customerPhone: '010123456' } }));
-  // qty 0.
-  await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-3', overrides: { items: [{ productId: 'prod-4', name: 'جراب موبايل', price: 300, qty: 0 }] } }));
+  // CUT-8: qty 0 now PASSES the order rule (the bare sum is
+  // satisfied: 300*0 = 0 == subtotal 0). No reserve write — a
+  // qty-0 order reserves nothing.
+  await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-bad-3', overrides: { items: [{ productId: 'prod-4', name: 'جراب موبايل', price: 300, qty: 0 }] }, skipInventory: true }));
+  const bad3 = (await getDoc(doc(adminDb(), 'orders', 'order-bad-3'))).data();
+  assert.equal(bad3.items[0].qty, 0);
+  assert.equal(bad3.subtotal, 0);
   // CUT-6: total != subtotal now PASSES (the relation is cut) —
   // the order creates and reserves prod-4 (0 -> 1).
   await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-bad-4', overrides: { total: 999 } }));
@@ -718,7 +729,7 @@ test('No-functions: bad-shape orders are rejected (missing address, short phone,
   // CUT-1: the size bound still holds — 26 extra junk keys (48
   // total) exceed the old-shape 22–26 window and are denied.
   await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-6', overrides: Object.fromEntries(Array.from({ length: 26 }, (_, i) => ['junk' + i, 1])) }));
-  for (const id of ['order-bad-1', 'order-bad-2', 'order-bad-3', 'order-bad-6']) {
+  for (const id of ['order-bad-1', 'order-bad-2', 'order-bad-6']) {
     assert.equal((await getDoc(doc(adminDb(), 'orders', id))).exists(), false);
   }
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 2);
@@ -1478,30 +1489,35 @@ test('Pricing A: a saleSavings mismatch now PASSES the rules (CUT-4 — savings 
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 8);
 });
 
-/* CUT-2 (checks reduction, 2026-11-27, owner-approved): the per-line
- * DB price get is REMOVED, so a line priced below the DB price now
- * PASSES the rules — the totals here are consistent with the forged
- * price (subtotal == 299 == price*qty, savings 201 == (500-299)*1,
- * amountDue 329 == 299+30), and no other conjunct denies it. This
- * test's OLD verdict (denied by the poisoned subtotal sum) is
- * REPLACED by the new rule, not weakened: the rule itself changed.
- * Backstop: the owner's manual review — the forged line price (299
- * for a 300 product) is visible in the order he reviews, and he
- * cancels it. The poison mechanism is still pinned by test 4's
- * order-bad-3 (a SHAPE-invalid line, qty 0, is still denied via
- * the poisoned sum) — that pin holds as long as CUT-8 is not
- * applied (CUT-8 drops the shape check; see the bare-sum test). */
-test('Pricing A: a line priced below the DB price now PASSES the rules (CUT-2 — price re-verification cut; owner review is the backstop)', async () => {
+/* CUT-8 (checks reduction, 2026-11-27, owner-approved): the
+ * poison mechanism is CUT, so the old poison test (a line priced
+ * below the DB price, denied by the poisoned subtotal sum) is
+ * REPLACED by this bare-sum test, per the design §7 — it pins
+ * what the bare sum still enforces: (a) a subtotal mismatch is
+ * denied (the sum still proves subtotal == Σ asserted price ×
+ * qty); (b) a non-number price is denied (the multiplication
+ * errors → deny). The forged-price-passes behaviour the old
+ * poison test pinned after CUT-2 is still covered by test 2
+ * (WRONG price 999 passes) and the mismatch tests. */
+test('Pricing A: the bare subtotal sum still denies a subtotal mismatch and a non-number price (CUT-8)', async () => {
   const db = anonDb();
-  await assertSucceeds(rawOrderBatch(db, {
-    orderId: 'order-pricing-poison', productId: 'prod-4', productName: 'جراب موبايل',
+  // (a) Subtotal mismatch: the line says 299 × 1, the subtotal
+  // says 298 — the bare sum (299) does not match.
+  await assertFails(rawOrderBatch(db, {
+    orderId: 'order-pricing-baresum-mismatch', productId: 'prod-4', productName: 'جراب موبايل',
     price: 299, qty: 1, stock: 20, reserved: 8, basePrice: 500,
+    overrides: { subtotal: 298, saleSavings: 201, deliveryFee: 30, amountDue: 329 },
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-baresum-mismatch'))).exists(), false);
+  // (b) Non-number price: the line price is the STRING '299' —
+  // the multiplication errors in the rules → deny.
+  await assertFails(rawOrderBatch(db, {
+    orderId: 'order-pricing-baresum-strprice', productId: 'prod-4', productName: 'جراب موبايل',
+    price: '299', qty: 1, stock: 20, reserved: 8, basePrice: 500,
     overrides: { saleSavings: 201, deliveryFee: 30, amountDue: 329 },
   }));
-  const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-poison'))).data();
-  assert.equal(order.items[0].price, 299);
-  assert.equal(order.subtotal, 299);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 9);
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-baresum-strprice'))).exists(), false);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 8);
 });
 
 /* CUT-6 (checks reduction, 2026-11-27, owner-approved): the totals
@@ -1516,12 +1532,12 @@ test('Pricing A: an amountDue mismatch now PASSES the rules (CUT-6 — totals re
   const db = anonDb();
   await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-pricing-due-bad', productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 20, reserved: 9, basePrice: 500,
+    price: 300, qty: 1, stock: 20, reserved: 8, basePrice: 500,
     overrides: { saleSavings: 200, deliveryFee: 30, amountDue: 331 },
   }));
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-due-bad'))).data();
   assert.equal(order.amountDue, 331);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 10);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 9);
 });
 
 /* CUT-5 (checks reduction, 2026-11-27, owner-approved): the fee
@@ -1536,12 +1552,12 @@ test('Pricing A: a deliveryFee != settings now PASSES the rules on an anonymous 
   // amountDue is consistent with the forged fee (300 + 40).
   await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-pricing-fee-bad', productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 20, reserved: 10, basePrice: 500,
+    price: 300, qty: 1, stock: 20, reserved: 9, basePrice: 500,
     overrides: { saleSavings: 200, deliveryFee: 40, amountDue: 340 },
   }));
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-fee-bad'))).data();
   assert.equal(order.deliveryFee, 40);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 11);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 10);
 });
 
 test('Pricing A: an order carrying one new key without the other two is denied', async () => {
@@ -1575,11 +1591,13 @@ test('Pricing A: a missing fee field means FREE on a storefront create (fee 0 pa
   // restore never ran and settings stayed {} for the REST of the
   // suite, so every later anon new-money order failed orderFeeOk
   // (null != 30) — that is what killed tests 60/84 and the probes,
-  // not the orders themselves. Reserved is 12 after this test: 2
+  // not the orders themselves. Reserved is 11 after this test: 2
   // from test 4 (bad-4 + bad-5, now passing after CUT-6/CUT-1) + 3
   // from the matrix (A/B/C) + 2 from test 50 (matrix D, 2-line) +
-  // 1 saleSavings + 1 poison + 1 amountDue + 1 fee (all now passing
-  // after CUT-4/2/6/5) + 1 manual.
+  // 1 saleSavings + 1 amountDue + 1 fee (all now passing after
+  // CUT-4/6/5) + 1 manual. (The poison test is gone at P4 — CUT-8
+  // replaced it with the bare-sum test, which denies and reserves
+  // nothing.)
   try {
     const anon = anonDb();
     await assertSucceeds(placePricingOrderTx(anon, {
@@ -1614,7 +1632,7 @@ test('Pricing A: a missing fee field means FREE on a storefront create (fee 0 pa
     const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-manual'))).data();
     assert.equal(order.deliveryFee, 30);
     assert.equal(order.amountDue, 330);
-    assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 12);
+    assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 11);
   } finally {
     // Restore the fee field for the tests below, even on failure.
     await testEnv.withSecurityRulesDisabled(async (context) => {
@@ -1780,23 +1798,23 @@ test('Pricing A: an order audit that does NOT cover the money fields no longer d
   const db = anonDb();
   const base = {
     productId: 'prod-4', productName: 'جراب موبايل',
-    price: 300, qty: 1, stock: 20, reserved: 12, basePrice: 500,
+    price: 300, qty: 1, stock: 20, reserved: 11, basePrice: 500,
     overrides: { saleSavings: 200, deliveryFee: 30, amountDue: 330 },
   };
   // Audit lists status/total/saleSavings/amountDue/items but not deliveryFee.
   await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-pricing-audit-1', auditOmit: ['deliveryFee'] }));
   // Audit lists the money fields but not 'items' — the line carries
   // a base price, so the audit must cover 'items' too (old rule).
-  // Checks-reduction probe (P3, 2026-11-27): audit-2 must use
-  // reserved 13, not the shared base 12 — after audit-1 the stored
-  // reserved IS 13, so a second write of 12+1 = 13 fails
-  // `reserved strictly increases` (13 > 13 is false) and the batch
-  // is denied. Final reserved is 14.
-  await assertSucceeds(rawOrderBatch(db, { ...base, reserved: 13, orderId: 'order-pricing-audit-2', auditOmit: ['items'] }));
+  // Checks-reduction probe (P4, 2026-11-27): audit-2 must use
+  // reserved 12, not the shared base 11 — after audit-1 the stored
+  // reserved IS 12, so a second write of 11+1 = 12 fails
+  // `reserved strictly increases` (12 > 12 is false) and the batch
+  // is denied. Final reserved is 13.
+  await assertSucceeds(rawOrderBatch(db, { ...base, reserved: 12, orderId: 'order-pricing-audit-2', auditOmit: ['items'] }));
   for (const id of ['order-pricing-audit-1', 'order-pricing-audit-2']) {
     assert.equal((await getDoc(doc(adminDb(), 'orders', id))).exists(), true);
   }
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 14);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 13);
 });
 
 /* ---------- Pricing Phase A: attempt-doc shape check (§11 / M21) ---------- */
