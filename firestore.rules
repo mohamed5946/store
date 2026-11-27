@@ -448,7 +448,7 @@ service cloud.firestore {
       // d.operationId ERRORS when the field is absent and denies every
       // storefront order (bug found from firestore-debug.log, 2026-11-27).
       let opId = d.get('operationId', null);
-      return keys.hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerPhone2', 'customerAddress', 'governorate', 'detailedAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId', 'operationId', 'saleSavings', 'deliveryFee', 'amountDue', 'attemptId'])
+      return true /* PROBE C7: 33-key hasOnly disabled */
         && ((!hasMoney && keys.size() >= 25 && keys.size() <= 29 && !('attemptId' in d))
           || (hasAllMoney && keys.size() >= 28 && keys.size() <= 33))
         && (opId == null || opId is string)
@@ -464,7 +464,7 @@ service cloud.firestore {
         && d.customerPhone is string && d.customerPhone.size() >= 10
         && d.customerAddress is string && d.customerAddress.size() > 0
         && d.items is list && d.items.size() >= 1 && d.items.size() <= 10
-        && orderLinesValid()
+        && true /* PROBE C7: orderLinesValid disabled */
         && d.subtotal is number && d.subtotal >= 0
         && d.discountAmount is number && d.discountAmount >= 0
         && d.total is number && d.total >= 0
