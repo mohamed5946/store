@@ -1,0 +1,78 @@
+name: Admin SDK seed (one-time)
+
+# One-time Admin-SDK seeds for project store-3384c, run via the
+# EXISTING WIF identity (firebase-deploy@) — no service-account keys,
+# no secrets, no credentials from Mohamed. Manual only
+# (workflow_dispatch); committing this file deploys nothing.
+#
+# Auth is the SAME pattern as .github/workflows/deploy-backend.yml:
+# pool github-pool / provider github-provider, impersonating
+# firebase-deploy@store-3384c.iam.gserviceaccount.com, which holds
+# Firebase Admin (+ Cloud Functions Admin + Service Account User) on
+# store-3384c. Firebase Admin includes Datastore entity read/write,
+# so the identity plausibly CAN write Firestore documents — the dry
+# run proves read access and the --live runs prove write access. If
+# any step fails with PERMISSION_DENIED, the identity cannot write
+# Firestore: STOP there, do not try another credential route.
+#
+# Run order when going live: registry first (unblocks template
+# activation — without templates/{id} docs activation throws
+# «القالب مش موجود»), then governorates, then discounts deletion LAST.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Which seed to run'
+        type: choice
+        required: true
+        default: dry-run-all
+        options:
+          - dry-run-all
+          - registry-live
+          - governorates-live
+          - discounts-live
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/766975771796/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: firebase-deploy@store-3384c.iam.gserviceaccount.com
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install firebase-admin (scripts resolve it from functions/node_modules)
+        run: npm ci --prefix functions --no-audit --no-fund
+
+      - name: Run seed
+        run: |
+          case "${{ inputs.target }}" in
+            dry-run-all)
+              node scripts/write-template-registry.js
+              node scripts/seed-governorates.js
+              node scripts/delete-discounts.js
+              ;;
+            registry-live)
+              node scripts/write-template-registry.js --live
+              ;;
+            governorates-live)
+              node scripts/seed-governorates.js --live
+              ;;
+            discounts-live)
+              node scripts/delete-discounts.js --live
+              ;;
+          esac
