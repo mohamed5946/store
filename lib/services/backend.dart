@@ -536,10 +536,12 @@ class Backend {
   }
 
   /// The money lines of an order invoice (CUJ 7), in display order,
-  /// mirroring the PC invoice: products total, sale savings,
-  /// delivery fee, amount due. (The promo code was removed
-  /// 2026-11-27, so there is no code line any more; legacy orders
-  /// that still carry code fields simply show no code line.)
+  /// mirroring the PC invoice: products total, sale savings, code
+  /// discount (legacy orders only), delivery fee, amount due. The
+  /// promo code was removed 2026-11-27, so new orders never carry
+  /// code fields — the code line appears only when a pre-removal
+  /// order still has `discountCode`/`discountAmount`, exactly like
+  /// the PC invoice (`خصم الكود X (CODE)`), so its lines add up.
   /// `amountDue` falls back to `total` when the order predates it.
   static List<String> invoiceMoneyLines(Map<String, dynamic> data) {
     final total = (data['total'] as num?) ?? 0;
@@ -551,6 +553,15 @@ class Backend {
     ];
     if (saleSavings > 0) {
       lines.add('وفّرت من العرض: ${saleSavings.toStringAsFixed(0)} ج.م');
+    }
+    final codeAmountRaw = data['discountAmount'];
+    final codeAmount =
+        codeAmountRaw is num ? codeAmountRaw : null;
+    if (codeAmount != null && codeAmount > 0) {
+      final code = (data['discountCode'] as String?)?.trim();
+      lines.add(code != null && code.isNotEmpty
+          ? 'خصم الكود ${codeAmount.toStringAsFixed(0)} ج.م ($code)'
+          : 'خصم الكود ${codeAmount.toStringAsFixed(0)} ج.م');
     }
     if (fee != null) {
       final feeNum = fee as num;

@@ -355,6 +355,32 @@ void main() {
       expect(lines.last, 'المبلغ المستحق: 300 ج.م');
     });
 
+    test('legacy code order: code line present, lines sum to amount due',
+        () {
+      // Pre-removal order: subtotal 500 + fee 30 − code 50 = due 480.
+      // Without the code line the invoice would show a 50 gap.
+      final data = {
+        'total': 500,
+        'saleSavings': 0,
+        'deliveryFee': 30,
+        'amountDue': 480,
+        'discountCode': 'SAVE50',
+        'discountAmount': 50,
+      };
+      expect(Backend.invoiceMoneyLines(data), [
+        'الإجمالي: 500 ج.م',
+        'خصم الكود 50 ج.م (SAVE50)',
+        'رسوم التوصيل: 30 ج.م',
+        'المبلغ المستحق: 480 ج.م',
+      ]);
+    });
+
+    test('no code fields: no code line (new orders never carry them)',
+        () {
+      final lines = Backend.invoiceMoneyLines(orderA());
+      expect(lines.any((l) => l.startsWith('خصم الكود')), isFalse);
+    });
+
     test('legacy order without a fee: no fee line, due falls back to total',
         () {
       final data = {
