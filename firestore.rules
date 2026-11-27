@@ -1255,8 +1255,15 @@ service cloud.firestore {
     // order shape's hasOnly list is unchanged) and feedback keeps its
     // 5-or-6-field shape (D8) — neither is touched here. ----
     match /templates/{doc} {
-      allow get: if isAdminOrManager()
-        || (resource != null && resource.data.get('status', null) == 'active');
+      // Registry docs are PUBLIC in any lifecycle status (2026-11-27
+      // preview fix): the storefront reads the registry anonymously
+      // for every preview and for the active pointer, and the old
+      // active-only read denied every draft/approved doc, so every
+      // preview silently fell back to classic. Nothing secret lives
+      // here — bundleHash, version, shellMinVersion, status,
+      // previewImageUrl — and the bundles are already public on
+      // Hosting. List stays admin/manager-only; writes unchanged.
+      allow get: if true;
       allow list: if isAdminOrManager();
       allow create: if isAdmin()
         && templateShapeOk(doc)

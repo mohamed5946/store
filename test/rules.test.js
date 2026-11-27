@@ -1255,12 +1255,16 @@ test('Phase 2: a manager may edit products and orders, but not settings', async 
   }));
 });
 
-/* ---------- templates: public reads only the ACTIVE one ---------- */
+/* ---------- templates: registry docs are public in ANY status ----------
+ * (2026-11-27 preview fix — was "only the ACTIVE one"): the storefront
+ * reads the registry anonymously for previews, so a draft doc must be
+ * readable too; the old draft-denial silently broke every preview.
+ * List stays admin-only. ---------- */
 
-test('Phase 2: anonymous reads the active template, never a draft, never a list', async () => {
+test('Phase 2: anonymous reads a template registry doc in any status, never a list', async () => {
   const db = anonDb();
   await assertSucceeds(getDoc(doc(db, 'templates', 'tpl-live')));
-  await assertFails(getDoc(doc(db, 'templates', 'tpl-draft')));
+  await assertSucceeds(getDoc(doc(db, 'templates', 'tpl-draft')));
   await assertFails(getDocs(collection(db, 'templates')));
 });
 
@@ -2270,10 +2274,16 @@ async function ensureTemplateActive(db, id) {
   }
 }
 
-test('Templates (entry 20): anonymous reads an active registry doc, never a draft', async () => {
+test('Templates (entry 20): anonymous reads a registry doc in any status — draft, approved, retired — never a list', async () => {
   const db = anonDb();
+  // Seed statuses (before hook, unmutated before this test): classic
+  // active, scroll draft, bazaar approved, speclab retired. Verdicts
+  // flipped 2026-11-27 (preview fix): registry docs are public in
+  // any status; only the list stays admin-only.
   await assertSucceeds(getDoc(doc(db, 'templates', 'classic')));
-  await assertFails(getDoc(doc(db, 'templates', 'scroll')));
+  await assertSucceeds(getDoc(doc(db, 'templates', 'scroll')));
+  await assertSucceeds(getDoc(doc(db, 'templates', 'bazaar')));
+  await assertSucceeds(getDoc(doc(db, 'templates', 'speclab')));
   await assertFails(getDocs(collection(db, 'templates')));
 });
 
