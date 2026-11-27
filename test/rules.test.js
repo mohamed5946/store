@@ -641,20 +641,23 @@ test('No-functions: an anonymous order create via the storefront transaction suc
  * price, and no check denies it. This test's OLD verdict (rejected)
  * is REPLACED by the new rule, not weakened: the rule itself
  * changed. Backstop: the owner's manual review — the forged price
- * (999 for a 150 product) is visible in the order he reviews, and
- * he cancels it. NOTE (probe P2): this test uses prod-5, not
- * prod-2 — a passing order on prod-2 would consume its last
- * available stock (stock 3, reserved 2) and break the later
- * prod-2 chain (test 5 + the fully-reserved inventory test); the
- * product is incidental to the verdict being pinned. */
+ * (999 for a 149 product) is visible in the order he reviews, and
+ * he cancels it. NOTE (probe P2): this test uses prod-149, not
+ * prod-2 or prod-5 — a passing order on prod-2 would consume its
+ * last available stock (stock 3, reserved 2) and break the later
+ * prod-2 chain (test 5 + the fully-reserved inventory test), and
+ * prod-5's reserved chain is pinned by the manual-order tests
+ * below (tests 14–18); prod-149 is seeded but otherwise unused,
+ * so the passing order disturbs no chain. The product is
+ * incidental to the verdict being pinned. */
 test('No-functions: an anonymous order with a WRONG price now PASSES the rules (CUT-2 — price re-verification cut; owner review is the backstop)', async () => {
   const db = anonDb();
   await assertSucceeds(placeOrderTx(db, {
-    orderId: 'order-nf-price', productId: 'prod-5', qty: 1, priceOverride: 999,
+    orderId: 'order-nf-price', productId: 'prod-149', qty: 1, priceOverride: 999,
   }));
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-nf-price'))).data();
   assert.equal(order.total, 999);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, 1);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-149'))).data().reserved, 1);
 });
 
 test('No-functions: an anonymous order reserving MORE than available is rejected', async () => {
