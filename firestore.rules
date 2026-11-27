@@ -297,10 +297,19 @@ service cloud.firestore {
      * below already deny a short line (a missing field errors or
      * fails its type check); the productId/name .size() > 0 checks
      * are gone too — an empty productId fails the DB price get in
-     * linePriceOk, and name is display-only. Same verdicts. */
+     * linePriceOk, and name is display-only. Same verdicts.
+     * Budget fix round 2 (2026-11-27): the per-line hasOnly is
+     * replaced by size + presence — size == 4, or size == 5 with
+     * basePrice present, plus all 4 required keys present. That is
+     * EXACTLY the same set as hasOnly([productId, name, price, qty,
+     * basePrice]) — a 4-key line with a wrong key fails presence, a
+     * 5-key line without basePrice fails the size branch — but it
+     * avoids building two sets per line, and the debug log showed
+     * the 1000-expression budget dying inside this hasOnly. */
     function orderLineOk(item) {
       return item is map
-        && item.keys().hasOnly(['productId', 'name', 'price', 'qty', 'basePrice'])
+        && (item.keys().size() == 4 || (item.keys().size() == 5 && 'basePrice' in item))
+        && 'productId' in item && 'name' in item && 'price' in item && 'qty' in item
         && item.productId is string
         && item.name is string
         && item.price is number && item.price > 0
@@ -320,19 +329,21 @@ service cloud.firestore {
      * the order has at most 3 lines — the OOS guard's 10-get budget
      * note: worst case 3 price + 3 inventory + 1 code + 1 fee + 1
      * audit = 9; larger orders keep the transaction + reserve-rule
-     * guards, exactly as before). */
-    function orderLineValid(i) {
-      let items = request.resource.data.items;
+     * guards, exactly as before). Budget fix round 2 (2026-11-27):
+     * the helpers take the items list as a parameter instead of
+     * re-fetching request.resource.data.items on every call — each
+     * re-fetch costs expressions and the helpers run ~30 times per
+     * order. Same checks, same gets. */
+    function orderLineValid(items, i) {
       return orderLineOk(items[i])
-        && linePriceOk(i)
-        && (items.size() > 3 || lineAvailOk(i));
+        && linePriceOk(items, i)
+        && (items.size() > 3 || lineAvailOk(items, i));
     }
 
     /* Line i's price must equal the products doc price (one get per
      * line — rules have no loop). Called only for i < items.size(),
      * after orderLineOk proved productId is a string. */
-    function linePriceOk(i) {
-      let items = request.resource.data.items;
+    function linePriceOk(items, i) {
       let prod = get(/databases/$(database)/documents/products/$(items[i].productId));
       return prod != null && prod.data.price == items[i].price;
     }
@@ -342,31 +353,30 @@ service cloud.firestore {
      * order write that skips the transaction's stock re-check. Called
      * only for i < items.size() and only when the order has at most
      * 3 lines (see orderLineValid). */
-    function lineAvailOk(i) {
-      let items = request.resource.data.items;
+    function lineAvailOk(items, i) {
       let inv = get(/databases/$(database)/documents/inventory/$(items[i].productId));
       return inv != null && items[i].qty <= (inv.data.get('stock', 0) - inv.data.get('reserved', 0));
     }
 
     function orderLinesValid() {
-      let n = request.resource.data.items.size();
-      return (n <= 0 || orderLineValid(0))
-        && (n <= 1 || orderLineValid(1))
-        && (n <= 2 || orderLineValid(2))
-        && (n <= 3 || orderLineValid(3))
-        && (n <= 4 || orderLineValid(4))
-        && (n <= 5 || orderLineValid(5))
-        && (n <= 6 || orderLineValid(6))
-        && (n <= 7 || orderLineValid(7))
-        && (n <= 8 || orderLineValid(8))
-        && (n <= 9 || orderLineValid(9));
+      let items = request.resource.data.items;
+      let n = items.size();
+      return (n <= 0 || orderLineValid(items, 0))
+        && (n <= 1 || orderLineValid(items, 1))
+        && (n <= 2 || orderLineValid(items, 2))
+        && (n <= 3 || orderLineValid(items, 3))
+        && (n <= 4 || orderLineValid(items, 4))
+        && (n <= 5 || orderLineValid(items, 5))
+        && (n <= 6 || orderLineValid(items, 6))
+        && (n <= 7 || orderLineValid(items, 7))
+        && (n <= 8 || orderLineValid(items, 8))
+        && (n <= 9 || orderLineValid(items, 9));
     }
 
     /* price*qty of line i. Unguarded — orderSubtotalOk only calls it
      * for i < items.size() (budget fix 2026-11-27: the guard moved to
      * the call site so an absent slot costs one ternary, not a call). */
-    function orderLineTotal(i) {
-      let items = request.resource.data.items;
+    function orderLineTotal(items, i) {
       return items[i].price * items[i].qty;
     }
 
@@ -377,21 +387,21 @@ service cloud.firestore {
      * total) would pass. Costs 0 extra reads. */
     function orderSubtotalOk() {
       let d = request.resource.data;
-      let n = d.items.size();
+      let items = d.items;
+      let n = items.size();
       return d.subtotal
-        == (n <= 0 ? 0 : orderLineTotal(0)) + (n <= 1 ? 0 : orderLineTotal(1))
-        + (n <= 2 ? 0 : orderLineTotal(2)) + (n <= 3 ? 0 : orderLineTotal(3))
-        + (n <= 4 ? 0 : orderLineTotal(4)) + (n <= 5 ? 0 : orderLineTotal(5))
-        + (n <= 6 ? 0 : orderLineTotal(6)) + (n <= 7 ? 0 : orderLineTotal(7))
-        + (n <= 8 ? 0 : orderLineTotal(8)) + (n <= 9 ? 0 : orderLineTotal(9));
+        == (n <= 0 ? 0 : orderLineTotal(items, 0)) + (n <= 1 ? 0 : orderLineTotal(items, 1))
+        + (n <= 2 ? 0 : orderLineTotal(items, 2)) + (n <= 3 ? 0 : orderLineTotal(items, 3))
+        + (n <= 4 ? 0 : orderLineTotal(items, 4)) + (n <= 5 ? 0 : orderLineTotal(items, 5))
+        + (n <= 6 ? 0 : orderLineTotal(items, 6)) + (n <= 7 ? 0 : orderLineTotal(items, 7))
+        + (n <= 8 ? 0 : orderLineTotal(items, 8)) + (n <= 9 ? 0 : orderLineTotal(items, 9));
     }
 
     /* Per-line saving of line i (pricing Phase A): (basePrice -
      * price) * qty when the line carries a base price, else 0 — an
      * absent or null basePrice means no sale on that line and
      * contributes nothing. Exact integer math, never rounded. */
-    function orderLineSaving(i) {
-      let items = request.resource.data.items;
+    function orderLineSaving(items, i) {
       return (!('basePrice' in items[i]) || items[i].basePrice == null) ? 0
         : (items[i].basePrice - items[i].price) * items[i].qty;
     }
@@ -400,13 +410,14 @@ service cloud.firestore {
      * savings (the rules cannot loop). */
     function orderSaleSavingsOk() {
       let d = request.resource.data;
-      let n = d.items.size();
+      let items = d.items;
+      let n = items.size();
       return d.saleSavings
-        == (n <= 0 ? 0 : orderLineSaving(0)) + (n <= 1 ? 0 : orderLineSaving(1))
-        + (n <= 2 ? 0 : orderLineSaving(2)) + (n <= 3 ? 0 : orderLineSaving(3))
-        + (n <= 4 ? 0 : orderLineSaving(4)) + (n <= 5 ? 0 : orderLineSaving(5))
-        + (n <= 6 ? 0 : orderLineSaving(6)) + (n <= 7 ? 0 : orderLineSaving(7))
-        + (n <= 8 ? 0 : orderLineSaving(8)) + (n <= 9 ? 0 : orderLineSaving(9));
+        == (n <= 0 ? 0 : orderLineSaving(items, 0)) + (n <= 1 ? 0 : orderLineSaving(items, 1))
+        + (n <= 2 ? 0 : orderLineSaving(items, 2)) + (n <= 3 ? 0 : orderLineSaving(items, 3))
+        + (n <= 4 ? 0 : orderLineSaving(items, 4)) + (n <= 5 ? 0 : orderLineSaving(items, 5))
+        + (n <= 6 ? 0 : orderLineSaving(items, 6)) + (n <= 7 ? 0 : orderLineSaving(items, 7))
+        + (n <= 8 ? 0 : orderLineSaving(items, 8)) + (n <= 9 ? 0 : orderLineSaving(items, 9));
     }
 
     /* discountAmount must be round(subtotal * percent / 100) —
@@ -441,6 +452,7 @@ service cloud.firestore {
     function orderShapeOk(doc) {
       let d = request.resource.data;
       let keys = d.keys();
+      let nKeys = keys.size();
       let hasMoney = 'saleSavings' in d || 'deliveryFee' in d || 'amountDue' in d;
       let hasAllMoney = 'saleSavings' in d && 'deliveryFee' in d && 'amountDue' in d;
       // operationId is OPTIONAL (PC manual orders stamp it; storefront
@@ -449,8 +461,8 @@ service cloud.firestore {
       // storefront order (bug found from firestore-debug.log, 2026-11-27).
       let opId = d.get('operationId', null);
       return keys.hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerPhone2', 'customerAddress', 'governorate', 'detailedAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId', 'operationId', 'saleSavings', 'deliveryFee', 'amountDue', 'attemptId'])
-        && ((!hasMoney && keys.size() >= 25 && keys.size() <= 29 && !('attemptId' in d))
-          || (hasAllMoney && keys.size() >= 28 && keys.size() <= 33))
+        && ((!hasMoney && nKeys >= 25 && nKeys <= 29 && !('attemptId' in d))
+          || (hasAllMoney && nKeys >= 28 && nKeys <= 33))
         && (opId == null || opId is string)
         && (!('customerPhone2' in d) || d.customerPhone2 == null || (d.customerPhone2 is string && d.customerPhone2.matches('^01[0125][0-9]{8}$')))
         && (!('governorate' in d) || d.governorate == null || (d.governorate is string && d.governorate.size() >= 1 && d.governorate.size() <= 50))
@@ -656,12 +668,13 @@ service cloud.firestore {
       let old = resource == null ? null : resource.data;
       let d = request.resource.data;
       let newReserved = d.get('reserved', null);
+      let stock = d.get('stock', 0);
       return resource != null
         && newReserved is int && newReserved >= 0
-        && d.get('stock', 0) == old.get('stock', 0)
-        && d.get('stock', 0) >= 0
+        && stock == old.get('stock', 0)
+        && stock >= 0
         && newReserved > old.get('reserved', 0)
-        && newReserved <= d.get('stock', 0)
+        && newReserved <= stock
         && d.get('productId', doc) == old.get('productId', doc)
         && d.get('minStock', 5) == old.get('minStock', 5)
         && d.get('costPrice', 0) == old.get('costPrice', 0)
@@ -728,13 +741,16 @@ service cloud.firestore {
     }
 
     /* Anonymous stock-movement entry for an order (contract §3):
-     * the exact 7-field shape, reserve types only (negative qty). */
+     * the exact 7-field shape, reserve types only (negative qty).
+     * Budget fix round 2 (2026-11-27): hasOnly replaced by size +
+     * presence (size == 7 plus all 7 keys present — exactly the
+     * same set, without building two sets per write). */
     function movementReserveOk() {
       let d = request.resource.data;
       let keys = d.keys();
       return request.auth == null
-        && keys.hasOnly(['productId', 'type', 'qty', 'orderId', 'source', 'actorUid', 'createdAt'])
         && keys.size() == 7
+        && 'productId' in d && 'type' in d && 'qty' in d && 'orderId' in d && 'source' in d && 'actorUid' in d && 'createdAt' in d
         && d.productId is string && d.productId.size() > 0
         && d.type in ['order_reserve', 'reopen_reserve']
         && d.qty is int && d.qty < 0
