@@ -1,8 +1,11 @@
 // Pricing tests (pricing-bundle.md, Technical Plan §8 + Verification
-// Plan matrix cases A–G). Pure logic only — no Firestore, no emulator:
+// Plan matrix cases). Pure logic only — no Firestore, no emulator:
 // the shared numeric matrix is the test oracle. A path passes only
 // when it reproduces every row of the matrix exactly, with identical
 // expected totals on the storefront, Flutter, and PC paths.
+// The promo code was removed 2026-11-27, so the code matrix cases
+// (old C, F, G) and the code rounding tests are deleted with it;
+// the remaining cases cover sale pricing + delivery fee only.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:storeadmin/services/backend.dart';
 
@@ -14,17 +17,15 @@ void main() {
         'qty': qty,
       };
 
-  group('shared numeric matrix (Verification Plan cases A–G)', () {
-    test('A — worked example: 500 → 300 x1, no code, fee 30', () {
+  group('shared numeric matrix (Verification Plan cases A, B, D, E)', () {
+    test('A — worked example: 500 → 300 x1, fee 30', () {
       final t = Backend.computeOrderTotals(
         [line(500, 300, 1)],
-        null,
         deliveryFee: 30,
       );
       expect(t.baseSubtotal, 500);
       expect(t.subtotal, 300);
       expect(t.saleSavings, 200);
-      expect(t.discountAmount, 0);
       expect(t.total, 300);
       expect(t.deliveryFee, 30);
       expect(t.amountDue, 330);
@@ -33,43 +34,24 @@ void main() {
     test('B — fee 0: amountDue == items total', () {
       final t = Backend.computeOrderTotals(
         [line(500, 300, 1)],
-        null,
         deliveryFee: 0,
       );
       expect(t.baseSubtotal, 500);
       expect(t.subtotal, 300);
       expect(t.saleSavings, 200);
-      expect(t.discountAmount, 0);
       expect(t.total, 300);
       expect(t.deliveryFee, 0);
-      expect(t.amountDue, 300);
-    });
-
-    test('C — code on sale: 10% on the post-sale subtotal', () {
-      final t = Backend.computeOrderTotals(
-        [line(500, 300, 1)],
-        10,
-        deliveryFee: 30,
-      );
-      expect(t.baseSubtotal, 500);
-      expect(t.subtotal, 300);
-      expect(t.saleSavings, 200);
-      expect(t.discountAmount, 30);
-      expect(t.total, 270);
-      expect(t.deliveryFee, 30);
       expect(t.amountDue, 300);
     });
 
     test('D — multi-line: 500 → 300 x2 + 150 → 150 x1', () {
       final t = Backend.computeOrderTotals(
         [line(500, 300, 2), line(null, 150, 1)],
-        null,
         deliveryFee: 30,
       );
       expect(t.baseSubtotal, 1150);
       expect(t.subtotal, 750);
       expect(t.saleSavings, 400);
-      expect(t.discountAmount, 0);
       expect(t.total, 750);
       expect(t.deliveryFee, 30);
       expect(t.amountDue, 780);
@@ -78,13 +60,11 @@ void main() {
     test('E — rounding, % display: 199 → 149 saves exactly 50', () {
       final t = Backend.computeOrderTotals(
         [line(199, 149, 1)],
-        null,
         deliveryFee: 30,
       );
       expect(t.baseSubtotal, 199);
       expect(t.subtotal, 149);
       expect(t.saleSavings, 50);
-      expect(t.discountAmount, 0);
       expect(t.total, 149);
       expect(t.deliveryFee, 30);
       expect(t.amountDue, 179);
@@ -95,38 +75,6 @@ void main() {
       expect(t.perLine[0].pct, isNull);
       expect(t.savingTotal, 50);
       expect(t.insteadOf, 229);
-    });
-
-    test('F — rounding, code: round(149 x 10 / 100) = round(14.9) = 15',
-        () {
-      final t = Backend.computeOrderTotals(
-        [line(199, 149, 1)],
-        10,
-        deliveryFee: 30,
-      );
-      expect(t.baseSubtotal, 199);
-      expect(t.subtotal, 149);
-      expect(t.saleSavings, 50);
-      expect(t.discountAmount, 15);
-      expect(t.total, 134);
-      expect(t.deliveryFee, 30);
-      expect(t.amountDue, 164);
-    });
-
-    test('G — code halves-up: round(305 x 10 / 100) = round(30.5) = 31',
-        () {
-      final t = Backend.computeOrderTotals(
-        [line(null, 305, 1)],
-        10,
-        deliveryFee: 30,
-      );
-      expect(t.baseSubtotal, 305);
-      expect(t.subtotal, 305);
-      expect(t.saleSavings, 0);
-      expect(t.discountAmount, 31);
-      expect(t.total, 274);
-      expect(t.deliveryFee, 30);
-      expect(t.amountDue, 304);
     });
   });
 
@@ -179,7 +127,7 @@ void main() {
         line(500, 300, 1),
         line(99, 89, 3),
       ];
-      final t = Backend.computeOrderTotals(lines, null, deliveryFee: 30);
+      final t = Backend.computeOrderTotals(lines, deliveryFee: 30);
       final perLine = lines
           .map((l) => Backend.lineSaleSaving(
                 basePrice: l['basePrice'] as int?,
@@ -192,15 +140,7 @@ void main() {
       expect(t.baseSubtotal - t.subtotal, t.saleSavings);
     });
 
-    test('code discount rounding is halves-up, identically for % and code',
-        () {
-      // round(30.5) = 31, round(14.9) = 15, round(49.75) = 50.
-      final halfUp = Backend.computeOrderTotals(
-        [line(null, 305, 1)],
-        10,
-        deliveryFee: 0,
-      );
-      expect(halfUp.discountAmount, 31);
+    test('sale % rounding is halves-up, badge suppressed unless exact', () {
       // A 0.5% saving rounds up to 1% — but 1% × 200 = 2 ≠ 1, so
       // the badge is still suppressed (§8 exactness rule).
       expect(
@@ -218,13 +158,12 @@ void main() {
         () {
       final t = Backend.computeOrderTotals(
         [line(199, 149, 1)],
-        10,
         deliveryFee: 30,
       );
-      // Charged: sale 50 + code 15 = 65; baseSubtotal + fee 229
-      // minus amountDue 164 = 65. No tolerance anywhere.
-      expect(t.saleSavings + t.discountAmount, 65);
-      expect(t.baseSubtotal + 30 - t.amountDue!, 65);
+      // Charged: sale 50 only; baseSubtotal + fee 229
+      // minus amountDue 179 = 50. No tolerance anywhere.
+      expect(t.saleSavings, 50);
+      expect(t.baseSubtotal + 30 - t.amountDue!, 50);
     });
   });
 
@@ -232,7 +171,6 @@ void main() {
     test('fee-0 case: amountDue == items total', () {
       final t = Backend.computeOrderTotals(
         [line(500, 300, 1)],
-        null,
         deliveryFee: 0,
       );
       expect(t.amountDue, t.total);
@@ -241,7 +179,7 @@ void main() {
 
     test('missing-fee state: fee and amountDue are null, caller blocks',
         () {
-      final t = Backend.computeOrderTotals([line(500, 300, 1)], null);
+      final t = Backend.computeOrderTotals([line(500, 300, 1)]);
       expect(t.deliveryFee, isNull);
       expect(t.feeUnset, isTrue);
       expect(t.feeWaived, isFalse);
@@ -256,16 +194,14 @@ void main() {
       // total 300 reaches a threshold of 300: fee 0 stored.
       final waived = Backend.computeOrderTotals(
         [line(500, 300, 1)],
-        null,
         deliveryFee: 30,
         freeDeliveryThreshold: 300,
       );
       expect(waived.deliveryFee, 0);
       expect(waived.amountDue, 300);
-      // total 270 (after a code) is below the threshold: fee stands.
+      // total 270 is below the threshold: fee stands.
       final kept = Backend.computeOrderTotals(
-        [line(500, 300, 1)],
-        10,
+        [line(null, 270, 1)],
         deliveryFee: 30,
         freeDeliveryThreshold: 300,
       );
@@ -274,7 +210,6 @@ void main() {
       // No threshold set: the fee always applies.
       final noThreshold = Backend.computeOrderTotals(
         [line(500, 300, 1)],
-        null,
         deliveryFee: 30,
       );
       expect(noThreshold.deliveryFee, 30);
@@ -282,7 +217,6 @@ void main() {
       // Threshold 0 means no waiver (like absent/null).
       final zeroThreshold = Backend.computeOrderTotals(
         [line(500, 300, 1)],
-        null,
         deliveryFee: 30,
         freeDeliveryThreshold: 0,
       );
@@ -392,11 +326,10 @@ void main() {
   });
 
   group('invoice lines (CUJ 7 — same lines as the PC invoice)', () {
-    // Worked example (matrix A): base 500 → 300, no code, fee 30.
+    // Worked example (matrix A): base 500 → 300, fee 30.
     Map<String, dynamic> orderA() => {
           'total': 300,
           'saleSavings': 200,
-          'discountAmount': 0,
           'deliveryFee': 30,
           'amountDue': 330,
           'items': [
@@ -410,22 +343,6 @@ void main() {
         'وفّرت من العرض: 200 ج.م',
         'رسوم التوصيل: 30 ج.م',
         'المبلغ المستحق: 330 ج.م',
-      ]);
-    });
-
-    test('code discount gets its own line with the amount', () {
-      final data = orderA()
-        ..['discountCode'] = 'SAVE10'
-        ..['discountPercent'] = 10
-        ..['discountAmount'] = 30
-        ..['total'] = 270
-        ..['amountDue'] = 300;
-      expect(Backend.invoiceMoneyLines(data), [
-        'الإجمالي: 270 ج.م',
-        'وفّرت من العرض: 200 ج.م',
-        'خصم الكود SAVE10 (10٪): 30 ج.م',
-        'رسوم التوصيل: 30 ج.م',
-        'المبلغ المستحق: 300 ج.م',
       ]);
     });
 
@@ -451,21 +368,7 @@ void main() {
       ]);
     });
 
-    test('legacy order with a code but no stored discountAmount keeps '
-        'the old-style code line', () {
-      final data = {
-        'total': 300,
-        'discountCode': 'SAVE10',
-        'discountPercent': 10,
-      };
-      expect(Backend.invoiceMoneyLines(data), [
-        'الإجمالي: 300 ج.م',
-        'كود الخصم: SAVE10 (10٪)',
-        'المبلغ المستحق: 300 ج.م',
-      ]);
-    });
-
-    test('no sale, no code, no fee: total + amount due only', () {
+    test('no sale, no fee: total + amount due only', () {
       expect(Backend.invoiceMoneyLines({'total': 450}), [
         'الإجمالي: 450 ج.م',
         'المبلغ المستحق: 450 ج.م',

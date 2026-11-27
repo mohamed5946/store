@@ -230,7 +230,7 @@ Future<void> _showOrderDetail(
                   ),
                 const Divider(),
                 // Money lines (CUJ 7): products total, sale savings,
-                // code discount, delivery fee, amount due — the same
+                // delivery fee, amount due — the same
                 // lines as the PC invoice and the share text.
                 for (final line in Backend.invoiceMoneyLines(data))
                   Text(line),

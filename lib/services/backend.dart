@@ -417,9 +417,10 @@ class Backend {
   ///
   /// [lines] are `{'price': num, 'qty': int, 'basePrice': int?}` with
   /// trusted (database) prices; a line with no `basePrice`, or with
-  /// `basePrice <= price`, is not on sale. [percent] is the discount
-  /// code's percent (null = no code): it applies to the POST-SALE
-  /// subtotal (sequential stacking, §3).
+  /// `basePrice <= price`, is not on sale. `total` is the subtotal:
+  /// there is no code discount any more (the promo code was removed
+  /// 2026-11-27) — only the per-product sale prices reduce the
+  /// total, and they are already baked into `price`.
   ///
   /// [deliveryFee] is the snapshot of `storeSettings/settings`
   /// `.deliveryFee`. Null means the fee is UNSET (missing ≠ 0):
@@ -427,11 +428,11 @@ class Backend {
   /// CALLER must block the order before relying on them — see
   /// [createManualOrder]. [freeDeliveryThreshold] (decision D3,
   /// admin setting): when set (> 0), the fee is waived (`deliveryFee`
-  /// 0 stored) once the post-code `total` reaches the threshold;
+  /// 0 stored) once the `total` reaches the threshold;
   /// absent/null/0 means no waiver.
   ///
-  /// `round()` is nearest integer, halves up, identically for the
-  /// displayed % and the code discount. It is exact integer math
+  /// `round()` is nearest integer, halves up, for the displayed %
+  /// (see [salePercent]). It is exact integer math
   /// when the subtotal is an int: `(subtotal * percent + 50) ~/ 100`
   /// — the same as the storefront's `Math.floor(x + 0.5)`.
   static ({
@@ -439,8 +440,6 @@ class Backend {
     num baseSubtotal,
     num subtotal,
     num saleSavings,
-    int? discountPercent,
-    num discountAmount,
     num total,
     int? deliveryFee,
     bool feeUnset,
@@ -449,8 +448,7 @@ class Backend {
     num savingTotal,
     num? insteadOf,
   }) computeOrderTotals(
-    List<Map<String, dynamic>> lines,
-    int? percent, {
+    List<Map<String, dynamic>> lines, {
     int? deliveryFee,
     int? freeDeliveryThreshold,
   }) {
@@ -478,15 +476,9 @@ class Backend {
             : null,
       ));
     }
-    final p = percent ?? 0;
-    final discountAmount = p == 0
-        ? 0
-        : (subtotal is int
-            ? (subtotal * p + 50) ~/ 100
-            : (subtotal * p / 100).round());
-    final total = subtotal - discountAmount;
+    final total = subtotal;
     // Fee: unset when not an int ≥ 0; waived (0 stored) once the
-    // post-code total reaches an admin-set threshold > 0.
+    // total reaches an admin-set threshold > 0.
     final feeUnset = deliveryFee == null || deliveryFee < 0;
     final threshold = (freeDeliveryThreshold != null &&
             freeDeliveryThreshold > 0)
@@ -501,14 +493,12 @@ class Backend {
       baseSubtotal: baseSubtotal,
       subtotal: subtotal,
       saleSavings: saleSavings,
-      discountPercent: percent,
-      discountAmount: discountAmount,
       total: total,
       deliveryFee: effectiveFee,
       feeUnset: feeUnset,
       feeWaived: feeWaived,
       amountDue: feeUnset ? null : total + (effectiveFee ?? 0),
-      savingTotal: saleSavings + discountAmount,
+      savingTotal: saleSavings,
       insteadOf: feeUnset ? null : baseSubtotal + (effectiveFee ?? 0),
     );
   }
@@ -541,16 +531,14 @@ class Backend {
   }
 
   /// The money lines of an order invoice (CUJ 7), in display order,
-  /// mirroring the PC invoice: products total, sale savings, code
-  /// discount, delivery fee, amount due. Legacy orders (a code with
-  /// no stored discountAmount) keep the old-style code line.
+  /// mirroring the PC invoice: products total, sale savings,
+  /// delivery fee, amount due. (The promo code was removed
+  /// 2026-11-27, so there is no code line any more; legacy orders
+  /// that still carry code fields simply show no code line.)
   /// `amountDue` falls back to `total` when the order predates it.
   static List<String> invoiceMoneyLines(Map<String, dynamic> data) {
     final total = (data['total'] as num?) ?? 0;
     final saleSavings = (data['saleSavings'] as num?) ?? 0;
-    final discountAmount = (data['discountAmount'] as num?) ?? 0;
-    final code = data['discountCode'] as String?;
-    final percent = data['discountPercent'];
     final fee = data['deliveryFee'];
     final due = (data['amountDue'] as num?) ?? total;
     final lines = <String>[
@@ -558,12 +546,6 @@ class Backend {
     ];
     if (saleSavings > 0) {
       lines.add('وفّرت من العرض: ${saleSavings.toStringAsFixed(0)} ج.م');
-    }
-    if (discountAmount > 0) {
-      lines.add(
-          'خصم الكود $code (${percent ?? 0}٪): ${discountAmount.toStringAsFixed(0)} ج.م');
-    } else if (code?.isNotEmpty == true) {
-      lines.add('كود الخصم: $code (${percent ?? 0}٪)');
     }
     if (fee != null) {
       final feeNum = fee as num;
@@ -1652,9 +1634,9 @@ class Backend {
   // storefront runs, with source 'admin_manual' and the admin's UID.
   // No Cloud Function is involved: prices/totals come from the
   // DATABASE prices just read, stock is reserved in the same
-  // transaction, the discount is claimed in the same transaction,
-  // and the audit entry rides along (§4). Permission is checked
-  // client-side here AND re-checked by the rules from admins/{uid}.
+  // transaction, and the audit entry rides along (§4). Permission is
+  // checked client-side here AND re-checked by the rules from
+  // admins/{uid}.
   // After the transaction commits, products.inStock is refreshed
   // by the §13 second write (batched, up to 3 tries, best-effort).
   // Returns {'order': {...}, 'created': bool} — created:false means
@@ -1662,7 +1644,6 @@ class Backend {
   Future<Map<String, dynamic>> createManualOrder({
     required String clientOrderId,
     required List<Map<String, dynamic>> items,
-    String? discountCode,
     required String customerName,
     required String customerPhone,
     required String customerAddress,
@@ -1684,14 +1665,12 @@ class Backend {
     final uid = auth.currentUser?.uid;
     if (uid == null) throw BackendException('سجّل الدخول الأول');
     final email = auth.currentUser?.email ?? '';
-    final code = (discountCode ?? '').trim();
     Map<String, dynamic> result;
     try {
       result = await db.runTransaction<Map<String, dynamic>>((tx) async {
         final orderRef = db.collection('orders').doc(clientOrderId);
         // Idempotency first: a retry with the same clientOrderId
-        // returns the existing order — no stock work, no discount
-        // work, no duplicate.
+        // returns the existing order — no stock work, no duplicate.
         final existing = await tx.get(orderRef);
         if (existing.exists) {
           final data = existing.data() ?? {};
@@ -1748,33 +1727,6 @@ class Backend {
             'costPrice': ((inv['costPrice'] ?? 0) as num).toInt(),
           });
         }
-        // Discount: read the trusted record, verify, claim atomically.
-        Map<String, dynamic>? discount;
-        if (code.isNotEmpty) {
-          final discSnap = await tx.get(db.collection('discounts').doc(code));
-          if (!discSnap.exists) throw BackendException('كود الخصم مش صحيح');
-          final record = discSnap.data() ?? {};
-          if (record['active'] != true) {
-            throw BackendException('كود الخصم مش فعال');
-          }
-          if (record['usedBy'] != null) {
-            throw BackendException('كود الخصم ده اتستخدم قبل كده');
-          }
-          final expiresAt = record['expiresAt'];
-          DateTime? expires;
-          if (expiresAt is Timestamp) expires = expiresAt.toDate();
-          if (expiresAt is num) {
-            expires = DateTime.fromMillisecondsSinceEpoch(expiresAt.toInt());
-          }
-          if (expires != null && !expires.isAfter(DateTime.now())) {
-            throw BackendException('كود الخصم انتهت صلاحيته');
-          }
-          final percent = ((record['percent'] ?? 0) as num).toInt();
-          if (percent < 1 || percent > 100) {
-            throw BackendException('كود الخصم مش صحيح');
-          }
-          discount = {'code': code, 'percent': percent};
-        }
         // Totals from the DATABASE prices, never a client total.
         // The fixed delivery fee is read from
         // storeSettings/settings (Technical Plan §2/§5): missing ≠ 0
@@ -1798,7 +1750,6 @@ class Backend {
                     'basePrice': l['basePrice'] as int?,
                   })
               .toList(),
-          discount?['percent'] as int?,
           deliveryFee: deliveryFee,
           freeDeliveryThreshold: feeSettings.freeDeliveryThreshold,
         );
@@ -1889,15 +1840,6 @@ class Backend {
             'newValues': {'stock': stock, 'reserved': newReserved},
           });
         }
-        // Claim the discount (one use only, atomically in this tx).
-        // Exactly usedBy + usedAt — the §3 claim shape, no
-        // operationId on this write.
-        if (discount != null) {
-          tx.set(db.collection('discounts').doc(discount['code'] as String), {
-            'usedBy': clientOrderId,
-            'usedAt': now,
-          }, SetOptions(merge: true));
-        }
         // Create the order (doc id = clientOrderId), fields EXACTLY
         // as functions/lib/orders.js createOrderTx builds them, PLUS
         // auditId — and nothing else (the rules enforce the exact
@@ -1918,9 +1860,6 @@ class Backend {
                   })
               .toList(),
           'subtotal': wholeNum(computed.subtotal),
-          'discountCode': discount?['code'],
-          'discountPercent': computed.discountPercent,
-          'discountAmount': wholeNum(computed.discountAmount),
           'total': wholeNum(computed.total),
           // Pricing snapshot (Technical Plan §2): the order alone
           // reconstructs what the customer saw. No attemptId —
@@ -2796,7 +2735,6 @@ class Backend {
                     'basePrice': l['basePrice'] as int?,
                   })
               .toList(),
-          null,
           deliveryFee: deliveryFee,
           freeDeliveryThreshold: feeSettings.freeDeliveryThreshold,
         );
@@ -2909,9 +2847,6 @@ class Backend {
                   })
               .toList(),
           'subtotal': wholeNum(computed.subtotal),
-          'discountCode': null,
-          'discountPercent': null,
-          'discountAmount': wholeNum(computed.discountAmount),
           'total': wholeNum(computed.total),
           'saleSavings': wholeNum(computed.saleSavings),
           'deliveryFee': effectiveFee,

@@ -313,7 +313,6 @@ button { cursor: pointer; background: none; border: 0; }
 .cart-foot .row.fee-row, .review-breakdown .row.fee-row { color: var(--text-soft); }
 .cart-foot .row.due-row, .review-breakdown .row.due-row { font-size: 18px; border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
 .save-headline { font-size: 15px; font-weight: 700; color: var(--accent); text-align: center; margin-top: 6px; }
-.code-ok { color: var(--accent); font-size: 14px; font-weight: 600; }
 /* Skeleton screens (perf item 1): shimmer blocks for the product
  * grid while the catalog loads, and for the modal media until its
  * main image loads. */

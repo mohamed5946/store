@@ -1,7 +1,10 @@
 /* No-functions Firestore rules tests (contract 2026-11-26 §3 — replaces
  * the Phase 2 file-36 list: anonymous order creation is now ALLOWED
- * through the client transaction, with shape + price + discount +
+ * through the client transaction, with shape + price +
  * audit checks in the rules; feedback is a one-way card).
+ *
+ * (Discount code REMOVED 2026-11-27: no code field, no claim, no
+ * /discounts reads anywhere in this file.)
  *
  * EMULATOR-GATED: these tests CANNOT run on a machine without Java
  * (the Firestore emulator needs it) and they CANNOT run against the
@@ -60,8 +63,8 @@ before(async () => {
   // one order, feedback records, the active-template pointer, plus
   // the no-functions fixtures: dedicated products/inventory for the
   // order-transaction tests (prod-1's price/stock mutate across the
-  // older tests, so the new tests own their own docs), discount
-  // codes in every state, and a manager WITH orders_create_manual.
+  // older tests, so the new tests own their own docs), and a manager
+  // WITH orders_create_manual.
   await testEnv.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     await setDoc(doc(db, 'admins', ADMIN_UID), { role: 'admin', name: 'Admin' });
@@ -91,7 +94,7 @@ before(async () => {
     await setDoc(doc(db, 'inventory', 'prod-3'), {
       productId: 'prod-3', stock: 2, reserved: 2, minStock: 5, costPrice: 50,
     });
-    // prod-4: discount-invalid + bad-shape tests (price 300, stock 10).
+    // prod-4: bad-shape + pricing tests (price 300, stock 10).
     await setDoc(doc(db, 'products', 'prod-4'), {
       name: 'جراب موبايل', price: 300, categoryId: 'cat-1', inStock: true,
     });
@@ -116,9 +119,8 @@ before(async () => {
     });
     // Pricing Phase A (2026-11-27): the settings fee the rules verify
     // storefront orders against; a sale product for the product-rule
-    // tests; multi-line products (stock 30: the cap tests reserve
-    // 7 + 7 + 8 = 22 across the file); rounding/matrix products;
-    // fresh 10% codes (one per code test — codes are single-use).
+    // tests; multi-line products (stock 30: the 8-line storefront
+    // test reserves 1 on each of prod-7..14); rounding/matrix products.
     await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 30 });
     await setDoc(doc(db, 'products', 'prod-sale'), {
       name: 'منتج خصم', price: 300, categoryId: 'cat-1', inStock: true,
@@ -168,27 +170,9 @@ before(async () => {
       ],
       updatedAt: serverTimestamp(), operationId: 'seed-gov',
     });
-    for (const code of ['CAP10A', 'CAP10B', 'CAP10C', 'CAP10D', 'CAP10E', 'CAP10F', 'CAP10G']) {
-      await setDoc(doc(db, 'discounts', code), {
-        percent: 10, active: true, usedBy: null, expiresAt: null,
-      });
-    }
-    await setDoc(doc(db, 'discounts', 'SAVE10'), {
-      percent: 10, active: true, usedBy: null, expiresAt: null,
-    });
-    await setDoc(doc(db, 'discounts', 'USED10'), {
-      percent: 10, active: true, usedBy: 'order-old', expiresAt: null,
-    });
-    await setDoc(doc(db, 'discounts', 'OFF10'), {
-      percent: 10, active: false, usedBy: null, expiresAt: null,
-    });
-    await setDoc(doc(db, 'discounts', 'EXP10'), {
-      percent: 10, active: true, usedBy: null,
-      expiresAt: Timestamp.fromMillis(Date.now() - 86400000),
-    });
-    await setDoc(doc(db, 'discounts', 'CLAIM10'), {
-      percent: 15, active: true, usedBy: null, expiresAt: null,
-    });
+    // Discount-code seeds REMOVED 2026-11-27 with the feature — no
+    // /discounts docs are seeded any more (the rules allow no
+    // access to that collection at all).
     await setDoc(doc(db, 'orders', 'order-1'), {
       id: 'order-1', clientOrderId: 'order-1', status: 'new',
       paymentStatus: 'cod_pending', total: 1000,
@@ -344,23 +328,22 @@ async function deleteWithAudit(db, uid, coll, docId) {
 }
 
 /* The client order transaction the way storefront/app.js placeOrderTx
- * does it (contract §1): idempotency read, product + inventory (+
- * discount) reads, total from DATABASE prices, stock reservation,
- * discount claim, order + movement + audit entry. `source` /
+ * does it (contract §1): idempotency read, product + inventory
+ * reads, total from DATABASE prices, stock reservation,
+ * order + movement + audit entry. `source` /
  * `createdBy` / `actor` / `operation` switch it to the manual-order
  * shape. Deliberately does NOT validate stock client-side — the
  * rules must deny an over-reservation on their own. */
 async function placeOrderTx(db, {
-  orderId, productId, qty, discountCode = null,
+  orderId, productId, qty,
   priceOverride = null, totalOverride = null,
   source = 'storefront', createdBy = null,
   actor = 'anonymous', actorName = 'storefront', operation = 'create',
   movementSource = 'placeOrder',
   /* stampOperationId: the PC (Electron) manual-order shape —
-   * operationId stamped on the inventory write, the discount
-   * claim and the order doc (coordinator fix 2026-11-26: the
-   * rules tolerate it in the reservation / claim / order-shape
-   * branches). */
+   * operationId stamped on the inventory write and the order doc
+   * (coordinator fix 2026-11-26: the rules tolerate it in the
+   * reservation / order-shape branches). */
   stampOperationId = false,
 }) {
   const auditId = `audit-${orderId}`;
@@ -371,17 +354,9 @@ async function placeOrderTx(db, {
     const product = productSnap.data();
     const invSnap = await tx.get(doc(db, 'inventory', productId));
     const inv = invSnap.data();
-    let discount = null;
-    if (discountCode) {
-      const discSnap = await tx.get(doc(db, 'discounts', discountCode));
-      const rec = discSnap.data();
-      discount = { code: discountCode, percent: rec.percent };
-    }
     const price = priceOverride != null ? priceOverride : product.price;
     const subtotal = price * qty;
-    const discountPercent = discount ? discount.percent : null;
-    const discountAmount = discount ? Math.round((subtotal * discount.percent) / 100) : 0;
-    const total = totalOverride != null ? totalOverride : subtotal - discountAmount;
+    const total = totalOverride != null ? totalOverride : subtotal;
     const now = serverTimestamp();
     const invWrite = {
       productId, stock: inv.stock, reserved: inv.reserved + qty,
@@ -393,17 +368,11 @@ async function placeOrderTx(db, {
       productId, type: 'order_reserve', qty: -qty, orderId,
       source: movementSource, actorUid: createdBy, createdAt: now,
     });
-    if (discount) {
-      const claim = { usedBy: orderId, usedAt: now };
-      if (stampOperationId) { claim.operationId = auditId; claim.updatedAt = now; }
-      tx.set(doc(db, 'discounts', discount.code), claim, { merge: true });
-    }
     tx.set(doc(db, 'orders', orderId), {
       id: orderId, clientOrderId: orderId,
       customerName: 'اختبار', customerPhone: '01012345678', customerAddress: 'القاهرة',
       items: [{ productId, name: product.name, price, qty }],
-      subtotal, discountCode: discount ? discount.code : null,
-      discountPercent, discountAmount, total,
+      subtotal, total,
       status: 'new', paymentStatus: 'cod_pending', source,
       createdBy, shippingCompanyId: null, trackingNumber: null, notes: null,
       createdAt: now, updatedAt: now,
@@ -460,7 +429,7 @@ async function rawOrderBatch(db, {
     id: orderId, clientOrderId: orderId,
     customerName: 'اختبار', customerPhone: '01012345678', customerAddress: 'القاهرة',
     items,
-    subtotal, discountCode: null, discountPercent: null, discountAmount: 0, total: subtotal,
+    subtotal, total: subtotal,
     status: 'new', paymentStatus: 'cod_pending', source: 'storefront',
     createdBy: null, shippingCompanyId: null, trackingNumber: null, notes: null,
     createdAt: now, updatedAt: now,
@@ -510,7 +479,7 @@ async function rawOrderBatch(db, {
  * given), computed from DATABASE prices. The audit entry covers the
  * money fields and 'items' exactly when the order carries them. */
 async function placePricingOrderTx(db, {
-  orderId, lines, discountCode = null,
+  orderId, lines,
   deliveryFee = undefined, attemptId = undefined,
   source = 'storefront', createdBy = null,
   actor = 'anonymous', actorName = 'storefront', operation = 'create',
@@ -537,15 +506,7 @@ async function placePricingOrderTx(db, {
         qty: line.qty, inv, basePrice: line.basePrice,
       });
     }
-    let discount = null;
-    if (discountCode) {
-      const discSnap = await tx.get(doc(db, 'discounts', discountCode));
-      const rec = discSnap.data();
-      discount = { code: discountCode, percent: rec.percent };
-    }
-    const discountPercent = discount ? discount.percent : null;
-    const discountAmount = discount ? Math.round((subtotal * discount.percent) / 100) : 0;
-    const total = subtotal - discountAmount;
+    const total = subtotal;
     const now = serverTimestamp();
     for (const l of orderLines) {
       tx.set(doc(db, 'inventory', l.productId), {
@@ -557,9 +518,6 @@ async function placePricingOrderTx(db, {
         source: movementSource, actorUid: createdBy, createdAt: now,
       });
     }
-    if (discount) {
-      tx.set(doc(db, 'discounts', discount.code), { usedBy: orderId, usedAt: now }, { merge: true });
-    }
     const items = orderLines.map((l) => {
       const item = { productId: l.productId, name: l.name, price: l.price, qty: l.qty };
       if (l.basePrice !== undefined) item.basePrice = l.basePrice;
@@ -569,8 +527,7 @@ async function placePricingOrderTx(db, {
       id: orderId, clientOrderId: orderId,
       customerName: 'اختبار', customerPhone: '01012345678', customerAddress: 'القاهرة',
       items,
-      subtotal, discountCode: discount ? discount.code : null,
-      discountPercent, discountAmount, total,
+      subtotal, total,
       status: 'new', paymentStatus: 'cod_pending', source,
       createdBy, shippingCompanyId: null, trackingNumber: null, notes: null,
       createdAt: now, updatedAt: now,
@@ -649,7 +606,7 @@ test('No-functions: an anonymous order with a BAD shape is rejected', async () =
   await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-2', overrides: { customerPhone: '010123456' } }));
   // qty 0.
   await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-3', overrides: { items: [{ productId: 'prod-4', name: 'جراب موبايل', price: 300, qty: 0 }] } }));
-  // Total does not match subtotal - discountAmount.
+  // Total does not match subtotal.
   await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-4', overrides: { total: 999 } }));
   // Extra field outside the exact key list.
   await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-bad-5', overrides: { extraField: 1 } }));
@@ -659,17 +616,19 @@ test('No-functions: an anonymous order with a BAD shape is rejected', async () =
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 0);
 });
 
-test('No-functions: an anonymous order with a VALID discount code succeeds and claims it', async () => {
+// Discount code REMOVED 2026-11-27: this was the valid-code test.
+// It is now the plain no-code order on the same product/qty, kept
+// because the later inventory test pins prod-2 fully reserved
+// (stock 3, reserved 3) — deleting it outright would break that
+// assertion, not because the code is missed.
+test('No-functions: an anonymous order with NO code succeeds (discount code removed)', async () => {
   const db = anonDb();
   await assertSucceeds(placeOrderTx(db, {
-    orderId: 'order-nf-disc', productId: 'prod-2', qty: 1, discountCode: 'SAVE10',
+    orderId: 'order-nf-nocode', productId: 'prod-2', qty: 1,
   }));
-  const order = (await getDoc(doc(adminDb(), 'orders', 'order-nf-disc'))).data();
-  assert.equal(order.discountCode, 'SAVE10');
-  assert.equal(order.discountPercent, 10);
-  assert.equal(order.discountAmount, 20);
-  assert.equal(order.total, 180);
-  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'SAVE10'))).data().usedBy, 'order-nf-disc');
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-nf-nocode'))).data();
+  assert.equal(order.total, 200);
+  assert.equal('discountCode' in order, false);
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-2'))).data().reserved, 3);
 });
 
@@ -683,30 +642,6 @@ test('No-functions: an anonymous order with a FRACTIONAL stored price succeeds',
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-nf-frac'))).data();
   assert.equal(order.total, 39.98);
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-6'))).data().reserved, 2);
-});
-
-test('No-functions: an order with an INACTIVE, USED, or EXPIRED code is rejected', async () => {
-  const db = anonDb();
-  for (const code of ['OFF10', 'USED10', 'EXP10']) {
-    await assertFails(placeOrderTx(db, {
-      orderId: `order-nf-${code.toLowerCase()}`, productId: 'prod-4', qty: 1, discountCode: code,
-    }));
-    assert.equal((await getDoc(doc(adminDb(), 'orders', `order-nf-${code.toLowerCase()}`))).exists(), false);
-  }
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 0);
-});
-
-test('No-functions: claiming a discount WITHOUT a matching order is denied', async () => {
-  const db = anonDb();
-  await assertFails(updateDoc(doc(db, 'discounts', 'CLAIM10'), {
-    usedBy: 'order-nope', usedAt: serverTimestamp(),
-  }));
-  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'CLAIM10'))).data().usedBy, null);
-  // And a second claim of the already-used SAVE10 is denied too.
-  await assertFails(updateDoc(doc(db, 'discounts', 'SAVE10'), {
-    usedBy: 'order-nf-other', usedAt: serverTimestamp(),
-  }));
-  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'SAVE10'))).data().usedBy, 'order-nf-disc');
 });
 
 /* ---------- anonymous reads: what the transaction needs ---------- */
@@ -726,12 +661,10 @@ test('Phase 2 (T19): the public catalog stays readable anonymously', async () =>
   await assertSucceeds(getDocs(collection(db, 'products')));
 });
 
-test('No-functions: anonymous gets of inventory and discounts are allowed (the transaction reads them), lists and feedback/audit are denied', async () => {
+test('No-functions: anonymous gets of inventory are allowed (the transaction reads it), lists and feedback/audit are denied', async () => {
   const db = anonDb();
   await assertSucceeds(getDoc(doc(db, 'inventory', 'prod-1')));
-  await assertSucceeds(getDoc(doc(db, 'discounts', 'SAVE10')));
   await assertFails(getDocs(collection(db, 'inventory')));
-  await assertFails(getDocs(collection(db, 'discounts')));
   await assertFails(getDoc(doc(db, 'feedback', 'fb-1')));
   await assertFails(getDoc(doc(db, 'audit', 'op-test-1')));
   await assertFails(getDoc(doc(db, 'rateLimits', 'ip:x')));
@@ -812,38 +745,25 @@ test('No-functions: a manager WITH orders_create_manual may place a manual order
 });
 
 /* Coordinator fix 2026-11-26: the PC manual order stamps
- * operationId on the inventory write, the discount claim and the
- * order doc. Before the fix the reservation branch denied the
- * inventory write (operationId not in its changed-keys list), the
- * claim branch denied the discount write, and the order shape
- * (25 keys) denied the 26-key order — the whole manual order
- * failed. The rules now tolerate the correlation id in all three
- * branches, and this test pins that shape (with a discount code,
- * so the claim branch is exercised too). */
-test('No-functions: a manual order stamping operationId (PC shape) succeeds, including the discount claim', async () => {
+ * operationId on the inventory write and the order doc. Before
+ * the fix the reservation branch denied the inventory write
+ * (operationId not in its changed-keys list), and the order shape
+ * denied the extra-key order — the whole manual order failed. The
+ * rules now tolerate the correlation id in both branches, and this
+ * test pins that shape. (Discount code REMOVED 2026-11-27: the old
+ * version of this test also exercised the claim branch with a code;
+ * the claim is gone with the feature.) */
+test('No-functions: a manual order stamping operationId (PC shape) succeeds', async () => {
   const db = adminDb();
-  // OPID10 must be created WITH its audit entry: discounts create is
-  // audited, so a bare setDoc (no operationId, no audit) is denied by
-  // the rules (fix 2026-11-27 — the old bare setDoc errored on the
-  // missing operationId and the test failed at setup, before the
-  // order it was meant to set up).
-  await auditedSet(db, ADMIN_UID, {
-    collection: 'discounts', docId: 'OPID10',
-    data: { percent: 10, active: true, usedBy: null, expiresAt: null },
-    operation: 'create', sensitive: { percent: 10 },
-  });
   await assertSucceeds(placeOrderTx(db, {
     orderId: 'order-nf-manual-opid', productId: 'prod-5', qty: 1,
-    discountCode: 'OPID10',
     source: 'admin_manual', createdBy: ADMIN_UID,
     actor: ADMIN_UID, actorName: 'Admin', operation: 'manual_order_create',
     movementSource: 'createManualOrder', stampOperationId: true,
   }));
   const order = (await getDoc(doc(db, 'orders', 'order-nf-manual-opid'))).data();
   assert.equal(order.operationId, 'audit-order-nf-manual-opid');
-  assert.equal(order.discountCode, 'OPID10');
-  assert.equal(order.total, 270);
-  assert.equal((await getDoc(doc(db, 'discounts', 'OPID10'))).data().usedBy, 'order-nf-manual-opid');
+  assert.equal(order.total, 300);
   assert.equal((await getDoc(doc(db, 'inventory', 'prod-5'))).data().reserved, 3);
 });
 
@@ -1196,7 +1116,7 @@ test('No-functions: a manager may not delete feedback', async () => {
 
 /* ---------- roles: manager vs admin ---------- */
 
-test('Phase 2: a manager may edit products and orders, but not settings or discounts', async () => {
+test('Phase 2: a manager may edit products and orders, but not settings', async () => {
   const db = managerDb();
   await assertSucceeds(auditedSet(db, MANAGER_UID, {
     collection: 'products', docId: 'prod-1',
@@ -1209,10 +1129,6 @@ test('Phase 2: a manager may edit products and orders, but not settings or disco
   await assertFails(auditedSet(db, MANAGER_UID, {
     collection: 'storeSettings', docId: 'settings',
     data: { brandName: 'X' }, sensitive: {},
-  }));
-  await assertFails(auditedSet(db, MANAGER_UID, {
-    collection: 'discounts', docId: 'SAVE10',
-    data: { percent: 10, active: true }, operation: 'create', sensitive: { percent: 10 },
   }));
 });
 
@@ -1280,10 +1196,13 @@ test('Pricing A: a fake audit that changes basePrice but does NOT record it is d
 });
 
 /* 1.1.2-style save cases, re-run as regression cases: (1) new
- * product + empty discount field (no basePrice); (2) stock-filled
- * save WITH a discount (product + inventory in one audited batch);
- * (3) edit without a discount (merge preserves the stored basePrice). */
-test('Pricing A (1.1.2 regression): a new product with an EMPTY discount field saves', async () => {
+ * product + empty sale-price field (no basePrice); (2) stock-filled
+ * save WITH a sale price (product + inventory in one audited batch);
+ * (3) edit without a sale price (merge preserves the stored basePrice).
+ * ("discount" here always meant the per-product SALE price, never the
+ * removed promo code — renamed 2026-11-27 so the two can't be
+ * confused; the assertions are unchanged.) */
+test('Pricing A (1.1.2 regression): a new product with an EMPTY sale-price field saves', async () => {
   const db = adminDb();
   await assertSucceeds(auditedSet(db, ADMIN_UID, {
     collection: 'products', docId: 'prod-reg-1',
@@ -1295,7 +1214,7 @@ test('Pricing A (1.1.2 regression): a new product with an EMPTY discount field s
   assert.equal('basePrice' in data, false);
 });
 
-test('Pricing A (1.1.2 regression): a stock-filled save WITH a discount saves product + inventory', async () => {
+test('Pricing A (1.1.2 regression): a stock-filled save WITH a sale price saves product + inventory', async () => {
   const db = adminDb();
   opCounter += 1;
   const opId = `op-test-${opCounter}`;
@@ -1328,7 +1247,7 @@ test('Pricing A (1.1.2 regression): a stock-filled save WITH a discount saves pr
   assert.equal((await getDoc(doc(db, 'inventory', 'prod-reg-2'))).data().stock, 10);
 });
 
-test('Pricing A (1.1.2 regression): an edit WITHOUT a discount keeps the stored basePrice', async () => {
+test('Pricing A (1.1.2 regression): an edit WITHOUT a sale price keeps the stored basePrice', async () => {
   const db = adminDb();
   await assertSucceeds(auditedSet(db, ADMIN_UID, {
     collection: 'products', docId: 'prod-sale',
@@ -1354,7 +1273,6 @@ test('Pricing A (matrix A): a storefront order with a sale + fee passes', async 
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-A'))).data();
   assert.equal(order.subtotal, 300);
   assert.equal(order.saleSavings, 200);
-  assert.equal(order.discountAmount, 0);
   assert.equal(order.total, 300);
   assert.equal(order.deliveryFee, 30);
   assert.equal(order.amountDue, 330);
@@ -1376,19 +1294,22 @@ test('Pricing A (matrix B): a storefront order with fee 0 passes', async () => {
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 2);
 });
 
-test('Pricing A (matrix C): a storefront order with a code on a sale passes', async () => {
+// Discount code REMOVED 2026-11-27: matrix C was the code-on-a-sale
+// case. It is now the same sale + fee order with NO code, kept
+// because the later matrix-D / mismatch / no-fee tests pin prod-4
+// reserved at 3 after this order — deleting it outright would break
+// those assertions.
+test('Pricing A (matrix C): a storefront order with a sale + fee passes (no code)', async () => {
   const db = anonDb();
   await assertSucceeds(placePricingOrderTx(db, {
     orderId: 'order-pricing-C',
     lines: [{ productId: 'prod-4', qty: 1, basePrice: 500 }],
-    discountCode: 'CAP10D', deliveryFee: 30, attemptId: 'a-pricing-C',
+    deliveryFee: 30, attemptId: 'a-pricing-C',
   }));
   const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-C'))).data();
   assert.equal(order.saleSavings, 200);
-  assert.equal(order.discountAmount, 30);
-  assert.equal(order.total, 270);
-  assert.equal(order.amountDue, 300);
-  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'CAP10D'))).data().usedBy, 'order-pricing-C');
+  assert.equal(order.total, 300);
+  assert.equal(order.amountDue, 330);
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 3);
 });
 
@@ -1410,47 +1331,6 @@ test('Pricing A (matrix D): a multi-line storefront order passes', async () => {
   assert.equal(order.items[0].basePrice, 500);
   assert.equal(order.items[1].basePrice, null);
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 5);
-});
-
-test('Pricing A (matrix F): a code discount rounds 14.9 up to 15', async () => {
-  const db = anonDb();
-  await assertSucceeds(placePricingOrderTx(db, {
-    orderId: 'order-pricing-F',
-    lines: [{ productId: 'prod-149', qty: 1, basePrice: null }],
-    discountCode: 'CAP10F', deliveryFee: 30,
-  }));
-  const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-F'))).data();
-  assert.equal(order.discountAmount, 15);
-  assert.equal(order.total, 134);
-  assert.equal(order.amountDue, 164);
-  assert.equal(order.saleSavings, 0);
-});
-
-test('Pricing A (matrix G): a code discount rounds 30.5 up to 31 (halves up)', async () => {
-  const db = anonDb();
-  await assertSucceeds(placePricingOrderTx(db, {
-    orderId: 'order-pricing-G',
-    lines: [{ productId: 'prod-305', qty: 1, basePrice: null }],
-    discountCode: 'CAP10E', deliveryFee: 30,
-  }));
-  const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-G'))).data();
-  assert.equal(order.discountAmount, 31);
-  assert.equal(order.total, 274);
-  assert.equal(order.amountDue, 304);
-});
-
-test('Pricing A: a code discount of 30 on a 305 subtotal is denied (interval)', async () => {
-  const db = anonDb();
-  await assertFails(rawOrderBatch(db, {
-    orderId: 'order-pricing-g-bad', productId: 'prod-305', productName: 'منتج 305',
-    price: 305, qty: 1, stock: 10, reserved: 1, basePrice: null,
-    overrides: {
-      discountCode: 'CAP10G', discountPercent: 10, discountAmount: 30, total: 275,
-      saleSavings: 0, deliveryFee: 30, amountDue: 305,
-    },
-  }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-g-bad'))).exists(), false);
-  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'CAP10G'))).data().usedBy, null);
 });
 
 test('Pricing A: a saleSavings mismatch is denied', async () => {
@@ -1530,58 +1410,6 @@ test('Pricing A: a missing fee field denies a storefront create but allows a man
     const db = context.firestore();
     await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 30 });
   });
-});
-
-test('Pricing A: a 7-line manual order with a code passes (exactly 10 gets)', async () => {
-  const db = adminDb();
-  const lines = [];
-  for (let n = 7; n <= 13; n++) lines.push({ productId: `prod-${n}`, qty: 1, basePrice: null });
-  await assertSucceeds(placePricingOrderTx(db, {
-    orderId: 'order-pricing-manual-7',
-    lines, discountCode: 'CAP10A', deliveryFee: 30,
-    source: 'admin_manual', createdBy: ADMIN_UID,
-    actor: ADMIN_UID, actorName: 'Admin', operation: 'manual_order_create',
-    movementSource: 'createManualOrder',
-  }));
-  const order = (await getDoc(doc(db, 'orders', 'order-pricing-manual-7'))).data();
-  assert.equal(order.items.length, 7);
-  assert.equal(order.subtotal, 700);
-  assert.equal(order.discountAmount, 70);
-  assert.equal(order.total, 630);
-  assert.equal(order.saleSavings, 0);
-  assert.equal(order.deliveryFee, 30);
-  assert.equal(order.amountDue, 660);
-  assert.equal(order.attemptId, undefined);
-  assert.equal((await getDoc(doc(db, 'discounts', 'CAP10A'))).data().usedBy, 'order-pricing-manual-7');
-});
-
-test('Pricing A: an 8-line storefront order with a code is denied by the 10-get limit', async () => {
-  const db = anonDb();
-  const lines = [];
-  for (let n = 7; n <= 14; n++) lines.push({ productId: `prod-${n}`, qty: 1, basePrice: null });
-  // 8 product gets + 1 audit getAfter + 1 fee get + 1 code get = 11 > 10
-  // — the documented cap, not a bug.
-  await assertFails(placePricingOrderTx(db, {
-    orderId: 'order-pricing-sf-8-code',
-    lines, discountCode: 'CAP10B', deliveryFee: 30,
-  }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-sf-8-code'))).exists(), false);
-  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'CAP10B'))).data().usedBy, null);
-});
-
-test('Pricing A: a 7-line storefront order with a code passes (exactly 10 gets)', async () => {
-  const db = anonDb();
-  const lines = [];
-  for (let n = 7; n <= 13; n++) lines.push({ productId: `prod-${n}`, qty: 1, basePrice: null });
-  await assertSucceeds(placePricingOrderTx(db, {
-    orderId: 'order-pricing-sf-7-code',
-    lines, discountCode: 'CAP10C', deliveryFee: 30,
-  }));
-  const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-sf-7-code'))).data();
-  assert.equal(order.subtotal, 700);
-  assert.equal(order.discountAmount, 70);
-  assert.equal(order.total, 630);
-  assert.equal(order.amountDue, 660);
 });
 
 test('Pricing A: an 8-line storefront order WITHOUT a code passes (exactly 10 gets)', async () => {

@@ -17,11 +17,11 @@
 // from the client, and these rules are the trusted enforcement:
 //   - Orders are created by ONE client transaction (placeOrderTx /
 //     the manual-order transaction): idempotency read, product +
-//     inventory + discount reads, total from DATABASE prices, stock
-//     reservation, discount claim, order + movements + audit entry.
+//     inventory reads, total from DATABASE prices, stock
+//     reservation, order + movements + audit entry.
 //     The order rule below re-checks the shape, every line price
-//     against the products doc, the discount record, and the audit
-//     entry (via getAfter) — so a forged price/total/code is denied.
+//     against the products doc, and the audit
+//     entry (via getAfter) — so a forged price/total is denied.
 //   - Stock is reserved by the transaction (inventory.reserved +=
 //     qty, absolute set). The inventory rule enforces reserved <=
 //     stock on the data itself, so an over-reservation is denied and
@@ -35,11 +35,11 @@
 //
 // ANONYMOUS READS (required by the client transaction — the reads
 // inside a transaction are rule-checked like any read):
-//   - inventory + discounts: anonymous get (never list). The
+//   - inventory: anonymous get (never list). The
 //     transaction must read inventory (available = stock - reserved)
-//     and the discount record (percent) to compute the total. This
-//     exposes stock counts and discount percents to anyone who knows
-//     a product id / code — the contract §3 note "stock counts stay
+//     to compute availability. This
+//     exposes stock counts to anyone who knows
+//     a product id — the contract §3 note "stock counts stay
 //     hidden" does NOT hold for the transaction reads; only the list
 //     is hidden.
 //   - orders: anonymous get ONLY when the doc does not exist yet
@@ -97,24 +97,23 @@
 // 2026-11-27) accounting per order create (platform limit 10 gets
 // per operation):
 //   storefront (anonymous): N product gets + 1 audit getAfter
-//     + 1 fee get (+ 1 discount-code get when a code is present)
-//     → caps 8 lines without a code (8 + 1 + 1 = 10), 7 with one
-//     (7 + 1 + 1 + 1 = 10). The client cap is 7 lines, so no real
-//     storefront order is affected.
+//     + 1 fee get
+//     → caps 8 lines (8 + 1 + 1 = 10). The client cap is 7 lines,
+//     so no real storefront order is affected.
 //   manual (authenticated admin/manager): N product gets + 1 audit
-//     getAfter + 1 admins get (+ 1 code get), NO fee get — the fee
+//     getAfter + 1 admins get, NO fee get — the fee
 //     is client-asserted on the manual path (decision D2 keeps the
-//     split) → caps 8 without a code, 7 with one, so a 7-line manual
-//     order with a code passes at exactly 10 gets.
-//   An 8-line storefront order with a code costs 11 gets
-//   (8 + 1 + 1 + 1) and is denied by the platform limit — the
+//     split) → caps 8 lines, so a 7-line manual
+//     order passes at 9 gets.
+//   A 9-line storefront order costs 11 gets
+//   (9 + 1 + 1) and is denied by the platform limit — the
 //   documented cap, not a bug. Old-shape orders (no
 //   saleSavings/deliveryFee/amountDue) pay no fee get on either
-//   path. The discount-claim rule costs 1 getAfter. No check was
+//   path. No check was
 //   weakened to fit — this is reported, not silently worked around.
 //   Every other operation in the transaction costs 0-1 calls:
 //     inventory reservation 0, movements 0, audit (anonymous) 0,
-//     audit (admin) 1 cached admins get, discount claim 1.
+//     audit (admin) 1 cached admins get.
 //   The §13 inStock refresh is a separate batch: 1 inventory get
 //     per product, 10 max for 10 lines — inside 20.
 //
@@ -131,20 +130,24 @@
 //     this dual-shape version — a full revert to the pre-feature
 //     exact-key rules is NOT the rollback path (it would reject
 //     updates to orders created during the feature window).
-//   - New invariants (when present): total == subtotal -
-//     discountAmount (unchanged); saleSavings == sum over lines of
+//   - New invariants (when present): total == subtotal;
+//     saleSavings == sum over lines of
 //     (basePrice - price) * qty; amountDue == total + deliveryFee;
 //     deliveryFee == storeSettings/settings.deliveryFee on ANONYMOUS
 //     storefront creates only (decision D2 keeps the fee split —
 //     manual orders are client-asserted, no fee get); basePrice ==
-//     null || basePrice >= price per line; the code discount keeps
-//     the interval form (no round() builtin in the rules language).
+//     null || basePrice >= price per line.
 //   - Product rule: basePrice == null || (basePrice is int &&
 //     basePrice >= price); a fractional basePrice is denied.
 //   - attemptId (string, optional) is present on storefront orders,
-//     omitted on manual orders. Exact order keys: old shape 25/26,
-//     new shape 28/29/30 (25 core + 3 money keys + optional
+//     omitted on manual orders. Exact order keys: old shape 22–26,
+//     new shape 25–30 (22 core + 3 money keys + optional
 //     operationId + optional attemptId); per-line keys 4 or 5.
+//     (Discount code REMOVED 2026-11-27: the three legacy code keys
+//     discountCode/discountPercent/discountAmount stay in the
+//     hasOnly allow-list with NO value checks, so orders created
+//     while the code existed stay updatable — new orders omit them,
+//     which is why the old-shape core is 22 keys, not 25.)
 //   - Attempt docs (analytics/attempts/items) are shape-checked on
 //     write (errorCode from the allowed set, seen values,
 //     clientOrderId, plus the contact fields the live storefront
@@ -318,8 +321,8 @@ service cloud.firestore {
      * an absent slot costs one comparison. Same checks, same gets
      * (1 product get per line; 1 inventory get per line only when
      * the order has at most 3 lines — the OOS guard's 10-get budget
-     * note: worst case 3 price + 3 inventory + 1 code + 1 fee + 1
-     * audit = 9; larger orders keep the transaction + reserve-rule
+     * note: worst case 3 price + 3 inventory + 1 fee + 1
+     * audit = 8; larger orders keep the transaction + reserve-rule
      * guards, exactly as before). */
     function orderLineValid(i) {
       let items = request.resource.data.items;
@@ -372,7 +375,7 @@ service cloud.firestore {
 
     /* subtotal must equal the unrolled sum of price*qty (the rules
      * cannot loop). Added beyond the contract's letter — the contract
-     * lists the total/discountAmount relations but not the subtotal
+     * lists the total relation but not the subtotal
      * sum, and without it a forged low subtotal (with a matching
      * total) would pass. Costs 0 extra reads. */
     function orderSubtotalOk() {
@@ -409,34 +412,27 @@ service cloud.firestore {
         + (n <= 8 ? 0 : orderLineSaving(8)) + (n <= 9 ? 0 : orderLineSaving(9));
     }
 
-    /* discountAmount must be round(subtotal * percent / 100) —
-     * checked without division or a round() builtin (the rules
-     * language has neither for this): d = round(sp/100) iff
-     * d*100-50 <= sp < d*100+50 (sp >= 0). No discount means
-     * amount 0. */
-    function orderDiscountAmountOk() {
-      let d = request.resource.data;
-      return d.discountPercent == null
-        ? d.discountAmount == 0
-        : (d.discountAmount * 100 - 50 <= d.subtotal * d.discountPercent
-          && d.subtotal * d.discountPercent < d.discountAmount * 100 + 50);
-    }
-
     /* The full order shape (contract §3 + pricing Phase A dual-shape):
      * exact keys, field types and ranges, totals consistent,
      * lifecycle fields null, timestamps == request.time, ids == the
      * doc id, createdBy matching the source. Dual-shape: an order may
      * omit ALL THREE new money keys (saleSavings, deliveryFee,
-     * amountDue) — an old-shape order, valid at 25/26 keys. An order
+     * amountDue) — an old-shape order, valid at 22–26 keys. An order
      * carrying ANY ONE of the three must carry ALL THREE (new shape,
-     * 28/29/30 keys: 25 core + 3 money keys + optional operationId +
+     * 25–30 keys: 22 core + 3 money keys + optional operationId +
      * optional attemptId) with all new invariants enforced. attemptId
      * on its own (without the three money keys) is denied. Per-line
      * basePrice may be absent (old-shape line) or present.
+     * Discount code REMOVED 2026-11-27: the three legacy code keys
+     * (discountCode, discountPercent, discountAmount) stay in the
+     * hasOnly allow-list below with NO value checks, so orders
+     * created while the code existed stay updatable — new orders
+     * omit them, which is why the old-shape core is 22 keys, not
+     * 25. total == subtotal (no discount subtracted any more).
      * Dual-shape contact (incomplete orders, 2026-11-27): either
      * money shape may also carry customerPhone2 (optional backup
      * phone), governorate (stable ID) and detailedAddress — 0 to 3
-     * extra keys (old shape 25–29 keys, new-money shape 28–33).
+     * extra keys (old shape 22–26 keys, new-money shape 25–30).
      * customerAddress always carries the combined string. */
     function orderShapeOk(doc) {
       let d = request.resource.data;
@@ -449,15 +445,15 @@ service cloud.firestore {
       // storefront order (bug found from firestore-debug.log, 2026-11-27).
       let opId = d.get('operationId', null);
       return keys.hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerPhone2', 'customerAddress', 'governorate', 'detailedAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId', 'operationId', 'saleSavings', 'deliveryFee', 'amountDue', 'attemptId'])
-        && ((!hasMoney && keys.size() >= 25 && keys.size() <= 29 && !('attemptId' in d))
-          || (hasAllMoney && keys.size() >= 28 && keys.size() <= 33))
+        && ((!hasMoney && keys.size() >= 22 && keys.size() <= 26 && !('attemptId' in d))
+          || (hasAllMoney && keys.size() >= 25 && keys.size() <= 30))
         && (opId == null || opId is string)
         && (!('customerPhone2' in d) || d.customerPhone2 == null || (d.customerPhone2 is string && d.customerPhone2.matches('^01[0125][0-9]{8}$')))
         && (!('governorate' in d) || d.governorate == null || (d.governorate is string && d.governorate.size() >= 1 && d.governorate.size() <= 50))
         && (!('detailedAddress' in d) || d.detailedAddress == null || (d.detailedAddress is string && d.detailedAddress.size() <= 500))
         /* 'operationId' is optional (coordinator fix 2026-11-26):
          * the PC manual order stamps it on the order doc; the
-         * storefront + Flutter orders have exactly the 25 core
+         * storefront + Flutter orders have exactly the 22 core
          * keys. The field is a harmless correlation id. */
         && d.id == doc && d.clientOrderId == doc
         && d.customerName is string && d.customerName.size() > 0
@@ -466,13 +462,8 @@ service cloud.firestore {
         && d.items is list && d.items.size() >= 1 && d.items.size() <= 10
         && orderLinesValid()
         && d.subtotal is number && d.subtotal >= 0
-        && d.discountAmount is number && d.discountAmount >= 0
         && d.total is number && d.total >= 0
-        && d.total == d.subtotal - d.discountAmount
-        && (d.discountCode == null) == (d.discountPercent == null)
-        && (d.discountCode == null || (d.discountCode is string && d.discountCode.size() > 0))
-        && (d.discountPercent == null || (d.discountPercent is int && d.discountPercent >= 1 && d.discountPercent <= 100))
-        && orderDiscountAmountOk()
+        && d.total == d.subtotal
         && orderSubtotalOk()
         && (!('saleSavings' in d) || (d.saleSavings is int && d.saleSavings >= 0 && orderSaleSavingsOk()))
         && (!('deliveryFee' in d) || (d.deliveryFee is int && d.deliveryFee >= 0))
@@ -488,22 +479,6 @@ service cloud.firestore {
         && (d.trackingNumber == null || d.trackingNumber is string)
         && (d.notes == null || d.notes is string)
         && d.createdAt == request.time && d.updatedAt == request.time;
-    }
-
-    /* Discount record check (1 get, only when a code was given):
-     * exists, active, unused, not expired, percent 1-100 and equal
-     * to the order's discountPercent. */
-    function orderDiscountOk() {
-      let d = request.resource.data;
-      let disc = d.discountCode == null ? null : get(/databases/$(database)/documents/discounts/$(d.discountCode));
-      return d.discountCode == null
-        || (disc != null
-          && disc.data.get('active', false) == true
-          && disc.data.get('usedBy', null) == null
-          && (!('expiresAt' in disc.data) || disc.data.expiresAt == null || disc.data.expiresAt > request.time)
-          && disc.data.get('percent', null) is int
-          && disc.data.percent >= 1 && disc.data.percent <= 100
-          && disc.data.percent == d.discountPercent);
     }
 
     /* The audit entry for this order, as projected after this
@@ -612,7 +587,7 @@ service cloud.firestore {
       return d.keys().hasOnly(['startedAt', 'ordered', 'errorCode', 'seenPrices', 'seenBasePrices', 'seenTotal', 'seenDeliveryFee', 'currentPrices', 'currentBasePrices', 'currentFee', 'clientOrderId', 'contactName', 'contactPhone', 'contactAddress'])
         && d.get('startedAt', null) is timestamp
         && d.get('ordered', null) is bool
-        && (!('errorCode' in d) || d.errorCode == null || d.errorCode in ['PRICE_CHANGED', 'FEE_CHANGED', 'TOTAL_CHANGED', 'INSUFFICIENT_STOCK', 'DISCOUNT_INVALID', 'DISCOUNT_USED', 'FEE_UNSET', 'permission-denied'])
+        && (!('errorCode' in d) || d.errorCode == null || d.errorCode in ['PRICE_CHANGED', 'FEE_CHANGED', 'TOTAL_CHANGED', 'INSUFFICIENT_STOCK', 'FEE_UNSET', 'permission-denied'])
         && (!('seenPrices' in d) || d.seenPrices == null || d.seenPrices is map)
         && (!('seenBasePrices' in d) || d.seenBasePrices == null || d.seenBasePrices is map)
         && (!('seenTotal' in d) || d.seenTotal == null || d.seenTotal is number)
@@ -696,35 +671,6 @@ service cloud.firestore {
         && inv != null
         && flag is bool
         && flag == ((inv.data.get('stock', 0) - inv.data.get('reserved', 0)) > 0);
-    }
-
-    /* Discount claim (1 getAfter): the update sets exactly usedBy +
-     * usedAt on a doc whose usedBy was null, and the order it names
-     * exists in this same transaction with this discount code. The
-     * getAfter tie makes the claim safe for any requester — an
-     * authenticated manual order claims exactly like the anonymous
-     * storefront order, so the branch is auth-agnostic (the
-     * contract's "anonymous claim ONLY" cannot stand as written:
-     * manual orders claim the same way and their write carries no
-     * audit entry for the admin branch). */
-    /* 'operationId' + 'updatedAt' are tolerated in the changed
-     * keys (coordinator fix 2026-11-26): the PC manual order
-     * stamps both on the claim write; without them the claim falls
-     * back to the audited admin branch, whose docIds do not cover
-     * the extra keys, so the claim is denied outright. The
-     * getAfter tie to a real order below is what makes the claim
-     * safe, and it still applies. */
-    function discountClaimOk(code) {
-      let d = request.resource.data;
-      let usedBy = d.get('usedBy', null);
-      let shapeOk = changedUpdate().hasOnly(['usedBy', 'usedAt', 'operationId', 'updatedAt'])
-        && usedBy is string && usedBy.size() > 0
-        && d.get('usedAt', null) == request.time
-        && resource.data.get('usedBy', null) == null;
-      let order = shapeOk ? getAfter(/databases/$(database)/documents/orders/$(usedBy)) : null;
-      return shapeOk
-        && order != null
-        && order.data.discountCode == code;
     }
 
     /* Anonymous stock-movement entry for an order (contract §3):
@@ -1252,7 +1198,6 @@ service cloud.firestore {
       // (orderLinesValid) — one traversal instead of three separate
       // conjuncts (budget fix 2026-11-27). Same checks, same gets.
       allow create: if orderShapeOk(doc)
-        && orderDiscountOk()
         && orderAuditOk(doc)
         && orderFeeOk()
         && (request.resource.data.source == 'storefront' || manualOrderAllowed());
@@ -1306,29 +1251,15 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // ---- Discount codes: admin only, except the claim — the
-    // order transaction's usedBy/usedAt update, tied by getAfter
-    // to the order being created (checked first so a claim never
-    // trips over the admin branch's missing operationId). Anonymous
-    // get (never list): the order transaction reads the record to
-    // validate the code. ----
-    match /discounts/{code} {
-      allow get: if isAdmin() || request.auth == null;
-      allow list: if isAdmin();
-      allow create: if isAdmin()
-        && request.resource.data.percent is int
-        && request.resource.data.percent >= 1
-        && request.resource.data.percent <= 100
-        && hasAudit(request.resource.data.get('operationId', null), 'discounts', code, changedCreate());
-      allow update: if discountClaimOk(code)
-        || (isAdmin()
-          && (!('percent' in request.resource.data)
-            || (request.resource.data.percent is int
-              && request.resource.data.percent >= 1
-              && request.resource.data.percent <= 100))
-          && hasAudit(request.resource.data.get('operationId', null), 'discounts', code, changedUpdate()));
-      allow delete: if isAdmin() && hasDeleteAudit('discounts', code);
-    }
+    // ---- Discount codes: REMOVED 2026-11-27 (Mohamed's decision —
+    // the promo code goes entirely). The /discounts collection has
+    // no match block any more, so no read/write of any kind is
+    // allowed on it; the claim helper and the order-create code
+    // check are gone too. Per-product SALE prices (Model P:
+    // basePrice/saleSavings) and the delivery fee are untouched.
+    // Legacy orders carrying discountCode/discountPercent/
+    // discountAmount stay updatable: the three keys remain in the
+    // order hasOnly list with no value checks (see orderShapeOk). ----
 
     // ---- Template registry (Phase 3 v1 + bundle model, 2026-11-27):
     // anonymous get of an ACTIVE registry doc is allowed (the live

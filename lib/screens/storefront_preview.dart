@@ -592,7 +592,7 @@ class StorefrontProductCardPreview extends StatelessWidget {
 /// the real live products, visibly stamped as a preview. The
 /// preview checkout is a dry run through the frozen shell (info →
 /// review, stopping at confirm) — no preview action may call
-/// placeOrderTx, reserve stock, or claim a discount code.
+/// placeOrderTx or reserve stock.
 ///
 /// NOTE on scope: the PreviewTokens widgets above (header / homepage
 /// / product-card previews) stay — they serve the brand editor and

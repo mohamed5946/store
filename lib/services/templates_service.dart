@@ -131,7 +131,7 @@ const Set<String> bundleTemplateIds = {
 /// valid six-field bundle doc; if the frozen classic bundle ever
 /// changes, its manifest hash changes and this constant must follow.
 const String classicBundleHash =
-    'cfafbac1d0d584ca388073c18ac8bf8094367f3d1e128b4855df8caaa44137af';
+    '3dd0030c445a80099425b4ad4493210c61e653fff0922001b78c826afd5cb703';
 
 /// Locked display glossary (spec §1 "Per-template identity"):
 /// Arabic name, English gloss, one-sentence identity.

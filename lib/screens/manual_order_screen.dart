@@ -1,11 +1,11 @@
 // Manual order screen (design doc file 16, Technical Plan v1.4 §7).
 //
 // An admin creates an order on behalf of a customer (phone order).
-// The form has NO price, total, or discount-percent fields — a
-// discount applies only via a code. Creation goes through the
+// The form has NO price or total fields — totals come from the
+// database prices. Creation goes through the
 // `createManualOrder` client transaction (contract §1): the same
-// trusted path as the storefront's placeOrder (same price/stock/
-// discount validation, same reservation, same idempotency, same
+// trusted path as the storefront's placeOrder (same price/stock
+// validation, same reservation, same idempotency, same
 // audit) with source 'admin_manual' and the admin's UID. The
 // permission is checked client-side first (and re-checked by the
 // rules from admins/{uid}); this screen checks it only to show a
@@ -29,7 +29,6 @@ class _ManualOrderScreenState extends State<ManualOrderScreen> {
   final _nameCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
   final _addressCtrl = TextEditingController();
-  final _discountCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
 
   bool _checkingPermission = true;
@@ -72,7 +71,6 @@ class _ManualOrderScreenState extends State<ManualOrderScreen> {
     _nameCtrl.dispose();
     _phoneCtrl.dispose();
     _addressCtrl.dispose();
-    _discountCtrl.dispose();
     _notesCtrl.dispose();
     super.dispose();
   }
@@ -97,7 +95,6 @@ class _ManualOrderScreenState extends State<ManualOrderScreen> {
       final res = await Backend.instance.createManualOrder(
         clientOrderId: clientOrderId,
         items: items,
-        discountCode: _discountCtrl.text.trim().isEmpty ? null : _discountCtrl.text.trim(),
         customerName: _nameCtrl.text.trim(),
         customerPhone: _phoneCtrl.text.trim(),
         customerAddress: _addressCtrl.text.trim(),
@@ -226,12 +223,6 @@ class _ManualOrderScreenState extends State<ManualOrderScreen> {
                             }).toList(),
                           );
                         },
-                      ),
-                      const SizedBox(height: 12),
-                      TextFormField(
-                        controller: _discountCtrl,
-                        decoration: const InputDecoration(
-                            labelText: 'كود خصم (اختياري)'),
                       ),
                       const SizedBox(height: 12),
                       DropdownButtonFormField<String>(

@@ -54,7 +54,7 @@
  * - The order doc is created EXACTLY ONCE, before the journey animation.
  *   On failure the real error shows and NO animation plays (never fake).
  * - Analytics are anonymous (random localStorage id, heartbeat, funnel).
- * - No invented stats, discount codes, or product claims anywhere.
+ * - No invented stats or product claims anywhere.
  */
 
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
@@ -714,15 +714,6 @@ function newClientOrderId() {
 }
 let ordering = false;
 let theme = localStorage.getItem('sp-theme') || 'light';
-/* Discount code typed in the review step. The code is validated by
- * ONE pre-confirm read of the `discounts` collection (see the
- * pricing-helper note above for why it is `discounts`, not
- * `discountCodes`); the transaction re-reads the percent and never
- * trusts what the customer saw. appliedDiscount is set only by a
- * successful apply tap; a typed-but-unapplied code is never charged. */
-let discountCode = '';
-let appliedDiscount = null; // { code, percent } once apply succeeds, else null
-let codeApplyError = '';
 /* Delivery fee (storeSettings/settings.deliveryFee, int >= 0).
  * null = the settings doc has NO fee field: missing != 0, checkout
  * is blocked until the admin sets it once. freeDeliveryThreshold is
@@ -732,11 +723,11 @@ let deliveryFee = null;
 let freeDeliveryThreshold = null;
 function feeIsSet() { return Number.isInteger(deliveryFee) && deliveryFee >= 0; }
 /* The canonical pricing of the current cart, through the one helper:
- * cart lines + the applied code percent + the fee state. */
+ * cart lines + the fee state. */
 function currentPricing() {
   return computePricing(
     cartLines().map((l) => ({ price: Number(l.p.price), basePrice: l.p.basePrice ?? null, qty: l.qty })),
-    { codePercent: appliedDiscount ? appliedDiscount.percent : 0, deliveryFee, freeDeliveryThreshold });
+    { deliveryFee, freeDeliveryThreshold });
 }
 /* True when the catalog load failed at boot — renderProducts shows an
  * error UI with a retry instead of an empty grid (the silent catches
@@ -814,12 +805,9 @@ const money = (n) => `${Number(n || 0).toLocaleString('ar-EG')} ج.م`;
  *   (e.g. base 199 -> 149: 25% x 199 = 49.75 != 50, so no badge, only
  *   "وفّر 50"). A customer multiplying a displayed % by the base must
  *   never find a 1 EGP discrepancy.
- * - code discount = round(subtotal x percent / 100), halves up, on the
- *   POST-SALE subtotal (sequential stacking); the two savings are
- *   shown as two separate lines, never one conflated number.
- * - Y = amountDue, Z = baseSubtotal + deliveryFee, X = saleSavings +
- *   discountAmount. cartTotal() stays the pre-code products subtotal;
- *   the fee appears only in amountDue.
+ * - Y = amountDue, Z = baseSubtotal + deliveryFee, X = saleSavings.
+ *   cartTotal() is the products subtotal; the fee appears only in
+ *   amountDue.
  * - Free-delivery threshold (decision D3): when the order's `total`
  *   reaches the admin setting, the fee is waived (effective fee 0,
  *   stored as deliveryFee 0). The spec names no settings field for
@@ -827,13 +815,7 @@ const money = (n) => `${Number(n || 0).toLocaleString('ar-EG')} ج.م`;
  *   .freeDeliveryThreshold` (int > 0; absent/null = no waiver).
  *   The admin apps must write that exact field, or the waiver never
  *   triggers — fail-closed, never a hardcoded threshold.
- * - Code collection: `discounts/{code}` (the spec said
- *   `discountCodes/{code}` until the 2026-11-27 spec correction; the
- *   live system (firestore.rules + Flutter backend + this file's
- *   transaction) uses `discounts/{code}`). The pre-confirm apply read
- *   below uses the live `discounts` collection so apply and the
- *   transaction can never disagree. Do NOT rename it without
- *   renaming it in the rules and both admin apps too. */
+ */
 /* PRICING-HELPER-BEGIN */
 function roundHalfUp(x) { return Math.floor(x + 0.5); }
 function isOnSale(p) {
@@ -871,14 +853,13 @@ function maxDiscountPct(list) {
   return pct;
 }
 /* lines: [{ price, basePrice (int|null), qty }].
- * opts: { codePercent (0 when no code), deliveryFee (int|null — null
- *   means the settings doc has no fee field: missing != 0, unset),
- *   freeDeliveryThreshold (int|null) }.
+ * opts: { deliveryFee (int|null — null means the settings doc has
+ *   no fee field: missing != 0, unset), freeDeliveryThreshold
+ *   (int|null) }.
  * Returns every figure the storefront, review, transaction and
  * WhatsApp quote share — one computation, no divergent copies. */
 function computePricing(lines, opts) {
   const o = opts || {};
-  const codePercent = Number(o.codePercent) || 0;
   let baseSubtotal = 0;
   let subtotal = 0;
   let saleSavings = 0;
@@ -893,8 +874,7 @@ function computePricing(lines, opts) {
     saleSavings += lineSaving;
     perLine.push({ saving: lineSaving, pct: base != null ? salePercent({ price, basePrice: base }) : null });
   }
-  const discountAmount = codePercent > 0 ? roundHalfUp((subtotal * codePercent) / 100) : 0;
-  const total = subtotal - discountAmount;
+  const total = subtotal;
   const feeUnset = !(Number.isInteger(o.deliveryFee) && o.deliveryFee >= 0);
   const threshold = (Number.isInteger(o.freeDeliveryThreshold) && o.freeDeliveryThreshold > 0)
     ? o.freeDeliveryThreshold : null;
@@ -906,13 +886,12 @@ function computePricing(lines, opts) {
     baseSubtotal,
     subtotal,
     saleSavings,
-    discountAmount,
     total,
     deliveryFee,
     feeUnset,
     feeWaived,
     amountDue,
-    savingTotal: saleSavings + discountAmount,
+    savingTotal: saleSavings,
     insteadOf: feeUnset ? null : baseSubtotal + deliveryFee,
   };
 }
@@ -2255,10 +2234,10 @@ function renderCart() {
     </div>`;
   }).join('') : '<p class="cart-empty">السلة فارغة حالياً</p>';
   /* Breakdown under the total (fee line from the first render):
-   * subtotal stays the pre-code products total; savings, code
-   * discount, fee and amount due are their own lines. With no sale
-   * items there is no "وفّرت" line; with the fee unset the cart
-   * shows the missing-fee message and checkout stays blocked. */
+   * subtotal is the products total; savings, fee and amount due are
+   * their own lines. With no sale items there is no "وفّرت" line;
+   * with the fee unset the cart shows the missing-fee message and
+   * checkout stays blocked. */
   const pr = currentPricing();
   let breakdown = $('#cartBreakdown');
   if (!breakdown) {
@@ -2271,7 +2250,6 @@ function renderCart() {
     breakdown.innerHTML = `
       ${cartBlocked ? '<div class="checkout-blocked-note">في منتجات خلصت من المخزون — شيلها أو قلل الكمية عشان تكمل الطلب</div>' : ''}
       ${pr.saleSavings > 0 ? `<div class="row save-row"><span>وفّرت</span><strong>${money(pr.saleSavings)}</strong></div>` : ''}
-      ${pr.discountAmount > 0 ? `<div class="row save-row"><span>خصم الكود</span><strong>− ${money(pr.discountAmount)}</strong></div>` : ''}
       <div class="row fee-row"><span>التوصيل</span><strong>${feeLineText(pr.feeUnset ? null : pr.deliveryFee, 'browse')}</strong></div>
       ${pr.amountDue != null ? `<div class="row due-row"><span>المبلغ المستحق عند الاستلام</span><strong>${money(pr.amountDue)}</strong></div>` : ''}`;
   }
@@ -2512,61 +2490,15 @@ function showInfoForm(err = '') {
     showReview({ name, phone, phone2: phone2 || null, governorate: govId, detailedAddress: detailed, addr });
   });
 }
-/* The customer currently at the review step (kept so a code-apply
- * re-render can rebuild the same review). */
-let reviewCustomer = null;
-/* Code application (new step, before the review renders its final
- * numbers): reads `discounts/{code}` ONCE pre-confirm to fetch the
- * percent (one read per code application, not per visit). A valid
- * code re-renders the review with the code discount; an invalid or
- * already-used code shows "الكود غير صالح" and the review reverts
- * to the no-code totals. The percent is read again inside
- * placeOrderTx — the transaction never trusts the percent seen here. */
-async function applyDiscountCode() {
-  const input = $('#fDiscount');
-  const code = (input ? input.value : '').trim();
-  if (!code) {
-    appliedDiscount = null;
-    discountCode = '';
-    codeApplyError = '';
-    if (reviewCustomer) showReview(reviewCustomer);
-    return;
-  }
-  try {
-    const snap = await getDoc(doc(db, 'discounts', code));
-    const rec = snap.exists() ? snap.data() : null;
-    const pct = rec ? Number(rec.percent) : NaN;
-    const valid = snap.exists()
-      && rec.active !== false
-      && !rec.usedBy
-      && !(rec.expiresAt && toMillis(rec.expiresAt) < Date.now())
-      && Number.isInteger(pct) && pct >= 1 && pct <= 100;
-    if (!valid) {
-      appliedDiscount = null;
-      discountCode = '';
-      codeApplyError = 'الكود غير صالح';
-    } else {
-      appliedDiscount = { code, percent: pct };
-      discountCode = code;
-      codeApplyError = '';
-    }
-  } catch (_) {
-    appliedDiscount = null;
-    discountCode = '';
-    codeApplyError = 'الكود غير صالح';
-  }
-  if (reviewCustomer) showReview(reviewCustomer);
-}
 /* Review step. `notice` is shown when the function rejected the previous
- * confirm (price/total changed, bad code) — the customer re-confirms
+ * confirm (price/total changed) — the customer re-confirms
  * with the same clientOrderId, never a new one. The review renders the
- * FULL breakdown the customer confirms: products subtotal, the two
- * savings lines separately, the fee line, the amount due, and the
+ * FULL breakdown the customer confirms: products subtotal, the sale
+ * savings line, the fee line, the amount due, and the
  * headline "هتوفر X وهتدفع Y بدلًا من Z" (Y = amountDue, Z =
  * baseSubtotal + deliveryFee). The fee line here reads "الشحن مجانًا"
  * when the fee is 0 (the review modal is the confirm-order step). */
 function showReview(customer, notice = '') {
-  reviewCustomer = customer;
   const lines = cartLines();
   const pr = currentPricing();
   /* Missing-fee block, defensive (checkout is already blocked before
@@ -2601,33 +2533,21 @@ function showReview(customer, notice = '') {
     <div class="cart-foot review-breakdown">
       <div class="row"><span>إجمالي المنتجات</span><strong>${money(pr.subtotal)}</strong></div>
       ${pr.saleSavings > 0 ? `<div class="row save-row"><span>وفّرت من العرض</span><strong>${money(pr.saleSavings)}</strong></div>` : ''}
-      ${pr.discountAmount > 0 ? `<div class="row save-row"><span>خصم الكود</span><strong>− ${money(pr.discountAmount)}</strong></div>` : ''}
       <div class="row fee-row"><span>الشحن</span><strong>${feeLineText(pr.deliveryFee, 'review')}</strong></div>
       <div class="row due-row"><span>المبلغ المستحق عند الاستلام</span><strong>${money(pr.amountDue)}</strong></div>
       ${pr.savingTotal > 0 ? `<p class="save-headline">هتوفر ${money(pr.savingTotal)} وهتدفع ${money(pr.amountDue)} بدلًا من ${money(pr.insteadOf)}</p>` : ''}
     </div>
-    <label class="field"><span>كود خصم (اختياري)</span><input id="fDiscount" type="text" dir="ltr" style="text-align:right" placeholder="اكتب الكود لو معاك" value="${esc(appliedDiscount ? appliedDiscount.code : discountCode)}" /></label>
-    <button class="btn btn-ghost btn-block" id="applyCode" style="margin-bottom:10px">تطبيق الكود</button>
-    ${codeApplyError ? `<p class="form-err">${esc(codeApplyError)}</p>` : ''}
-    ${appliedDiscount ? `<p class="code-ok">تم تطبيق الكود — خصم ${appliedDiscount.percent.toLocaleString('ar-EG')}٪</p>` : ''}
     <p style="color:var(--text-soft)">الدفع عند الاستلام</p>
     ${isPreviewMode
       ? `<div class="preview-end-stamp" role="status">معاينة — لن يتم إنشاء طلب هنا. المراجعة تنتهي عند هذه الخطوة.</div>`
       : `<button class="btn btn-primary btn-block" id="confirmOrder">تأكيد الطلب</button>`}
     ${(!isPreviewMode && whatsappOrderEnabled) ? `<button class="btn btn-ghost btn-block" id="waOrder" style="margin-top:10px">اطلب عبر واتساب</button>` : ''}`);
-  $('#applyCode').addEventListener('click', () => { applyDiscountCode(); });
   const confirmBtn = $('#confirmOrder');
   if (confirmBtn) confirmBtn.addEventListener('click', () => {
     /* Preview dry run: the confirm button is replaced in preview
      * mode (see below) and submitOrder never runs — no order, no
-     * inventory reserve, no discount claim. */
+     * inventory reserve. */
     if (isPreviewMode) return;
-    const typed = ($('#fDiscount').value || '').trim();
-    if (typed && (!appliedDiscount || appliedDiscount.code !== typed)) {
-      applyDiscountCode();
-      return;
-    }
-    if (!typed && appliedDiscount) { appliedDiscount = null; discountCode = ''; }
     submitOrder(customer);
   });
   const waBtn = $('#waOrder');
@@ -2650,7 +2570,6 @@ function orderViaWhatsApp(customer) {
     }),
     `إجمالي المنتجات: ${money(pr.subtotal)}`,
     ...(pr.saleSavings > 0 ? [`وفّرت من العرض: ${money(pr.saleSavings)}`] : []),
-    ...(pr.discountAmount > 0 ? [`خصم الكود: ${money(pr.discountAmount)}`] : []),
     pr.deliveryFee === 0 ? 'التوصيل: التوصيل مجاني' : `التوصيل: ${money(pr.deliveryFee)}`,
     `المبلغ المستحق عند الاستلام: ${money(pr.amountDue)}`,
     ...(pr.savingTotal > 0 ? [`هتوفر ${money(pr.savingTotal)} وهتدفع ${money(pr.amountDue)} بدلًا من ${money(pr.insteadOf)}`] : []),
@@ -2666,14 +2585,14 @@ function orderViaWhatsApp(customer) {
 /* ---------- order: ONE client Firestore transaction (no-functions) ----------
  * Replaces the placeOrder callable (contract §1). The transaction does,
  * atomically: idempotency by clientOrderId -> read products + inventory
- * + discount -> validate shape/prices/stock/discount -> total from
- * DATABASE prices -> reserve stock -> claim the discount -> create the
- * order (exact createOrderTx field list + auditId) -> movements ->
- * audit entry. The products.inStock refresh is a SECOND, best-effort
- * batched write after commit (contract §13) — never inside the tx.
- * The client sends ONLY product ids + quantities + (optionally) a
- * discount code + the prices it displayed (seenPrices/seenTotal) —
- * never a price or total as a fact. */
+ * -> validate shape/prices/stock -> total from DATABASE prices ->
+ * reserve stock -> create the order (exact createOrderTx field list
+ * + auditId) -> movements -> audit entry. The products.inStock
+ * refresh is a SECOND, best-effort batched write after commit
+ * (contract §13) — never inside the tx.
+ * The client sends ONLY product ids + quantities + the prices it
+ * displayed (seenPrices/seenTotal) — never a price or total as a
+ * fact. */
 class OrderError extends Error {
   constructor(code, message, details = {}) {
     super(message);
@@ -2712,7 +2631,7 @@ function newAuditId() {
  * stockState is [{ productId, inStock }] from the inventory values the
  * transaction just wrote, for the §13 second write. Throws OrderError
  * with a structured code on any validation failure. */
-async function placeOrderTx({ clientOrderId: orderId, items, discountCode: code, customer, seenPrices, seenBasePrices, seenDeliveryFee, seenTotal }) {
+async function placeOrderTx({ clientOrderId: orderId, items, customer, seenPrices, seenBasePrices, seenDeliveryFee, seenTotal }) {
   /* Shape validation (client-side, before the transaction). */
   const shapeError = (() => {
     if (!customer || typeof customer !== 'object') return 'بيانات العميل ناقصة';
@@ -2730,7 +2649,6 @@ async function placeOrderTx({ clientOrderId: orderId, items, discountCode: code,
       const qty = Number(line.qty);
       if (!Number.isInteger(qty) || qty < 1 || qty > 20) return 'INVALID_INPUT';
     }
-    if (code != null && String(code).trim() === '') return 'INVALID_INPUT';
     return null;
   })();
   if (shapeError === 'ORDER_TOO_LARGE') {
@@ -2792,7 +2710,7 @@ async function placeOrderTx({ clientOrderId: orderId, items, discountCode: code,
      * Missing fee field fails closed — the client blocks checkout
      * before this point, so reaching here means the fee was removed
      * mid-checkout. The threshold waiver (decision D3) applies on
-     * the post-code `total`, exactly like the display helper. */
+     * the `total`, exactly like the display helper. */
     const settingsSnap = await tx.get(doc(db, 'storeSettings', 'settings'));
     const settingsData = settingsSnap.exists() ? settingsSnap.data() : {};
     const settingsFee = settingsData.deliveryFee;
@@ -2801,24 +2719,6 @@ async function placeOrderTx({ clientOrderId: orderId, items, discountCode: code,
     }
     const settingsThreshold = (Number.isInteger(settingsData.freeDeliveryThreshold) && settingsData.freeDeliveryThreshold > 0)
       ? settingsData.freeDeliveryThreshold : null;
-    /* Discount: read the trusted record, verify, claim atomically. */
-    let discount = null;
-    if (code) {
-      const discCode = String(code).trim();
-      const discSnap = await tx.get(doc(db, 'discounts', discCode));
-      if (!discSnap.exists()) throw new OrderError('DISCOUNT_INVALID', 'كود الخصم مش صحيح');
-      const record = discSnap.data();
-      if (!record.active) throw new OrderError('DISCOUNT_INVALID', 'كود الخصم مش فعال');
-      if (record.usedBy) throw new OrderError('DISCOUNT_USED', 'كود الخصم ده اتستخدم قبل كده');
-      if (record.expiresAt && toMillis(record.expiresAt) < Date.now()) {
-        throw new OrderError('DISCOUNT_INVALID', 'كود الخصم انتهت صلاحيته');
-      }
-      const percent = Number(record.percent);
-      if (!Number.isInteger(percent) || percent < 1 || percent > 100) {
-        throw new OrderError('DISCOUNT_INVALID', 'كود الخصم مش صحيح');
-      }
-      discount = { code: discCode, percent, ref: doc(db, 'discounts', discCode) };
-    }
     /* Totals from the DATABASE prices through the ONE canonical
      * helper — no inline money arithmetic inside this transaction.
      * The seen-value guard (§7) compares against exactly what the
@@ -2831,10 +2731,8 @@ async function placeOrderTx({ clientOrderId: orderId, items, discountCode: code,
      * fresh confirmation. */
     const pricing = computePricing(
       lines.map((l) => ({ price: l.price, basePrice: l.basePrice, qty: l.qty })),
-      { codePercent: discount ? discount.percent : 0, deliveryFee: settingsFee, freeDeliveryThreshold: settingsThreshold });
+      { deliveryFee: settingsFee, freeDeliveryThreshold: settingsThreshold });
     const subtotal = pricing.subtotal;
-    const discountPercent = discount ? discount.percent : null;
-    const discountAmount = pricing.discountAmount;
     const total = pricing.total;
     const deliveryFeeEffective = pricing.deliveryFee;
     const amountDue = pricing.amountDue;
@@ -2892,10 +2790,6 @@ async function placeOrderTx({ clientOrderId: orderId, items, discountCode: code,
       });
       stockState.push({ productId: line.productId, inStock: newAvailable > 0 });
     }
-    /* Claim the discount (one use only, atomically inside this tx). */
-    if (discount) {
-      tx.set(discount.ref, { usedBy: orderId, usedAt: now }, { merge: true });
-    }
     /* Create the order (doc id = clientOrderId) — the exact
      * createOrderTx field list, PLUS auditId, PLUS the pricing
      * snapshot: per-line basePrice, saleSavings, deliveryFee,
@@ -2915,9 +2809,6 @@ async function placeOrderTx({ clientOrderId: orderId, items, discountCode: code,
       customerAddress: String(customer.address).trim(),
       items: lines.map((l) => ({ productId: l.productId, name: l.name, price: l.price, qty: l.qty, basePrice: l.basePrice })),
       subtotal,
-      discountCode: discount ? discount.code : null,
-      discountPercent,
-      discountAmount,
       total,
       saleSavings: pricing.saleSavings,
       deliveryFee: deliveryFeeEffective,
@@ -3037,8 +2928,7 @@ async function submitOrder(customer) {
   /* Seen values (§7): exactly what the review rendered — per-line
    * effective prices, per-line base prices, the fee the customer saw
    * (the effective fee, after any threshold waiver), and the seen
-   * amountDue (seenTotal IS the amount due). Only the code the apply
-   * step validated is submitted; a typed-but-unapplied code is not. */
+   * amountDue (seenTotal IS the amount due). */
   const seenPrices = {};
   const seenBasePrices = {};
   for (const l of lines) {
@@ -3052,7 +2942,6 @@ async function submitOrder(customer) {
     const { order, created, stockState } = await placeOrderTx({
       clientOrderId,
       items: lines.map((l) => ({ productId: l.p.id, qty: l.qty })),
-      discountCode: appliedDiscount ? appliedDiscount.code : null,
       customer: {
         name: customer.name, phone: customer.phone,
         phone2: customer.phone2 || null,
@@ -3071,7 +2960,7 @@ async function submitOrder(customer) {
     if (created) refreshInStock(stockState).catch(() => {});
     await updateDoc(doc(db, 'analytics', 'attempts', 'items', attemptId), { ordered: true, clientOrderId, templateId: activeTemplateId, templateVersion: activeTemplateVersion }).catch(() => {});
     recordStep('order');
-    cart = {}; discountCode = ''; appliedDiscount = null; codeApplyError = ''; renderCart();
+    cart = {}; renderCart();
     /* Order created: this checkout attempt is done, so the next checkout
      * gets a fresh id. */
     localStorage.removeItem('sp-checkout');
@@ -3177,17 +3066,6 @@ async function submitOrder(customer) {
           return;
         }
       } catch (_) { /* fall through to the generic error below */ }
-    }
-    if (code === 'DISCOUNT_INVALID' || code === 'DISCOUNT_USED') {
-      /* The transaction re-read the code and rejected it: clear the
-       * applied code so the review reverts to the no-code totals. */
-      appliedDiscount = null;
-      discountCode = '';
-      codeApplyError = 'الكود غير صالح';
-      showReview(customer, code === 'DISCOUNT_USED'
-        ? 'كود الخصم ده اتستخدم قبل كده — جرّب كود تاني أو كمّل من غيره'
-        : 'كود الخصم مش صحيح — اتأكد منه أو كمّل من غيره');
-      return;
     }
     openModal(`
       <button class="icon-btn modal-close" id="modalClose" aria-label="إغلاق">✕</button>
