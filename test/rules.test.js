@@ -465,11 +465,29 @@ async function rawOrderBatch(db, {
   // M1 2026-11-27 (audit-split + Option 3): the first batch writes
   // ONLY order + inventory reserve; movement + audit go in a second
   // batch after the commit, mirroring the clients.
+  // Step 3 fix: the reserve write must echo the STORED minStock /
+  // costPrice, not hardcoded 5 / 100 — the seed has prod-4 at
+  // costPrice 150 and prod-oos-1 at 50, so the hardcoded values
+  // made every reserve write on those products fail the
+  // costPrice pin, and the assertSucceeds cases (audit-split test,
+  // OOS old-shape test) failed on the reserve — while the
+  // assertFails cases passed for the wrong reason (denied on the
+  // pin, not on the order conjunct under test). Read the doc first
+  // (admin read, like the assertions below); fall back to the old
+  // constants only if the doc does not exist.
+  let invMinStock = 5, invCostPrice = 100;
+  if (!skipInventory && lines == null) {
+    const invSnap = await getDoc(doc(adminDb(), 'inventory', productId));
+    if (invSnap.exists()) {
+      invMinStock = invSnap.data().minStock ?? 5;
+      invCostPrice = invSnap.data().costPrice ?? 100;
+    }
+  }
   const batch = writeBatch(db);
   if (!skipInventory && lines == null) {
     batch.set(doc(db, 'inventory', productId), {
       productId, stock, reserved: reserved + qty,
-      minStock: 5, costPrice: 100, updatedAt: now,
+      minStock: invMinStock, costPrice: invCostPrice, updatedAt: now,
     }, { merge: true });
   }
   batch.set(doc(db, 'orders', orderId), order);
@@ -1323,6 +1341,19 @@ test('Pricing A (matrix A): a storefront order with a sale + fee passes', async 
 });
 
 test('Pricing A (matrix B): a storefront order with fee 0 passes', async () => {
+  // Step 3 fix: matrix B is the fee-SETTING-0 case (pricing bundle
+  // Verification Plan, case B — "with the fee set to 0", E2E (3)):
+  // the admin has set deliveryFee to 0, so the order's fee 0
+  // matches settings and passes. The old version ran against the
+  // shared seed (deliveryFee 30) and expected fee 0 to pass — a
+  // forged fee, which orderFeeOk rightly denies. The budget
+  // failure masked this setup bug until the 1-line order fit.
+  // Seed 0 here, restore 30 afterwards (same pattern as the
+  // missing-fee test below).
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 0 });
+  });
   const db = anonDb();
   await assertSucceeds(placePricingOrderTx(db, {
     orderId: 'order-pricing-B',
@@ -1333,6 +1364,10 @@ test('Pricing A (matrix B): a storefront order with fee 0 passes', async () => {
   assert.equal(order.deliveryFee, 0);
   assert.equal(order.amountDue, 300);
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 2);
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 30 });
+  });
 });
 
 // Discount code REMOVED 2026-11-27: matrix C was the code-on-a-sale
