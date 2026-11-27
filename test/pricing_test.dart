@@ -177,17 +177,17 @@ void main() {
       expect(t.amountDue, 300);
     });
 
-    test('missing-fee state: fee and amountDue are null, caller blocks',
+    test('missing fee is free (fee-default-free, decision 2026-11-27)',
         () {
       final t = Backend.computeOrderTotals([line(500, 300, 1)]);
-      expect(t.deliveryFee, isNull);
+      // No fee set behaves exactly like fee 0: delivery is free,
+      // amountDue is the items total, and nothing blocks the order.
+      expect(t.deliveryFee, 0);
       expect(t.feeUnset, isTrue);
       expect(t.feeWaived, isFalse);
-      // amountDue without a fee is NOT a payable figure — null,
-      // exactly like the storefront helper — and the manual-order
-      // path throws before relying on it.
-      expect(t.amountDue, isNull);
-      expect(t.insteadOf, isNull);
+      expect(t.amountDue, t.total);
+      expect(t.amountDue, 300);
+      expect(t.insteadOf, 500);
     });
 
     test('free-delivery threshold waives the fee at the threshold', () {

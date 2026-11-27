@@ -425,12 +425,14 @@ class Backend {
   /// total, and they are already baked into `price`.
   ///
   /// [deliveryFee] is the snapshot of `storeSettings/settings`
-  /// `.deliveryFee`. Null means the fee is UNSET (missing ≠ 0):
-  /// `deliveryFee` and `amountDue` are then null too, and the
-  /// CALLER must block the order before relying on them — see
-  /// [createManualOrder]. [freeDeliveryThreshold] (decision D3,
-  /// admin setting): when set (> 0), the fee is waived (`deliveryFee`
-  /// 0 stored) once the `total` reaches the threshold;
+  /// `.deliveryFee`. Fee-default-free (decision 2026-11-27): when
+  /// no fee is set (null, or an invalid negative), delivery is FREE
+  /// automatically — an unset fee behaves exactly like 0, so
+  /// `deliveryFee` is 0 and `amountDue` is `total`. [feeUnset]
+  /// still reports that no fee was stored, for display only; it
+  /// never blocks an order any more. [freeDeliveryThreshold]
+  /// (decision D3, admin setting): when set (> 0), the fee is waived
+  /// (`deliveryFee` 0 stored) once the `total` reaches the threshold;
   /// absent/null/0 means no waiver.
   ///
   /// `round()` is nearest integer, halves up, for the displayed %
@@ -480,7 +482,8 @@ class Backend {
     }
     final total = subtotal;
     // Fee: unset when not an int ≥ 0; waived (0 stored) once the
-    // total reaches an admin-set threshold > 0.
+    // total reaches an admin-set threshold > 0. Fee-default-free
+    // (decision 2026-11-27): an unset fee is free, exactly like 0.
     final feeUnset = deliveryFee == null || deliveryFee < 0;
     final threshold = (freeDeliveryThreshold != null &&
             freeDeliveryThreshold > 0)
@@ -489,7 +492,7 @@ class Backend {
     final feeWaived =
         !feeUnset && threshold != null && total >= threshold;
     final effectiveFee =
-        feeUnset ? null : (feeWaived ? 0 : deliveryFee);
+        feeUnset ? 0 : (feeWaived ? 0 : deliveryFee);
     return (
       perLine: perLine,
       baseSubtotal: baseSubtotal,
@@ -499,9 +502,9 @@ class Backend {
       deliveryFee: effectiveFee,
       feeUnset: feeUnset,
       feeWaived: feeWaived,
-      amountDue: feeUnset ? null : total + (effectiveFee ?? 0),
+      amountDue: total + effectiveFee,
       savingTotal: saleSavings,
-      insteadOf: feeUnset ? null : baseSubtotal + (effectiveFee ?? 0),
+      insteadOf: baseSubtotal + effectiveFee,
     );
   }
 
@@ -626,9 +629,11 @@ class Backend {
 
   /// Delivery-fee settings (Technical Plan §2 + decision D3) read
   /// from `storeSettings/settings`: `deliveryFee` (int ≥ 0; null =
-  /// UNSET, missing ≠ 0) and the admin-set free-delivery threshold
-  /// `freeDeliveryThreshold` (null = no threshold; a stored 0 is
-  /// also no waiver, exactly like the storefront reads it).
+  /// UNSET at parse level — the totals layer treats an unset fee
+  /// as free, fee-default-free decision 2026-11-27) and the
+  /// admin-set free-delivery threshold `freeDeliveryThreshold`
+  /// (null = no threshold; a stored 0 is also no waiver, exactly
+  /// like the storefront reads it).
   static ({int? deliveryFee, int? freeDeliveryThreshold})
       parseDeliveryFeeSettings(Map<String, dynamic>? data) {
     final d = data ?? {};
@@ -1731,8 +1736,9 @@ class Backend {
         }
         // Totals from the DATABASE prices, never a client total.
         // The fixed delivery fee is read from
-        // storeSettings/settings (Technical Plan §2/§5): missing ≠ 0
-        // — a manual order cannot be created while the fee is unset.
+        // storeSettings/settings (Technical Plan §2/§5):
+        // fee-default-free (decision 2026-11-27) — an unset fee
+        // means free delivery, so no order is ever blocked on it.
         // The fee is client-asserted on the manual path (decision
         // D2: the fee split is kept).
         final settingsSnap =
@@ -1740,10 +1746,6 @@ class Backend {
         final feeSettings =
             parseDeliveryFeeSettings(settingsSnap.data());
         final deliveryFee = feeSettings.deliveryFee;
-        if (deliveryFee == null) {
-          throw BackendException(
-              'رسوم التوصيل غير محددة بعد — حدّدها من الإعدادات');
-        }
         final computed = computeOrderTotals(
           lines
               .map((l) => {
@@ -2638,7 +2640,7 @@ class Backend {
   /// `INSUFFICIENT_STOCK` | `MOOT` | `ALREADY_CONVERTED`, plus
   /// `order` (the order map, when there is one), `mootOrderId`
   /// (when moot), `created` and `newInStock`. Hard errors (missing
-  /// draft, dead draft, unset fee, no permission) throw
+  /// draft, dead draft, no permission) throw
   /// BackendException.
   Future<Map<String, dynamic>> convertDraft({
     required String draftId,
@@ -2817,17 +2819,14 @@ class Backend {
             'costPrice': ((inv['costPrice'] ?? 0) as num).toInt(),
           });
         }
-        // Delivery fee from settings (missing != 0 — a conversion
-        // cannot happen while the fee is unset).
+        // Delivery fee from settings (fee-default-free, decision
+        // 2026-11-27: an unset fee means free delivery, so a
+        // conversion is never blocked on it).
         final settingsSnap =
             await tx.get(db.collection('storeSettings').doc('settings'));
         final feeSettings =
             parseDeliveryFeeSettings(settingsSnap.data());
         final deliveryFee = feeSettings.deliveryFee;
-        if (deliveryFee == null) {
-          throw BackendException(
-              'رسوم التوصيل غير محددة بعد — حدّدها من الإعدادات');
-        }
         final computed = computeOrderTotals(
           lines
               .map((l) => {
