@@ -318,29 +318,37 @@ service cloud.firestore {
           || (item.basePrice is int && item.basePrice >= item.price));
     }
 
-    /* One traversal for shape + availability (budget fix
-     * 2026-11-27): the old code walked the 10 slots THREE times
-     * (orderLinesOk, orderPricesOk, orderAvailabilityOk), each with
-     * its own size guard and items[i] fetch. Now a single
-     * orderLineValue does shape + availability get per
-     * present line (M1: the validity walk is fused into the
-     * subtotal sum via the poison value), with the size guard
-     * hoisted to the call site so an absent slot costs one
-     * comparison. CUT-2 (checks reduction, 2026-11-27): the
+    /* One traversal for shape (budget fix 2026-11-27): the old
+     * code walked the 10 slots THREE times (orderLinesOk,
+     * orderPricesOk, orderAvailabilityOk), each with its own size
+     * guard and items[i] fetch. Now a single orderLineValue does
+     * the shape check per present line (M1: the validity walk is
+     * fused into the subtotal sum via the poison value), with the
+     * size guard hoisted to the call site so an absent slot costs
+     * one comparison. CUT-2 (checks reduction, 2026-11-27): the
      * per-line DB price get is REMOVED from this walk — the
      * owner's manual review is the backstop for forged line
-     * prices. Gets now: 1 inventory get per line only when the
-     * order has at most 3 lines — the OOS guard's budget note:
-     * worst case 3 inventory + 1 fee = 4 (the product gets are
-     * gone with CUT-2, the code get is gone, 2026-11-27; the
-     * audit getAfter left with the audit-split, M1); larger
-     * orders keep the transaction + reserve-rule guards,
-     * exactly as before). */
+     * prices. CUT-3 (same round): the per-line inventory get is
+     * REMOVED too — the reserve rule (separate operation) still
+     * enforces reserved <= stock on every reserve write. Gets
+     * now: none in this walk (the fee get in orderFeeOk is the
+     * only get left on a storefront order; the audit getAfter
+     * left with the audit-split, M1). */
     function orderLineValid(i) {
       let items = request.resource.data.items;
-      return orderLineOk(items[i])
-        && (items.size() > 3 || lineAvailOk(i));
+      return orderLineOk(items[i]);
     }
+
+    /* CUT-3 (checks reduction, 2026-11-27, owner-approved): the
+     * per-line inventory get (lineAvailOk) is REMOVED — an order
+     * for more than available stock now passes the ORDER rule when
+     * the batch carries no reserve write. Backstop: the RESERVE
+     * rule (separate operation, untouched) still denies any reserve
+     * write that would exceed stock, and every real order carries
+     * its reserves in the same transaction. The guard already did
+     * not run for 4+ lines, so cutting it equalizes ≤3-line orders
+     * with 4+-line orders. Do not re-add without a design
+     * decision. */
 
     /* CUT-2 (checks reduction, 2026-11-27, owner-approved): the
      * per-line DB price get (linePriceOk) is REMOVED — a forged
@@ -349,20 +357,9 @@ service cloud.firestore {
      * still computes from DB prices, so honest orders are exact.
      * Do not re-add without a design decision. */
 
-    /* Per-line availability guard [OOS]: qty <= stock - reserved on
-     * the matching inventory doc — the backstop against a forged
-     * order write that skips the transaction's stock re-check. Called
-     * only for i < items.size() and only when the order has at most
-     * 3 lines (see orderLineValid). */
-    function lineAvailOk(i) {
-      let items = request.resource.data.items;
-      let inv = get(/databases/$(database)/documents/inventory/$(items[i].productId));
-      return inv != null && items[i].qty <= (inv.data.get('stock', 0) - inv.data.get('reserved', 0));
-    }
-
     /* POISON-VALUE line check (Option 1, M1 2026-11-27): the fused
      * validity + subtotal traversal. Returns price*qty of line i
-     * when the line is valid (shape + availability, via
+     * when the line is valid (shape, via
      * orderLineValid), otherwise the poison value -10^15. Validity
      * is then implied by the sum: a poisoned term makes the total
      * hugely negative, and subtotal >= 0 is enforced, so
@@ -1213,12 +1210,15 @@ service cloud.firestore {
     // are the idempotency probe only: get of a doc that does not
     // exist yet — an existing order stays unreadable anonymously. ----
     match /orders/{doc} {
-      // Availability per line lives inside orderShapeOk's
-      // subtotal sum (Option 1, M1 2026-11-27): the poison-value
-      // traversal proves validity AND the subtotal in one walk.
-      // CUT-2 (checks reduction, 2026-11-27): the per-line DB
-      // price check is removed — the owner's manual review is
-      // the backstop for forged line prices.
+      // Line shape lives inside orderShapeOk's subtotal sum
+      // (Option 1, M1 2026-11-27): the poison-value traversal
+      // proves validity AND the subtotal in one walk. CUT-2
+      // (checks reduction, 2026-11-27): the per-line DB price
+      // check is removed — the owner's manual review is the
+      // backstop for forged line prices. CUT-3 (same round):
+      // the per-line availability check is removed — the reserve
+      // rule (separate operation) still enforces reserved <=
+      // stock on every reserve write.
       // Audit-split (M1, approved 2026-11-27): the order rule no
       // longer verifies an audit entry — the audit is written by
       // the client AFTER the order commits (best-effort); "every

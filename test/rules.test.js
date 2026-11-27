@@ -635,15 +635,26 @@ test('No-functions: an anonymous order create via the storefront transaction suc
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-2'))).data().reserved, 2);
 });
 
-test('No-functions: an anonymous order with a WRONG price is rejected', async () => {
+/* CUT-2 (checks reduction, 2026-11-27, owner-approved): the per-line
+ * DB price get is REMOVED, so an order with a WRONG price now
+ * PASSES the rules — the totals are consistent with the forged
+ * price, and no check denies it. This test's OLD verdict (rejected)
+ * is REPLACED by the new rule, not weakened: the rule itself
+ * changed. Backstop: the owner's manual review — the forged price
+ * (999 for a 150 product) is visible in the order he reviews, and
+ * he cancels it. NOTE (probe P2): this test uses prod-5, not
+ * prod-2 — a passing order on prod-2 would consume its last
+ * available stock (stock 3, reserved 2) and break the later
+ * prod-2 chain (test 5 + the fully-reserved inventory test); the
+ * product is incidental to the verdict being pinned. */
+test('No-functions: an anonymous order with a WRONG price now PASSES the rules (CUT-2 — price re-verification cut; owner review is the backstop)', async () => {
   const db = anonDb();
-  // The totals are consistent with the forged price — only the price
-  // check (against the products doc) must deny it.
-  await assertFails(placeOrderTx(db, {
-    orderId: 'order-nf-price', productId: 'prod-2', qty: 1, priceOverride: 999,
+  await assertSucceeds(placeOrderTx(db, {
+    orderId: 'order-nf-price', productId: 'prod-5', qty: 1, priceOverride: 999,
   }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-nf-price'))).exists(), false);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-2'))).data().reserved, 2);
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-nf-price'))).data();
+  assert.equal(order.total, 999);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, 1);
 });
 
 test('No-functions: an anonymous order reserving MORE than available is rejected', async () => {
@@ -1983,15 +1994,28 @@ test('Deletion config: autoDeleteDays must be an int 0–365', async () => {
   assert.equal(snap.data().autoDeleteDays, 30);
 });
 
-test('Out-of-stock: a 1-line order for more than stock minus reserved is denied (no reserve write in the batch)', async () => {
+/* CUT-3 (checks reduction, 2026-11-27, owner-approved): the per-line
+ * inventory get is REMOVED, so a 1-line order for more than stock
+ * minus reserved now PASSES the rules when the batch carries NO
+ * reserve write — nothing checks availability on the order itself.
+ * This test's OLD verdict (denied by the order rule's own
+ * availability guard) is REPLACED by the new rule, not weakened:
+ * the rule itself changed. Backstop: the RESERVE rule — when the
+ * batch DOES carry reserve writes (every real order, via the
+ * client transaction), the reserve write for more than available
+ * stock is denied by `reserved <= stock`, so the over-quantity
+ * order still fails. The companion "exactly the available quantity
+ * succeeds" test is unchanged. */
+test('Out-of-stock: a 1-line order for more than stock minus reserved now PASSES the rules without a reserve write (CUT-3 — availability guard cut; reserve rule is the backstop)', async () => {
   const db = anonDb();
-  // prod-oos-1: stock 2, reserved 0 — qty 3 must fail on the order
-  // rule's own availability guard, not on the inventory write.
-  await assertFails(rawOrderBatch(db, {
+  // prod-oos-1: stock 2, reserved 0 — qty 3, no reserve write in
+  // the batch, so nothing checks availability on the order itself.
+  await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-oos-fail', productId: 'prod-oos-1', productName: 'منتج نفاد',
     price: 100, qty: 3, stock: 2, reserved: 0, skipInventory: true,
   }));
-  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-oos-fail'))).exists(), false);
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-oos-fail'))).data();
+  assert.equal(order.total, 300);
 });
 
 test('Out-of-stock: a 1-line order for exactly the available quantity succeeds', async () => {
