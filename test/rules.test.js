@@ -1560,6 +1560,37 @@ test('Pricing A: a 7-line manual order WITHOUT a code passes', async () => {
   assert.equal(order.amountDue, 730);
 });
 
+/* TEMPORARY PROBES (Step 3, remove after the gate answers): the
+ * isolated rawOrderBatch still fails even with the correct reserve
+ * param, so split the batch apart — B writes ONLY the order (no
+ * reserve), C writes ONLY the reserve (no order), on untouched
+ * prod-7 / prod-8 (stock 30, reserved 0; the 7/8-line tests that
+ * use them fail without reserving). Whichever of B/C fails is the
+ * denied write; if both pass and the combined probe still fails,
+ * the combination itself is the problem. */
+test('PROBE B: order-only batch (1-line sale+fee, prod-7) succeeds', async () => {
+  const db = anonDb();
+  await assertSucceeds(rawOrderBatch(db, {
+    orderId: 'order-probe-B', productId: 'prod-7', productName: 'منتج 7',
+    price: 100, qty: 1, stock: 30, reserved: 0, basePrice: 150,
+    overrides: { saleSavings: 50, deliveryFee: 30, amountDue: 130 },
+    skipInventory: true,
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-probe-B'))).exists(), true);
+});
+
+test('PROBE C: reserve-only batch (prod-8, 0 -> 1) succeeds', async () => {
+  const db = anonDb();
+  const now = serverTimestamp();
+  const batch = writeBatch(db);
+  batch.set(doc(db, 'inventory', 'prod-8'), {
+    productId: 'prod-8', stock: 30, reserved: 1,
+    minStock: 5, costPrice: 50, updatedAt: now,
+  }, { merge: true });
+  await assertSucceeds(batch.commit());
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-8'))).data().reserved, 1);
+});
+
 /* TEMPORARY PROBE (Step 3, remove after the gate answers): an
  * isolated rawOrderBatch 1-line sale+fee order on prod-5 — NOTE
  * prod-5 is NOT fresh: the manual-order tests already reserved it
