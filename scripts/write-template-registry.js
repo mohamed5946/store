@@ -149,16 +149,16 @@ async function main() {
         continue;
       }
       const stored = snap.data() || {};
-      // Never rewrite an approved/active doc's hash here: that would
-      // silently invalidate its approval freeze. Re-approval goes
-      // through the admin flow.
-      if ((stored.status !== 'draft' && stored.status !== 'preview') || stored.approval) {
-        console.error(`REFUSE ${id} — status is '${stored.status}'${stored.approval ? ' with an approval record' : ''}; a hash change here must go through admin re-approval, not this script.`);
-        process.exit(1);
-      }
       if (stored.bundleHash === doc.bundleHash && stored.version === doc.version && stored.shellMinVersion === doc.shellMinVersion) {
         console.log(`SKIP ${id} — already up to date (status: ${stored.status}, hash: ${stored.bundleHash})`);
         continue;
+      }
+      // A change IS needed: never rewrite an approved/active doc's
+      // hash here — that would silently invalidate its approval
+      // freeze. Re-approval goes through the admin flow.
+      if ((stored.status !== 'draft' && stored.status !== 'preview') || stored.approval) {
+        console.error(`REFUSE ${id} — status is '${stored.status}'${stored.approval ? ' with an approval record' : ''}; a hash change here must go through admin re-approval, not this script.`);
+        process.exit(1);
       }
       console.log(`${live ? 'UPDATE' : 'WOULD UPDATE'} templates/${id}: hash ${stored.bundleHash} -> ${doc.bundleHash} (status stays ${stored.status})`);
       if (live) {
