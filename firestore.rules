@@ -133,9 +133,13 @@
 //   - New invariants (when present): total == subtotal;
 //     saleSavings == sum over lines of
 //     (basePrice - price) * qty; amountDue == total + deliveryFee;
-//     deliveryFee == storeSettings/settings.deliveryFee on ANONYMOUS
-//     storefront creates only (decision D2 keeps the fee split —
-//     manual orders are client-asserted, no fee get); basePrice ==
+//     deliveryFee == the expected fee on ANONYMOUS storefront
+//     creates only (decision D2 keeps the fee split — manual
+//     orders are client-asserted, no fee get): the settings
+//     deliveryFee when set, else 0 (unset fee = free, Mohamed's
+//     decision 2026-11-27); 0 when total >= the settings
+//     freeDeliveryThreshold, when set > 0 (D1 waiver, same
+//     settings doc, no new get); basePrice ==
 //     null || basePrice >= price per line.
 //   - Product rule: basePrice == null || (basePrice is int &&
 //     basePrice >= price); a fractional basePrice is denied.
@@ -494,17 +498,25 @@ service cloud.firestore {
     /* Delivery-fee verification (pricing §4, decision D2 — the fee
      * split): ANONYMOUS storefront creates only. The rule reads
      * storeSettings/settings once (1 get, counted in the header
-     * table) and requires deliveryFee to equal the setting. Manual
-     * orders are client-asserted and pay no fee get; old-shape
-     * orders carry no deliveryFee and pay no fee get either. A
-     * missing settings doc or a missing deliveryFee field denies
-     * the storefront create (missing != 0, §5). */
+     * table) and requires deliveryFee to equal the expected fee.
+     * Expected fee (fix round 2026-11-27, Mohamed's decision
+     * ~12:23): the settings `deliveryFee` when it is set (int >= 0),
+     * else 0 — an unset fee means FREE delivery, never a denial.
+     * D1 (same round): when `freeDeliveryThreshold` (read from the
+     * SAME settings doc — no new get) is set (> 0) and the order
+     * `total` reaches it, the fee is waived: expected fee is 0.
+     * Manual orders are client-asserted and pay no fee get; old-shape
+     * orders carry no deliveryFee and pay no fee get either. */
     function orderFeeOk() {
       let d = request.resource.data;
       let settings = (request.auth == null && d.source == 'storefront' && 'deliveryFee' in d)
         ? get(/databases/$(database)/documents/storeSettings/settings) : null;
+      let rawFee = settings == null ? null : settings.data.get('deliveryFee', null);
+      let fee = rawFee is int && rawFee >= 0 ? rawFee : 0;
+      let rawThreshold = settings == null ? null : settings.data.get('freeDeliveryThreshold', null);
+      let waived = rawThreshold is int && rawThreshold > 0 && d.total >= rawThreshold;
       return request.auth != null || d.source != 'storefront' || !('deliveryFee' in d)
-        || (settings != null && settings.data.get('deliveryFee', null) == d.deliveryFee);
+        || d.deliveryFee == (waived ? 0 : fee);
     }
 
     /* Manual orders: admin, or manager with orders_create_manual.
@@ -537,8 +549,10 @@ service cloud.firestore {
      * the right types. startedAt + ordered are always present (the
      * storefront writes them at checkout open); errorCode is from
      * the allowed set or absent — the set includes FEE_UNSET (the
-     * storefront throws it when the fee is missing; it was missing
-     * from the spec §11 set); seen values are int maps (seenPrices /
+     * storefront used to throw it when the fee was missing; the
+     * fee-default-free change 2026-11-27 removed the throw, and the
+     * code stays allowed here so older clients' attempt writes
+     * still pass; it was missing from the spec §11 set); seen values are int maps (seenPrices /
      * seenBasePrices) or the seen scalar fee (seenDeliveryFee, int)
      * / seen amount due (seenTotal, number — the amount due the
      * customer saw); currentPrices / currentBasePrices are the
