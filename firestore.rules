@@ -316,13 +316,16 @@ service cloud.firestore {
      * 2026-11-27): the old code walked the 10 slots THREE times
      * (orderLinesOk, orderPricesOk, orderAvailabilityOk), each with
      * its own size guard and items[i] fetch. Now a single
-     * orderLinesValid does shape + price get + availability get per
-     * present line, with the size guard hoisted to the call site so
-     * an absent slot costs one comparison. Same checks, same gets
-     * (1 product get per line; 1 inventory get per line only when
-     * the order has at most 3 lines — the OOS guard's 10-get budget
-     * note: worst case 3 price + 3 inventory + 1 fee + 1
-     * audit = 8; larger orders keep the transaction + reserve-rule
+     * orderLineValue does shape + price get + availability get per
+     * present line (M1: the validity walk is fused into the
+     * subtotal sum via the poison value), with the size guard
+     * hoisted to the call site so an absent slot costs one
+     * comparison. Same checks, same gets (1 product get per line;
+     * 1 inventory get per line only when the order has at most 3
+     * lines — the OOS guard's 10-get budget note: worst case 3
+     * price + 3 inventory + 1 fee = 7 (the code get is gone,
+     * 2026-11-27; the audit getAfter left with the audit-split,
+     * M1); larger orders keep the transaction + reserve-rule
      * guards, exactly as before). */
     function orderLineValid(i) {
       let items = request.resource.data.items;
@@ -351,30 +354,32 @@ service cloud.firestore {
       return inv != null && items[i].qty <= (inv.data.get('stock', 0) - inv.data.get('reserved', 0));
     }
 
-    function orderLinesValid() {
-      let n = request.resource.data.items.size();
-      return (n <= 0 || orderLineValid(0))
-        && (n <= 1 || orderLineValid(1))
-        && (n <= 2 || orderLineValid(2))
-        && (n <= 3 || orderLineValid(3))
-        && (n <= 4 || orderLineValid(4))
-        && (n <= 5 || orderLineValid(5))
-        && (n <= 6 || orderLineValid(6))
-        && (n <= 7 || orderLineValid(7))
-        && (n <= 8 || orderLineValid(8))
-        && (n <= 9 || orderLineValid(9));
-    }
-
-    /* price*qty of line i. Unguarded — orderSubtotalOk only calls it
-     * for i < items.size() (budget fix 2026-11-27: the guard moved to
-     * the call site so an absent slot costs one ternary, not a call). */
-    function orderLineTotal(i) {
+    /* POISON-VALUE line check (Option 1, M1 2026-11-27): the fused
+     * validity + subtotal traversal. Returns price*qty of line i
+     * when the line is valid (shape + DB price + availability, via
+     * orderLineValid), otherwise the poison value -10^15. Validity
+     * is then implied by the sum: a poisoned term makes the total
+     * hugely negative, and subtotal >= 0 is enforced, so
+     * subtotal == sum(lineValue) can never hold when any line is
+     * invalid. Correct ONLY while no legitimate line value or
+     * subtotal can be negative (prices and quantities are
+     * non-negative, subtotal >= 0 is enforced) — if a future
+     * change allows negative prices (e.g. a refund line), this
+     * trick breaks silently: the dedicated poison test in
+     * test/rules.test.js pins the behaviour. Unguarded —
+     * orderSubtotalOk only calls it for i < items.size(). */
+    function orderLineValue(i) {
       let items = request.resource.data.items;
-      return items[i].price * items[i].qty;
+      return orderLineValid(i) ? items[i].price * items[i].qty : -1000000000000000;
     }
 
     /* subtotal must equal the unrolled sum of price*qty (the rules
-     * cannot loop). Added beyond the contract's letter — the contract
+     * cannot loop). The sum runs over orderLineValue, so validity
+     * is encoded in it (Option 1, M1 2026-11-27): the separate
+     * orderLinesValid traversal is gone — a poisoned term from an
+     * invalid line makes this sum mismatch, so this one check
+     * proves both the subtotal AND that every present line is
+     * valid. Added beyond the contract's letter — the contract
      * lists the total relation but not the subtotal
      * sum, and without it a forged low subtotal (with a matching
      * total) would pass. Costs 0 extra reads. */
@@ -382,11 +387,11 @@ service cloud.firestore {
       let d = request.resource.data;
       let n = d.items.size();
       return d.subtotal
-        == (n <= 0 ? 0 : orderLineTotal(0)) + (n <= 1 ? 0 : orderLineTotal(1))
-        + (n <= 2 ? 0 : orderLineTotal(2)) + (n <= 3 ? 0 : orderLineTotal(3))
-        + (n <= 4 ? 0 : orderLineTotal(4)) + (n <= 5 ? 0 : orderLineTotal(5))
-        + (n <= 6 ? 0 : orderLineTotal(6)) + (n <= 7 ? 0 : orderLineTotal(7))
-        + (n <= 8 ? 0 : orderLineTotal(8)) + (n <= 9 ? 0 : orderLineTotal(9));
+        == (n <= 0 ? 0 : orderLineValue(0)) + (n <= 1 ? 0 : orderLineValue(1))
+        + (n <= 2 ? 0 : orderLineValue(2)) + (n <= 3 ? 0 : orderLineValue(3))
+        + (n <= 4 ? 0 : orderLineValue(4)) + (n <= 5 ? 0 : orderLineValue(5))
+        + (n <= 6 ? 0 : orderLineValue(6)) + (n <= 7 ? 0 : orderLineValue(7))
+        + (n <= 8 ? 0 : orderLineValue(8)) + (n <= 9 ? 0 : orderLineValue(9));
     }
 
     /* Per-line saving of line i (pricing Phase A): (basePrice -
@@ -460,7 +465,6 @@ service cloud.firestore {
         && d.customerPhone is string && d.customerPhone.size() >= 10
         && d.customerAddress is string && d.customerAddress.size() > 0
         && d.items is list && d.items.size() >= 1 && d.items.size() <= 10
-        && orderLinesValid()
         && d.subtotal is number && d.subtotal >= 0
         && d.total is number && d.total >= 0
         && d.total == d.subtotal
@@ -481,44 +485,11 @@ service cloud.firestore {
         && d.createdAt == request.time && d.updatedAt == request.time;
     }
 
-    /* The audit entry for this order, as projected after this
-     * request (1 getAfter): actor + operation match the source,
-     * collection + docId + timestamp match, and its docIds cover
-     * status + total — plus, on a new-shape order, the money fields
-     * (saleSavings, deliveryFee, amountDue) and 'items' when
-     * saleSavings > 0 (i.e. some line really discounts — a
-     * basePrice == price line saves 0, so 'items' coverage adds no
-     * money protection for it; this replaces the 10-slot
-     * orderHasBasePrice scan, 2026-11-27 budget fix), so a price
-     * or fee change is recorded with the admin, the operation, and
-     * the new value. */
-    function orderAuditOk(doc) {
-      let d = request.resource.data;
-      let hasId = d.auditId is string && d.auditId.size() > 0;
-      let entry = hasId ? getAfter(/databases/$(database)/documents/audit/$(d.auditId)) : null;
-      // Budget fix 2026-11-27: the changed-fields list for this order
-      // is fetched ONCE and coverage is plain `in` checks — the old
-      // covers([...].toSet(), ...) built a set per check and re-fetched
-      // docIds three times. Same verdicts: 'x' in list is exactly the
-      // membership covers() was proving. A missing docIds entry yields
-      // null here and denies cleanly (no error) via the null guards.
-      let covered = entry == null ? null : entry.data.docIds['orders/' + doc];
-      let moneyCovered = covered != null
-        && (!('saleSavings' in d)
-          || ('saleSavings' in covered && 'deliveryFee' in covered && 'amountDue' in covered));
-      let itemsCovered = covered != null
-        && (d.get('saleSavings', 0) == 0 || 'items' in covered);
-      return entry != null
-        && ((d.source == 'storefront' && entry.data.get('actor', null) == 'anonymous' && entry.data.get('operation', null) == 'create')
-          || (d.source == 'admin_manual' && request.auth != null && entry.data.get('actor', null) == request.auth.uid && entry.data.get('operation', null) == 'manual_order_create'))
-        && entry.data.get('collection', null) == 'orders'
-        && entry.data.get('docId', null) == doc
-        && entry.data.get('timestamp', null) == request.time
-        && covered != null
-        && 'status' in covered && 'total' in covered
-        && moneyCovered
-        && itemsCovered;
-    }
+    /* REMOVED by the audit-split (M1 2026-11-27, approved):
+     * orderAuditOk verified the order's audit entry via getAfter.
+     * The order rule no longer checks it — the audit is written
+     * by the client after the order commits (best-effort). Kept
+     * in git history; do not re-add without a design decision. */
 
     /* Delivery-fee verification (pricing §4, decision D2 — the fee
      * split): ANONYMOUS storefront creates only. The rule reads
@@ -1078,9 +1049,11 @@ service cloud.firestore {
 
     /* Anonymous audit entry for a storefront order (contract §3):
      * shape-only, no get() — a fake entry is noise in an
-     * admin-read-only log, not a money/stock issue. The ORDER
-     * rule's getAfter check is what ties the order to a real
-     * entry. */
+     * admin-read-only log, not a money/stock issue. Audit-split
+     * (M1 2026-11-27): the ORDER rule no longer verifies this
+     * entry via getAfter — it is written best-effort after the
+     * order commits, and the admin orphan-order repair is the
+     * backstop for a missing one. */
     function auditAnonOk(operationId) {
       let d = request.resource.data;
       return request.auth == null
@@ -1194,11 +1167,15 @@ service cloud.firestore {
     // are the idempotency probe only: get of a doc that does not
     // exist yet — an existing order stays unreadable anonymously. ----
     match /orders/{doc} {
-      // Price + availability per line now live inside orderShapeOk
-      // (orderLinesValid) — one traversal instead of three separate
-      // conjuncts (budget fix 2026-11-27). Same checks, same gets.
+      // Price + availability per line live inside orderShapeOk's
+      // subtotal sum (Option 1, M1 2026-11-27): the poison-value
+      // traversal proves validity AND the subtotal in one walk.
+      // Audit-split (M1, approved 2026-11-27): the order rule no
+      // longer verifies an audit entry — the audit is written by
+      // the client AFTER the order commits (best-effort); "every
+      // order has a matching audit entry" is best-effort now, with
+      // the admin orphan-order repair as the backstop.
       allow create: if orderShapeOk(doc)
-        && orderAuditOk(doc)
         && orderFeeOk()
         && (request.resource.data.source == 'storefront' || manualOrderAllowed());
       allow get: if isAdminOrManager()

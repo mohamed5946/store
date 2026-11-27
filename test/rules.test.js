@@ -330,7 +330,8 @@ async function deleteWithAudit(db, uid, coll, docId) {
 /* The client order transaction the way storefront/app.js placeOrderTx
  * does it (contract §1): idempotency read, product + inventory
  * reads, total from DATABASE prices, stock reservation,
- * order + movement + audit entry. `source` /
+ * order — then movement + audit in a second batch
+ * after the commit (M1 audit-split + Option 3). `source` /
  * `createdBy` / `actor` / `operation` switch it to the manual-order
  * shape. Deliberately does NOT validate stock client-side — the
  * rules must deny an over-reservation on their own. */
@@ -347,6 +348,13 @@ async function placeOrderTx(db, {
   stampOperationId = false,
 }) {
   const auditId = `audit-${orderId}`;
+  // M1 2026-11-27 (audit-split + Option 3): the transaction writes
+  // ONLY order + inventory reserve. The movement and the audit entry
+  // are written AFTER the commit, in a second batch below — mirroring
+  // the clients. The second batch is awaited here (a denied
+  // post-commit write is a bug signal in tests, unlike the clients'
+  // never-throw best-effort writes).
+  let committedTotal = null;
   await runTransaction(db, async (tx) => {
     const existing = await tx.get(doc(db, 'orders', orderId));
     if (existing.exists()) throw new Error('order already exists');
@@ -364,10 +372,6 @@ async function placeOrderTx(db, {
     };
     if (stampOperationId) invWrite.operationId = auditId;
     tx.set(doc(db, 'inventory', productId), invWrite, { merge: true });
-    tx.set(doc(collection(db, 'movements')), {
-      productId, type: 'order_reserve', qty: -qty, orderId,
-      source: movementSource, actorUid: createdBy, createdAt: now,
-    });
     tx.set(doc(db, 'orders', orderId), {
       id: orderId, clientOrderId: orderId,
       customerName: 'اختبار', customerPhone: '01012345678', customerAddress: 'القاهرة',
@@ -380,30 +384,44 @@ async function placeOrderTx(db, {
       auditId,
       ...(stampOperationId ? { operationId: auditId } : {}),
     });
-    tx.set(doc(db, 'audit', auditId), {
-      operationId: auditId, actor, actorName,
-      timestamp: now, collection: 'orders', docId: orderId, operation,
-      changedFields: ['status', 'total'], oldValues: {},
-      newValues: { status: 'new', total },
-      docIds: { [`orders/${orderId}`]: ['status', 'total'] },
-      newValuesByDoc: { [`orders/${orderId}`]: { status: 'new', total } },
-      documents: [{ collection: 'orders', docId: orderId, changedFields: ['status', 'total'], oldValues: {}, newValues: { status: 'new', total } }],
-      source: movementSource,
-    });
+    committedTotal = total;
   });
+  // Post-commit (M1): movement + audit, with a FRESH timestamp —
+  // the movement/audit rules require createdAt/timestamp ==
+  // request.time of THEIR write, not the transaction's.
+  const postNow = serverTimestamp();
+  const post = writeBatch(db);
+  post.set(doc(collection(db, 'movements')), {
+    productId, type: 'order_reserve', qty: -qty, orderId,
+    source: movementSource, actorUid: createdBy, createdAt: postNow,
+  });
+  post.set(doc(db, 'audit', auditId), {
+    operationId: auditId, actor, actorName,
+    timestamp: postNow, collection: 'orders', docId: orderId, operation,
+    changedFields: ['status', 'total'], oldValues: {},
+    newValues: { status: 'new', total: committedTotal },
+    docIds: { [`orders/${orderId}`]: ['status', 'total'] },
+    newValuesByDoc: { [`orders/${orderId}`]: { status: 'new', total: committedTotal } },
+    documents: [{ collection: 'orders', docId: orderId, changedFields: ['status', 'total'], oldValues: {}, newValues: { status: 'new', total: committedTotal } }],
+    source: movementSource,
+  });
+  await post.commit();
   return orderId;
 }
 
-/* Write one order + its reservation + movement + audit in a batch,
- * starting from the valid storefront shape and applying `omit`
- * (keys to delete) / `overrides`. The batch mirrors the
+/* Write one order + its reservation in a batch, then movement +
+ * audit in a second batch after the commit (M1 audit-split +
+ * Option 3), starting from the valid storefront shape and applying
+ * `omit` (keys to delete) / `overrides`. The batches mirror the
  * transaction's writes, so a denial isolates the order rule.
  * Pricing Phase A: `basePrice` (undefined = old-shape 4-key line;
  * null or int = new-shape 5-key line) and `auditOmit` (audit docIds
- * entries to leave out, to pin the audit-coverage rule). The audit
- * entry covers status + total, plus the money fields and 'items'
- * when the order carries them — the same list the client must
- * write, so a denial isolates the order rule and not the audit. */
+ * entries to leave out — kept so the rewritten audit test can still
+ * build a deficient entry; the order rule no longer checks coverage
+ * since the audit-split). The audit entry covers status + total,
+ * plus the money fields and 'items' when the order carries them —
+ * the same list the client must write, so a denial isolates the
+ * order rule and not the audit. */
 async function rawOrderBatch(db, {
   orderId, productId, productName, price, qty, stock, reserved,
   basePrice = undefined, omit = [], overrides = {}, auditOmit = [],
@@ -444,21 +462,29 @@ async function rawOrderBatch(db, {
   }
   if (items.some((it) => it.basePrice != null)) auditFields.push('items');
   const auditList = auditFields.filter((f) => !auditOmit.includes(f));
+  // M1 2026-11-27 (audit-split + Option 3): the first batch writes
+  // ONLY order + inventory reserve; movement + audit go in a second
+  // batch after the commit, mirroring the clients.
   const batch = writeBatch(db);
   if (!skipInventory && lines == null) {
     batch.set(doc(db, 'inventory', productId), {
       productId, stock, reserved: reserved + qty,
       minStock: 5, costPrice: 100, updatedAt: now,
     }, { merge: true });
-    batch.set(doc(collection(db, 'movements')), {
-      productId, type: 'order_reserve', qty: -qty, orderId,
-      source: 'placeOrder', actorUid: null, createdAt: now,
-    });
   }
   batch.set(doc(db, 'orders', orderId), order);
-  batch.set(doc(db, 'audit', auditId), {
+  await batch.commit();
+  const postNow = serverTimestamp();
+  const post = writeBatch(db);
+  if (!skipInventory && lines == null) {
+    post.set(doc(collection(db, 'movements')), {
+      productId, type: 'order_reserve', qty: -qty, orderId,
+      source: 'placeOrder', actorUid: null, createdAt: postNow,
+    });
+  }
+  post.set(doc(db, 'audit', auditId), {
     operationId: auditId, actor: 'anonymous', actorName: 'storefront',
-    timestamp: now, collection: 'orders', docId: orderId, operation: 'create',
+    timestamp: postNow, collection: 'orders', docId: orderId, operation: 'create',
     changedFields: auditList, oldValues: {},
     newValues: { status: 'new', total: order.total },
     docIds: { [`orders/${orderId}`]: auditList },
@@ -466,7 +492,7 @@ async function rawOrderBatch(db, {
     documents: [{ collection: 'orders', docId: orderId, changedFields: auditList, oldValues: {}, newValues: { status: 'new', total: order.total } }],
     source: 'placeOrder',
   });
-  return batch.commit();
+  return post.commit();
 }
 
 /* Pricing Phase A: multi-line order transaction mirroring the
@@ -487,6 +513,12 @@ async function placePricingOrderTx(db, {
 }) {
   const auditId = `audit-${orderId}`;
   const newShape = deliveryFee !== undefined;
+  // M1 2026-11-27 (audit-split + Option 3): the transaction writes
+  // ONLY order + inventory reserves. Movements + audit go in a second
+  // batch after the commit (see below).
+  let committedLines = null;
+  let committedTotal = null;
+  let committedAuditFields = null;
   await runTransaction(db, async (tx) => {
     const existing = await tx.get(doc(db, 'orders', orderId));
     if (existing.exists()) throw new Error('order already exists');
@@ -513,10 +545,6 @@ async function placePricingOrderTx(db, {
         productId: l.productId, stock: l.inv.stock, reserved: l.inv.reserved + l.qty,
         minStock: l.inv.minStock, costPrice: l.inv.costPrice, updatedAt: now,
       }, { merge: true });
-      tx.set(doc(collection(db, 'movements')), {
-        productId: l.productId, type: 'order_reserve', qty: -l.qty, orderId,
-        source: movementSource, actorUid: createdBy, createdAt: now,
-      });
     }
     const items = orderLines.map((l) => {
       const item = { productId: l.productId, name: l.name, price: l.price, qty: l.qty };
@@ -544,17 +572,30 @@ async function placePricingOrderTx(db, {
       if (attemptId !== undefined) order.attemptId = attemptId;
     }
     tx.set(doc(db, 'orders', orderId), order);
-    tx.set(doc(db, 'audit', auditId), {
-      operationId: auditId, actor, actorName,
-      timestamp: now, collection: 'orders', docId: orderId, operation,
-      changedFields: auditFields, oldValues: {},
-      newValues: { status: 'new', total },
-      docIds: { [`orders/${orderId}`]: auditFields },
-      newValuesByDoc: { [`orders/${orderId}`]: { status: 'new', total } },
-      documents: [{ collection: 'orders', docId: orderId, changedFields: auditFields, oldValues: {}, newValues: { status: 'new', total } }],
-      source: movementSource,
-    });
+    committedLines = orderLines;
+    committedTotal = total;
+    committedAuditFields = auditFields;
   });
+  // Post-commit (M1): movements + audit, with a FRESH timestamp.
+  const postNow = serverTimestamp();
+  const post = writeBatch(db);
+  for (const l of committedLines) {
+    post.set(doc(collection(db, 'movements')), {
+      productId: l.productId, type: 'order_reserve', qty: -l.qty, orderId,
+      source: movementSource, actorUid: createdBy, createdAt: postNow,
+    });
+  }
+  post.set(doc(db, 'audit', auditId), {
+    operationId: auditId, actor, actorName,
+    timestamp: postNow, collection: 'orders', docId: orderId, operation,
+    changedFields: committedAuditFields, oldValues: {},
+    newValues: { status: 'new', total: committedTotal },
+    docIds: { [`orders/${orderId}`]: committedAuditFields },
+    newValuesByDoc: { [`orders/${orderId}`]: { status: 'new', total: committedTotal } },
+    documents: [{ collection: 'orders', docId: orderId, changedFields: committedAuditFields, oldValues: {}, newValues: { status: 'new', total: committedTotal } }],
+    source: movementSource,
+  });
+  await post.commit();
   return orderId;
 }
 
@@ -1344,6 +1385,26 @@ test('Pricing A: a saleSavings mismatch is denied', async () => {
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 5);
 });
 
+/* Poison-value pin (Option 1, M1 2026-11-27, design §2.6): a line
+ * priced below the DB price returns the poison value in the fused
+ * subtotal sum, so the order is denied by the SUBTOTAL mismatch —
+ * the totals here are consistent with the forged price (subtotal
+ * == 299 == price*qty, savings 201 == (500-299)*1, amountDue 329
+ * == 299+30), so no other conjunct can be the denier: the shape,
+ * availability and fee checks all pass on this batch. If a future
+ * change ever allows negative prices, this trick breaks silently —
+ * this test is the tripwire. */
+test('Pricing A: a line priced below the DB price is denied by the poisoned subtotal sum', async () => {
+  const db = anonDb();
+  await assertFails(rawOrderBatch(db, {
+    orderId: 'order-pricing-poison', productId: 'prod-4', productName: 'جراب موبايل',
+    price: 299, qty: 1, stock: 10, reserved: 5, basePrice: 500,
+    overrides: { saleSavings: 201, deliveryFee: 30, amountDue: 329 },
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-poison'))).exists(), false);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 5);
+});
+
 test('Pricing A: an amountDue mismatch is denied', async () => {
   const db = anonDb();
   await assertFails(rawOrderBatch(db, {
@@ -1412,11 +1473,12 @@ test('Pricing A: a missing fee field denies a storefront create but allows a man
   });
 });
 
-test('Pricing A: an 8-line storefront order WITHOUT a code passes (exactly 10 gets)', async () => {
+test('Pricing A: an 8-line storefront order WITHOUT a code passes (8 product gets + 1 fee get)', async () => {
   const db = anonDb();
   const lines = [];
   for (let n = 7; n <= 14; n++) lines.push({ productId: `prod-${n}`, qty: 1, basePrice: null });
-  // Control for the 8-with-code denial above: 8 + 1 audit + 1 fee = 10.
+  // Control for the 8-with-code denial above: 8 product gets + 1 fee
+  // get = 9 (the audit getAfter left with the audit-split, M1).
   await assertSucceeds(placePricingOrderTx(db, {
     orderId: 'order-pricing-sf-8-nocode',
     lines, deliveryFee: 30,
@@ -1427,7 +1489,50 @@ test('Pricing A: an 8-line storefront order WITHOUT a code passes (exactly 10 ge
   assert.equal(order.amountDue, 830);
 });
 
-test('Pricing A: an order audit that does NOT cover the money fields is denied', async () => {
+/* No-code rewrites of the deleted 7-line budget tests (old 61/63,
+ * deleted with the discount code 2026-11-27): the multi-line
+ * budget stays pinned after the code cases went away — a 7-line
+ * order WITHOUT a code must still pass, on both the storefront
+ * and the manual path. */
+test('Pricing A: a 7-line storefront order WITHOUT a code passes', async () => {
+  const db = anonDb();
+  const lines = [];
+  for (let n = 7; n <= 13; n++) lines.push({ productId: `prod-${n}`, qty: 1, basePrice: null });
+  await assertSucceeds(placePricingOrderTx(db, {
+    orderId: 'order-pricing-sf-7-nocode',
+    lines, deliveryFee: 30,
+  }));
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-sf-7-nocode'))).data();
+  assert.equal(order.subtotal, 700);
+  assert.equal(order.total, 700);
+  assert.equal(order.amountDue, 730);
+});
+
+test('Pricing A: a 7-line manual order WITHOUT a code passes', async () => {
+  const admin = adminDb();
+  const lines = [];
+  for (let n = 7; n <= 13; n++) lines.push({ productId: `prod-${n}`, qty: 1, basePrice: null });
+  await assertSucceeds(placePricingOrderTx(admin, {
+    orderId: 'order-pricing-manual-7-nocode',
+    lines, deliveryFee: 30,
+    source: 'admin_manual', createdBy: ADMIN_UID,
+    actor: ADMIN_UID, actorName: 'Admin', operation: 'manual_order_create',
+    movementSource: 'createManualOrder',
+  }));
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-manual-7-nocode'))).data();
+  assert.equal(order.subtotal, 700);
+  assert.equal(order.total, 700);
+  assert.equal(order.amountDue, 730);
+});
+
+/* Audit-split (M1 2026-11-27, approved): the order rule no longer
+ * verifies the audit entry, so a deficient audit entry NO LONGER
+ * denies the order — this test's old denial verdict is gone by
+ * design, and it now pins the new behaviour instead: the order
+ * creates, the (deficient) audit entry is still written
+ * post-commit, and the reservation lands. The orphan-order repair
+ * is the backstop for an audit entry that never lands at all. */
+test('Pricing A: an order audit that does NOT cover the money fields no longer denies the order (audit-split)', async () => {
   const db = anonDb();
   const base = {
     productId: 'prod-4', productName: 'جراب موبايل',
@@ -1435,14 +1540,14 @@ test('Pricing A: an order audit that does NOT cover the money fields is denied',
     overrides: { saleSavings: 200, deliveryFee: 30, amountDue: 330 },
   };
   // Audit lists status/total/saleSavings/amountDue/items but not deliveryFee.
-  await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-pricing-audit-1', auditOmit: ['deliveryFee'] }));
+  await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-pricing-audit-1', auditOmit: ['deliveryFee'] }));
   // Audit lists the money fields but not 'items' — the line carries
-  // a base price, so the audit must cover 'items' too.
-  await assertFails(rawOrderBatch(db, { ...base, orderId: 'order-pricing-audit-2', auditOmit: ['items'] }));
+  // a base price, so the audit must cover 'items' too (old rule).
+  await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-pricing-audit-2', auditOmit: ['items'] }));
   for (const id of ['order-pricing-audit-1', 'order-pricing-audit-2']) {
-    assert.equal((await getDoc(doc(adminDb(), 'orders', id))).exists(), false);
+    assert.equal((await getDoc(doc(adminDb(), 'orders', id))).exists(), true);
   }
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 6);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 7);
 });
 
 /* ---------- Pricing Phase A: attempt-doc shape check (§11 / M21) ---------- */

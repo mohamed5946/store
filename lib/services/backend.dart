@@ -347,10 +347,12 @@ class Backend {
   // tested shapes.
 
   // Cap is 7 lines (coordinator fix 2026-11-26): the rules allow
-  // 10 get()/getAfter() calls per operation, and the order-create
-  // rule costs N+3 for a manual order, so an 8-line manual order
-  // with a code is denied by the platform (7 lines = 10 calls,
-  // the safe max). Same cap in the storefront + PC.
+  // 10 get() calls per operation, and the order-create rule costs
+  // N+1 gets for a manual order (N product gets + the manual-role
+  // get — the code get is gone, 2026-11-27, and the audit getAfter
+  // left with the audit-split, M1), so a 7-line manual order uses
+  // 8 gets, inside the limit with room to spare. Same cap in the
+  // storefront + PC.
   static const int maxProductsPerOrder = 7;
   static const int maxQtyPerLine = 20;
 
@@ -1757,11 +1759,15 @@ class Backend {
         // threshold waives it); amountDue is the cash due at the door.
         final effectiveFee = computed.deliveryFee ?? deliveryFee;
         final now = FieldValue.serverTimestamp();
-        final auditRef = db.collection('audit').doc();
-        final auditId = auditRef.id;
-        // 'items' coverage (rules orderAuditOk / itemsCovered): a
-        // manual order with any on-sale line is rules-denied unless
-        // the audit covers 'items' — same helper convertDraft uses.
+        // The audit id is minted here (client-side random id) so the
+        // order can carry it as auditId; the entry itself is written
+        // post-commit (M1 audit-split, see below).
+        final auditId = db.collection('audit').doc().id;
+        // 'items' coverage: a manual order with any on-sale line
+        // records 'items' in the audit entry — the same helper
+        // convertDraft uses. (The rules no longer CHECK coverage
+        // since the audit-split, M1 — the entry keeps the full
+        // coverage so the log still reconstructs the order.)
         final hasBasePrice = lines.any((l) => l['basePrice'] != null);
         final docIds = <String, List<String>>{
           'orders/$clientOrderId':
@@ -1807,15 +1813,9 @@ class Backend {
             'operationId': auditId,
             'updatedAt': now,
           }, SetOptions(merge: true));
-          tx.set(db.collection('movements').doc(), {
-            'productId': productId,
-            'type': 'order_reserve',
-            'qty': -qty,
-            'orderId': clientOrderId,
-            'source': 'createManualOrder',
-            'actorUid': uid,
-            'createdAt': now,
-          });
+          // M1 (2026-11-27, Option 3): the movement-ledger write for
+          // the reserve left this transaction — it is written
+          // post-commit by _writeOrderMovementsAndAudit.
           // docIds must cover every key the inventory write sets
           // (the rules check diff coverage); the sensitive values
           // (stock/reserved) are recorded in newValuesByDoc.
@@ -1899,11 +1899,19 @@ class Backend {
             'amountDue': wholeNum(computed.amountDue!),
           },
         });
-        tx.set(auditRef, {
+        // M1 (2026-11-27, audit-split): the audit entry is NOT
+        // written inside this transaction any more — it is built
+        // here, returned, and written AFTER the order commits by
+        // _writeOrderMovementsAndAudit (best-effort, retry, never
+        // throws). Same fields as the old in-tx write, except the
+        // timestamp: the audit-create rule requires
+        // timestamp == request.time of the audit write itself, so
+        // the helper stamps a FRESH server timestamp at write time
+        // instead of reusing the transaction's `now`.
+        final auditEntry = <String, dynamic>{
           'operationId': auditId,
           'actor': uid,
           'actorName': email,
-          'timestamp': now,
           'collection': 'orders',
           'docId': clientOrderId,
           'operation': 'manual_order_create',
@@ -1920,11 +1928,19 @@ class Backend {
           'newValuesByDoc': newValuesByDoc,
           'documents': documents,
           'source': 'createManualOrder',
-        });
+        };
         return {
           'order': order,
           'created': true,
           'newInStock': newInStock,
+          'auditId': auditId,
+          'auditEntry': auditEntry,
+          'movementLines': lines
+              .map((l) => {
+                    'productId': l['productId'],
+                    'qty': l['qty'],
+                  })
+              .toList(),
         };
       });
     } on BackendException {
@@ -1941,6 +1957,23 @@ class Backend {
       Diagnostics.instance.log('Manual order created: $clientOrderId');
       await _refreshInStock(
           (result['newInStock'] as Map<String, bool>?) ?? {});
+      // M1: movements + audit AFTER the commit, only on a real
+      // create — never on an idempotent retry (created == false)
+      // and never when the transaction threw (we never get here).
+      // Best-effort: a failure is logged, the order stands, and
+      // the orphan-orders check repairs the missing audit entry.
+      await _writeOrderMovementsAndAudit(
+        auditId: (result['auditId'] ?? '') as String,
+        auditEntry:
+            (result['auditEntry'] as Map<String, dynamic>?) ?? const {},
+        movementLines: (result['movementLines'] as List?)
+                ?.whereType<Map<String, dynamic>>()
+                .toList() ??
+            const [],
+        orderId: clientOrderId,
+        source: 'createManualOrder',
+        actorUid: uid,
+      );
     }
     return {'order': result['order'], 'created': result['created']};
   }
@@ -1968,6 +2001,73 @@ class Backend {
       } catch (e) {
         Diagnostics.instance.log(
             'inStock refresh failed (attempt $attempt/3): $e');
+      }
+    }
+  }
+
+  /// M1 (2026-11-27, Option 3 + audit-split): the movement-ledger
+  /// writes + the audit entry for a newly created order, written
+  /// AFTER the order transaction commits. Best-effort with up to 3
+  /// attempts each, NEVER throws: a missing movement or audit entry
+  /// must never fail an order the customer already has — the
+  /// orphan-orders check (see [findOrphanOrders]) repairs a missing
+  /// audit entry. Only called when the transaction really created
+  /// the order (created == true), never on an idempotent retry.
+  Future<void> _writeOrderMovementsAndAudit({
+    required String auditId,
+    required Map<String, dynamic> auditEntry,
+    required List<Map<String, dynamic>> movementLines,
+    required String orderId,
+    required String source,
+    required String actorUid,
+  }) async {
+    // Movements: one batch, one doc per line — the EXACT fields the
+    // transaction used to write, except createdAt, which is a FRESH
+    // server timestamp (the admin branch of the movements rule has
+    // no shape constraint; a fresh timestamp keeps the ledger
+    // honest about when the entry landed).
+    if (movementLines.isNotEmpty) {
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        try {
+          final batch = db.batch();
+          for (final line in movementLines) {
+            batch.set(db.collection('movements').doc(), {
+              'productId': line['productId'],
+              'type': 'order_reserve',
+              'qty': -((line['qty'] ?? 0) as int),
+              'orderId': orderId,
+              'source': source,
+              'actorUid': actorUid,
+              'createdAt': FieldValue.serverTimestamp(),
+            });
+          }
+          await batch.commit();
+          break;
+        } catch (e) {
+          Diagnostics.instance.log(
+              'Order movements write failed (attempt $attempt/3, order $orderId): $e');
+        }
+      }
+    }
+    // Audit: the entry built inside the transaction, with a FRESH
+    // timestamp — the audit-create rule (firestore.rules match
+    // /audit) requires timestamp == request.time of THIS write, so
+    // the transaction's `now` sentinel cannot be reused. The admin
+    // branch also requires actor == request.auth.uid,
+    // operationId == the doc id, a non-empty docIds map and a
+    // newValuesByDoc map — all carried over unchanged.
+    if (auditId.isNotEmpty && auditEntry.isNotEmpty) {
+      for (var attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await db.collection('audit').doc(auditId).set({
+            ...auditEntry,
+            'timestamp': FieldValue.serverTimestamp(),
+          });
+          break;
+        } catch (e) {
+          Diagnostics.instance.log(
+              'Order audit write failed (attempt $attempt/3, order $orderId): $e');
+        }
       }
     }
   }
@@ -2255,8 +2355,9 @@ class Backend {
 
   /// The audit docIds list for a new order document: the money
   /// fields always, plus 'items' whenever any line carries a base
-  /// price — the rules' orderAuditOk itemsCovered check
-  /// (firestore.rules orderHasBasePrice) denies the order otherwise.
+  /// price — so the log still reconstructs the order in full.
+  /// (The rules no longer CHECK coverage since the audit-split,
+  /// M1 — this list is the log's completeness, not a gate.)
   /// Shared by createManualOrder and convertDraft so the two paths
   /// can never drift apart.
   static List<String> orderAuditFields({required bool hasBasePrice}) => [
@@ -2740,8 +2841,10 @@ class Backend {
         );
         final effectiveFee = computed.deliveryFee ?? deliveryFee;
         final now = FieldValue.serverTimestamp();
-        final auditRef = db.collection('audit').doc();
-        final auditId = auditRef.id;
+        // The audit id is minted here (client-side random id) so the
+        // order can carry it as auditId; the entry itself is written
+        // post-commit (M1 audit-split, see below).
+        final auditId = db.collection('audit').doc().id;
         final hasBasePrice = lines.any((l) => l['basePrice'] != null);
         final orderDocIds = <String, List<String>>{
           'orders/$draftId': orderAuditFields(hasBasePrice: hasBasePrice),
@@ -2789,15 +2892,9 @@ class Backend {
             'operationId': auditId,
             'updatedAt': now,
           }, SetOptions(merge: true));
-          tx.set(db.collection('movements').doc(), {
-            'productId': productId,
-            'type': 'order_reserve',
-            'qty': -qty,
-            'orderId': draftId,
-            'source': 'convertDraft',
-            'actorUid': uid,
-            'createdAt': now,
-          });
+          // M1 (2026-11-27, Option 3): the movement-ledger write
+          // for the reserve left this transaction — it is written
+          // post-commit by _writeOrderMovementsAndAudit.
           orderDocIds['inventory/$productId'] = [
             'productId',
             'stock',
@@ -2876,11 +2973,19 @@ class Backend {
           'oldValues': {},
           'newValues': orderNewValues,
         });
-        tx.set(auditRef, {
+        // M1 (2026-11-27, audit-split): the audit entry is NOT
+        // written inside this transaction any more — it is built
+        // here, returned, and written AFTER the order commits by
+        // _writeOrderMovementsAndAudit (best-effort, retry, never
+        // throws). Same fields as the old in-tx write, except the
+        // timestamp: the audit-create rule requires
+        // timestamp == request.time of the audit write itself, so
+        // the helper stamps a FRESH server timestamp at write time
+        // instead of reusing the transaction's `now`.
+        final auditEntry = <String, dynamic>{
           'operationId': auditId,
           'actor': uid,
           'actorName': email,
-          'timestamp': now,
           'collection': 'orders',
           'docId': draftId,
           'operation': 'manual_order_create',
@@ -2891,7 +2996,7 @@ class Backend {
           'newValuesByDoc': newValuesByDoc,
           'documents': documents,
           'source': 'convertDraft',
-        });
+        };
         // Mark the draft converted (orderId = the new order id).
         tx.set(draftRef, {
           'status': 'converted',
@@ -2903,6 +3008,14 @@ class Backend {
           'order': order,
           'created': true,
           'newInStock': newInStock,
+          'auditId': auditId,
+          'auditEntry': auditEntry,
+          'movementLines': lines
+              .map((l) => {
+                    'productId': l['productId'],
+                    'qty': l['qty'],
+                  })
+              .toList(),
         };
       });
     } on BackendException {
@@ -2919,8 +3032,185 @@ class Backend {
       Diagnostics.instance.log('Draft converted to order: $draftId');
       await _refreshInStock(
           (result['newInStock'] as Map<String, bool>?) ?? {});
+      // M1: movements + audit AFTER the commit, only on a real
+      // create — never on an idempotent retry / moot / insufficient
+      // stock / price-changed return (created == false) and never
+      // when the transaction threw (we never get here). Best-effort:
+      // a failure is logged, the order stands, and the
+      // orphan-orders check repairs the missing audit entry.
+      await _writeOrderMovementsAndAudit(
+        auditId: (result['auditId'] ?? '') as String,
+        auditEntry:
+            (result['auditEntry'] as Map<String, dynamic>?) ?? const {},
+        movementLines: (result['movementLines'] as List?)
+                ?.whereType<Map<String, dynamic>>()
+                .toList() ??
+            const [],
+        orderId: draftId,
+        source: 'convertDraft',
+        actorUid: uid,
+      );
     }
     return result;
+  }
+
+  // ---- Orphan orders (M1 audit-split backstop, 2026-11-27) ----
+  //
+  // The audit entry is written AFTER the order commits now, so a
+  // crash (or a failed post-commit write) can leave an order with
+  // no matching audit entry — an "orphan". The check below is the
+  // on-demand backstop: bounded to the most recent 100 orders, run
+  // only when an admin taps the button in the Orders tab.
+
+  /// The most recent [limit] orders (newest first) whose audit
+  /// entry is missing: no audit doc exists for the order's auditId,
+  /// or the order carries no auditId at all. Each entry is the
+  /// order map plus its 'id'.
+  Future<List<Map<String, dynamic>>> findOrphanOrders({int limit = 100}) async {
+    _requireInit();
+    final snap = await db
+        .collection('orders')
+        .orderBy('createdAt', descending: true)
+        .limit(limit)
+        .get();
+    final orders = snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+    // One audit get per order, in parallel — a sequential walk over
+    // 100 orders would take seconds.
+    final auditSnaps =
+        await Future.wait<DocumentSnapshot<Map<String, dynamic>>?>(
+      orders.map((o) async {
+        final auditId = (o['auditId'] ?? '') as String;
+        if (auditId.isEmpty) return null;
+        return db.collection('audit').doc(auditId).get();
+      }),
+    );
+    final orphans = <Map<String, dynamic>>[];
+    for (var i = 0; i < orders.length; i++) {
+      final auditSnap = auditSnaps[i];
+      if (auditSnap == null || !auditSnap.exists) orphans.add(orders[i]);
+    }
+    return orphans;
+  }
+
+  /// Builds the audit entry that repairs one orphan [order]: the
+  /// same money-field coverage as the original order audit entry
+  /// (status, total, saleSavings, deliveryFee, amountDue, plus
+  /// 'items' when any line has a non-null basePrice), plus the
+  /// markers `repaired: true` and `originalCreatedAt` (the order's
+  /// createdAt).
+  ///
+  /// DESIGN CORRECTION (vs the design doc §2, which says "actor =
+  /// the order's creator, timestamp = the order's createdAt"): that
+  /// literal spec cannot pass the audit-create rule (firestore.rules
+  /// match /audit) — the admin branch requires timestamp ==
+  /// request.time (a past createdAt would be denied) and actor ==
+  /// request.auth.uid (a storefront order's creator is anonymous —
+  /// there is no uid). So the repair uses the REPAIRING admin
+  /// (actor = [actorUid], actorName = [actorEmail]) and a FRESH
+  /// serverTimestamp() at repair time; the original values are
+  /// preserved in the markers instead.
+  Map<String, dynamic> orphanRepairAuditEntry({
+    required Map<String, dynamic> order,
+    required String auditId,
+    required String actorUid,
+    required String actorEmail,
+  }) {
+    final hasBasePrice =
+        ((order['items'] as List?) ?? []).any((it) =>
+            it is Map<String, dynamic> && it['basePrice'] != null);
+    final orderFields = orderAuditFields(hasBasePrice: hasBasePrice);
+    final orderNewValues = <String, dynamic>{
+      'status': order['status'] ?? 'new',
+      'total': order['total'],
+      'saleSavings': order['saleSavings'],
+      'deliveryFee': order['deliveryFee'],
+      'amountDue': order['amountDue'],
+      if (hasBasePrice) 'items': order['items'],
+    };
+    return {
+      'operationId': auditId,
+      'actor': actorUid,
+      'actorName': actorEmail,
+      'timestamp': FieldValue.serverTimestamp(),
+      'collection': 'orders',
+      'docId': order['id'],
+      'operation': order['source'] == 'storefront'
+          ? 'create'
+          : 'manual_order_create',
+      'changedFields': orderFields,
+      'oldValues': {},
+      'newValues': {
+        'status': order['status'] ?? 'new',
+        'total': order['total'],
+        'saleSavings': order['saleSavings'],
+        'deliveryFee': order['deliveryFee'],
+        'amountDue': order['amountDue'],
+      },
+      'docIds': {'orders/${order['id']}': orderFields},
+      'newValuesByDoc': {'orders/${order['id']}': orderNewValues},
+      'documents': [
+        {
+          'collection': 'orders',
+          'docId': order['id'],
+          'changedFields': orderFields,
+          'oldValues': {},
+          'newValues': orderNewValues,
+        },
+      ],
+      'source': 'repairOrphanOrder',
+      'repaired': true,
+      'originalCreatedAt': order['createdAt'],
+    };
+  }
+
+  /// Writes the missing audit entry for one orphan [order] and
+  /// returns true. Returns false (no write) when the entry already
+  /// exists — another admin repaired it first, or the check raced
+  /// the post-commit write. Throws [BackendException] when the
+  /// write itself fails, so the UI can show the error. The entry
+  /// shape is built by [orphanRepairAuditEntry]; the actor is the
+  /// REPAIRING admin (see the design correction in that method's
+  /// docs).
+  Future<bool> repairOrphanOrder(Map<String, dynamic> order) async {
+    _requireInit();
+    final uid = auth.currentUser?.uid;
+    if (uid == null) throw BackendException('سجّل الدخول الأول');
+    final email = auth.currentUser?.email ?? '';
+    var auditId = (order['auditId'] ?? '') as String;
+    var newAuditId = false;
+    if (auditId.isEmpty) {
+      // A pre-audit order carries no auditId at all: mint one and
+      // stamp it on the order, so a re-check sees it as repaired.
+      auditId = db.collection('audit').doc().id;
+      newAuditId = true;
+    }
+    final existing = await db.collection('audit').doc(auditId).get();
+    if (existing.exists) return false;
+    final entry = orphanRepairAuditEntry(
+      order: order,
+      auditId: auditId,
+      actorUid: uid,
+      actorEmail: email,
+    );
+    try {
+      await db.collection('audit').doc(auditId).set(entry);
+    } on FirebaseException catch (e) {
+      Diagnostics.instance.log(
+          'Orphan repair failed (${order['id']}): ${e.code} ${e.message}');
+      throw BackendException('تعذر إصلاح الطلب: ${e.message ?? e.code}');
+    }
+    if (newAuditId) {
+      // The audited batch carries its own audit entry for the
+      // auditId change, so this order update is self-consistent.
+      await _auditedBatch(
+        writes: {'orders/${order['id']}': {'auditId': auditId}},
+        sensitive: const {},
+        operation: 'update',
+      );
+    }
+    Diagnostics.instance.log(
+        'Orphan order repaired: ${order['id']} (audit $auditId)');
+    return true;
   }
 
   // ---- Governorates + deletion config + quota (settings) ----

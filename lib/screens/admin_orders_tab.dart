@@ -36,6 +36,42 @@ class _OrdersTabState extends State<_OrdersTab> {
   bool _loadingMore = false;
   Object? _error;
 
+  // Orphan orders (M1 audit-split backstop, 2026-11-27): the audit
+  // entry lands post-commit, so a crash can leave an order with no
+  // matching entry. The check scans the 100 most recent orders;
+  // repair writes the missing entry as the repairing admin.
+  List<Map<String, dynamic>>? _orphans;
+  bool _checkingOrphans = false;
+
+  Future<void> _checkOrphans() async {
+    setState(() => _checkingOrphans = true);
+    try {
+      final orphans = await Backend.instance.findOrphanOrders();
+      if (!mounted) return;
+      setState(() {
+        _orphans = orphans;
+        _checkingOrphans = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _checkingOrphans = false);
+      _snack(context, e.toString(), error: true);
+    }
+  }
+
+  Future<void> _repairOrphan(Map<String, dynamic> order) async {
+    try {
+      final repaired = await Backend.instance.repairOrphanOrder(order);
+      if (!mounted) return;
+      _snack(context,
+          repaired ? 'تم إصلاح قيد الطلب' : 'القيد موجود بالفعل — اتصلح قبل كده');
+      _checkOrphans();
+    } catch (e) {
+      if (!mounted) return;
+      _snack(context, e.toString(), error: true);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -124,6 +160,51 @@ class _OrdersTabState extends State<_OrdersTab> {
             ),
           ),
         ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+          child: _FlowRow(
+            title: const Text('طلبات بلا قيد تدقيق (يتيمة)'),
+            subtitle: Text(_orphans == null
+                ? 'لو انقطع الاتصال بعد حفظ طلب وقبل كتابة قيد التدقيق، الطلب يفضل موجود بس من غير قيد'
+                : _orphans!.isEmpty
+                    ? 'مفيش طلبات يتيمة في آخر 100 طلب — كله تمام'
+                    : 'لقينا ${_orphans!.length} طلب من غير قيد تدقيق'),
+            trailing: _checkingOrphans
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : TextButton(
+                    onPressed: _checkOrphans,
+                    child: const Text('فحص'),
+                  ),
+          ),
+        ),
+        if (_orphans != null)
+          StaggeredScope(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var i = 0; i < _orphans!.length; i++)
+                  StaggeredItem(
+                    index: i,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                      child: _FlowRow(
+                        title: Text((_orphans![i]['customerName'] ?? '') as String),
+                        subtitle: Text(
+                            '${(((_orphans![i]['amountDue'] ?? _orphans![i]['total']) ?? 0) as num).toStringAsFixed(0)} ج.م'),
+                        trailing: TextButton(
+                          onPressed: () => _repairOrphan(_orphans![i]),
+                          child: const Text('إصلاح القيد'),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
         Expanded(
           child: _docs.isEmpty
               ? const Center(child: Text('مفيش طلبات لسه'))

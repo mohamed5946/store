@@ -2587,9 +2587,12 @@ function orderViaWhatsApp(customer) {
  * atomically: idempotency by clientOrderId -> read products + inventory
  * -> validate shape/prices/stock -> total from DATABASE prices ->
  * reserve stock -> create the order (exact createOrderTx field list
- * + auditId) -> movements -> audit entry. The products.inStock
- * refresh is a SECOND, best-effort batched write after commit
- * (contract §13) — never inside the tx.
+ * + auditId). The movements and the audit entry left the transaction
+ * (Option 3 + audit-split): they are best-effort post-commit writes
+ * after a fresh create (recordOrderMovements / recordOrderAudit) —
+ * never inside the tx. The products.inStock refresh is a SECOND,
+ * best-effort batched write after commit (contract §13) — never
+ * inside the tx.
  * The client sends ONLY product ids + quantities + the prices it
  * displayed (seenPrices/seenTotal) — never a price or total as a
  * fact. */
@@ -2779,15 +2782,9 @@ async function placeOrderTx({ clientOrderId: orderId, items, customer, seenPrice
         costPrice: inv.costPrice != null ? inv.costPrice : 0,
         updatedAt: now,
       }, { merge: true });
-      tx.set(doc(collection(db, 'movements')), {
-        productId: line.productId,
-        type: 'order_reserve',
-        qty: -line.qty,
-        orderId,
-        source: 'placeOrder',
-        actorUid: null,
-        createdAt: now,
-      });
+      /* Movements left the transaction (Option 3): the ledger write
+       * happens AFTER the order commits, in recordOrderMovements —
+       * the tx writes ONLY order + inventory reserves. */
       stockState.push({ productId: line.productId, inStock: newAvailable > 0 });
     }
     /* Create the order (doc id = clientOrderId) — the exact
@@ -2830,33 +2827,10 @@ async function placeOrderTx({ clientOrderId: orderId, items, customer, seenPrice
     };
     if (attemptId) order.attemptId = attemptId;
     tx.set(orderRef, order);
-    /* Audit entry inside the same transaction (contract §4). The
-     * rules' orderAuditOk requires the audit to cover the money
-     * fields the order carries (saleSavings, deliveryFee, amountDue)
-     * and 'items' whenever any line carries a base price — otherwise
-     * the order write is denied. */
-    const auditFields = ['status', 'total', 'saleSavings', 'deliveryFee', 'amountDue'];
-    const auditNew = { status: 'new', total, saleSavings: pricing.saleSavings, deliveryFee: deliveryFeeEffective, amountDue };
-    if (lines.some((l) => l.basePrice != null)) { auditFields.push('items'); auditNew.items = order.items; }
-    tx.set(doc(db, 'audit', auditId), {
-      operationId: auditId,
-      actor: 'anonymous',
-      actorName: 'storefront',
-      timestamp: now,
-      collection: 'orders',
-      docId: orderId,
-      operation: 'create',
-      changedFields: auditFields,
-      oldValues: {},
-      newValues: auditNew,
-      docIds: { [`orders/${orderId}`]: auditFields },
-      newValuesByDoc: { [`orders/${orderId}`]: auditNew },
-      documents: [{
-        collection: 'orders', docId: orderId,
-        changedFields: auditFields, oldValues: {}, newValues: auditNew,
-      }],
-      source: 'placeOrder',
-    });
+    /* Audit entry left the transaction (audit-split): it is written
+     * AFTER the order commits, in recordOrderAudit — the tx writes
+     * ONLY order + inventory reserves. The audit payload is rebuilt
+     * there from the returned order (same fields, fresh timestamp). */
     result = { order, created: true, stockState };
   });
   return result;
@@ -2877,6 +2851,82 @@ async function refreshInStock(stockState) {
       return;
     } catch (err) {
       if (attempt === 3) console.warn('[storefront] inStock refresh failed after 3 attempts', err);
+    }
+  }
+}
+/* Post-commit movement ledger (Option 3): the movement writes left
+ * the order transaction — the tx writes ONLY order + inventory
+ * reserves. One batch, one movement doc per line, the EXACT fields
+ * the tx used to write, EXCEPT createdAt is a FRESH
+ * serverTimestamp(): the movement rule (movementReserveOk) requires
+ * createdAt == request.time of the movement write, and the tx's
+ * sentinel would resolve to the tx's time, not this write's time.
+ * Batched, up to 3 attempts, best-effort — a failure only leaves a
+ * ledger gap (logged); the order already exists, so never throw. */
+async function recordOrderMovements(order) {
+  const items = (order && order.items) || [];
+  if (items.length === 0) return;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const batch = writeBatch(db);
+      for (const line of items) {
+        batch.set(doc(collection(db, 'movements')), {
+          productId: line.productId,
+          type: 'order_reserve',
+          qty: -line.qty,
+          orderId: order.id,
+          source: 'placeOrder',
+          actorUid: null,
+          createdAt: serverTimestamp(),
+        });
+      }
+      await batch.commit();
+      return;
+    } catch (err) {
+      if (attempt === 3) console.warn('[storefront] order movements failed after 3 attempts', err);
+    }
+  }
+}
+/* Post-commit audit entry (audit-split): the audit write left the
+ * order transaction with the movements. The EXACT entry the tx used
+ * to write — same operationId/actor/collection/docId/operation,
+ * same changedFields/newValues/docIds/newValuesByDoc/documents,
+ * rebuilt from the returned order — EXCEPT timestamp is a FRESH
+ * serverTimestamp(): the audit rule (auditAnonOk) requires
+ * timestamp == request.time of the audit write. Up to 3 attempts,
+ * best-effort, never throws — a missing audit entry is diagnostic
+ * noise, never a failed order. */
+async function recordOrderAudit(order) {
+  const auditId = order && order.auditId;
+  const orderId = order && order.id;
+  if (!auditId || !orderId) return;
+  const auditFields = ['status', 'total', 'saleSavings', 'deliveryFee', 'amountDue'];
+  const auditNew = { status: 'new', total: order.total, saleSavings: order.saleSavings, deliveryFee: order.deliveryFee, amountDue: order.amountDue };
+  if ((order.items || []).some((l) => l.basePrice != null)) { auditFields.push('items'); auditNew.items = order.items; }
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await setDoc(doc(db, 'audit', auditId), {
+        operationId: auditId,
+        actor: 'anonymous',
+        actorName: 'storefront',
+        timestamp: serverTimestamp(),
+        collection: 'orders',
+        docId: orderId,
+        operation: 'create',
+        changedFields: auditFields,
+        oldValues: {},
+        newValues: auditNew,
+        docIds: { [`orders/${orderId}`]: auditFields },
+        newValuesByDoc: { [`orders/${orderId}`]: auditNew },
+        documents: [{
+          collection: 'orders', docId: orderId,
+          changedFields: auditFields, oldValues: {}, newValues: auditNew,
+        }],
+        source: 'placeOrder',
+      });
+      return;
+    } catch (err) {
+      if (attempt === 3) console.warn('[storefront] order audit failed after 3 attempts', err);
     }
   }
 }
@@ -2958,6 +3008,15 @@ async function submitOrder(customer) {
     /* §13: refresh the products.inStock display cache AFTER the
      * transaction commits (best-effort, never blocks the success). */
     if (created) refreshInStock(stockState).catch(() => {});
+    /* Movements + audit left the transaction (Option 3 + audit-split):
+     * written AFTER the order commits, best-effort, never blocking
+     * the success UI. Only on a fresh create — never on an
+     * idempotent retry (created == false) and never when the
+     * transaction throws (this line is unreachable then). */
+    if (created) {
+      recordOrderMovements(order).catch(() => {});
+      recordOrderAudit(order).catch(() => {});
+    }
     await updateDoc(doc(db, 'analytics', 'attempts', 'items', attemptId), { ordered: true, clientOrderId, templateId: activeTemplateId, templateVersion: activeTemplateVersion }).catch(() => {});
     recordStep('order');
     cart = {}; renderCart();
