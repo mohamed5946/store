@@ -2304,16 +2304,17 @@ test('Templates (entry 20): registry create with a non-canonical status is denie
   assert.equal((await getDoc(doc(adminDb(), 'templates', 'boutique'))).data().status, 'draft');
 });
 
-test('Templates (entry 20): status machine — draft→preview→approved→active→retired, skips denied', async () => {
+test('Templates (entry 20): status machine — direct activation (2026-11-27): draft/preview→active pass, approval optional', async () => {
   const db = adminDb();
-  // boutique is a draft now (previous test). Skipping steps is denied.
+  // boutique is a draft now (previous test). draft → approved is still
+  // a skip — denied; but draft → active is DIRECT activation now
+  // (Mohamed's decision): it passes with no approval record.
   await assertFails(writeTemplate(db, 'boutique', { status: 'approved' }));
-  await assertFails(writeTemplate(db, 'boutique', { status: 'active' }));
-  // draft → preview passes.
+  await assertSucceeds(writeTemplate(db, 'boutique', { status: 'active' }));
+  // active → preview passes: a template that went live without approval
+  // drops back to preview, never to a false 'approved'.
   await assertSucceeds(writeTemplate(db, 'boutique', { status: 'preview' }));
-  // preview → active is a skip (must be approved first) — denied.
-  await assertFails(writeTemplate(db, 'boutique', { status: 'active' }));
-  // preview → approved needs the approval record in the same write.
+  // preview → approved still needs the approval record in the same write.
   await assertFails(writeTemplate(db, 'boutique', { status: 'approved' }));
   await assertSucceeds(writeTemplate(db, 'boutique', {
     status: 'approved',
@@ -2322,7 +2323,11 @@ test('Templates (entry 20): status machine — draft→preview→approved→acti
   // approved → active passes; active → draft (un-activating) is denied.
   await assertSucceeds(writeTemplate(db, 'boutique', { status: 'active' }));
   await assertFails(writeTemplate(db, 'boutique', { status: 'draft' }));
-  await assertFails(writeTemplate(db, 'boutique', { status: 'preview' }));
+  // active → preview passes (demotion path for the approved template too).
+  await assertSucceeds(writeTemplate(db, 'boutique', { status: 'preview' }));
+  // preview → active is direct activation too — passes with the approval
+  // record kept from before (approval stays optional, never required).
+  await assertSucceeds(writeTemplate(db, 'boutique', { status: 'active' }));
   // active → retired passes; retired is terminal.
   await assertSucceeds(writeTemplate(db, 'boutique', { status: 'retired' }));
   await assertFails(writeTemplate(db, 'boutique', { status: 'draft' }));

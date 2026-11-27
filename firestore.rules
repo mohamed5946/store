@@ -859,14 +859,19 @@ service cloud.firestore {
 
     /* The status machine: draft -> preview -> approved -> active, with
      * retire from any non-retired state and preview as the way back
-     * from approved. Same-status writes are metadata edits. Skipping
-     * a step (draft -> approved/active, preview -> active) and
-     * un-activating to draft/preview are denied; retired is terminal.
-     * active -> approved IS allowed: it is how the template that
-     * stops being live returns to standby with its approval kept
-     * (the activation flow writes it in the same batch as the
-     * pointer flip — entry 12). Classic alone may go draft -> active
-     * (its seed path — the live site is its own approval). Re-approval
+     * from approved. Same-status writes are metadata edits. DIRECT
+     * ACTIVATION (2026-11-27, Mohamed's decision — approval is
+     * optional now, it no longer gates going live): draft -> active
+     * and preview -> active are allowed, and active -> preview is
+     * allowed too, so a template that went live without approval
+     * drops back to preview, never to a false 'approved'. Skipping
+     * a step (draft -> approved) and un-activating to draft are
+     * still denied; retired is terminal. active -> approved IS
+     * allowed: it is how the template that stops being live returns
+     * to standby with its approval kept (the activation flow writes
+     * it in the same batch as the pointer flip — entry 12). Classic
+     * alone may go draft -> active (its seed path — the live site is
+     * its own approval). Re-approval
      * exception (fix 2026-11-27 — this contradicted templateFrozenOk,
      * which REQUIRES a drop to draft when the hash/version/shell
      * changes): approved -> draft IS allowed when a frozen field
@@ -881,11 +886,11 @@ service cloud.firestore {
         || d.get('version', null) != resource.data.get('version', null)
         || d.get('shellMinVersion', null) != resource.data.get('shellMinVersion', null);
       return from == to
-        || (from == 'draft' && to in ['preview', 'retired'])
-        || (from == 'preview' && to in ['approved', 'draft', 'retired'])
+        || (from == 'draft' && to in ['preview', 'active', 'retired'])
+        || (from == 'preview' && to in ['approved', 'active', 'draft', 'retired'])
         || (from == 'approved' && to in ['active', 'preview', 'retired'])
         || (from == 'approved' && to == 'draft' && frozenChanged)
-        || (from == 'active' && to in ['approved', 'retired'])
+        || (from == 'active' && to in ['approved', 'preview', 'retired'])
         || (doc == 'classic' && from == 'draft' && to == 'active');
     }
 
@@ -1277,7 +1282,7 @@ service cloud.firestore {
         && templateStatusTransitionOk(doc)
         && templateFrozenOk()
         && !(doc == 'classic' && request.resource.data.get('status', null) != 'active')
-        && (request.resource.data.get('status', null) in ['draft', 'preview', 'retired']
+        && (request.resource.data.get('status', null) in ['draft', 'preview', 'active', 'retired']
           || request.resource.data.get('approval', null) != null)
         && hasAudit(request.resource.data.get('operationId', null), 'templates', doc, changedUpdate());
       allow delete: if isAdmin() && doc != 'classic' && hasDeleteAudit('templates', doc);
