@@ -8,6 +8,9 @@
  * Run via the admin-seed.yml workflow (WIF identity), target
  * issue-test-preview — never run with a personal credential.
  *   node scripts/issue-test-preview.js
+ *   node scripts/issue-test-preview.js --list   (read-only: list all
+ *     previews docs — used to recover a slug if a run crashed after
+ *     writing but before printing the URL; writes nothing)
  *
  * Writes exactly ONE document: previews/{slug} with
  * {templateId: 'bazaar', version: '1.0.0',
@@ -59,8 +62,21 @@ async function main() {
     process.exit(1);
   }
 
+  const listOnly = process.argv.includes('--list');
+
   const slug = generatePreviewSlug();
   const db = admin.firestore();
+
+  if (listOnly) {
+    const snap = await db.collection('previews').get();
+    console.log(`[issue-test-preview] LIST — ${snap.size} previews doc(s):`);
+    snap.forEach((d) => {
+      const v = d.data() || {};
+      console.log(`[issue-test-preview]   ${d.id} templateId=${v.templateId} version=${v.version} status=${v.status} issuedBy=${v.issuedBy}`);
+    });
+    process.exit(0);
+  }
+
   const ref = db.collection('previews').doc(slug);
   await ref.set({
     templateId: 'bazaar',
@@ -71,8 +87,9 @@ async function main() {
   });
 
   // Read back to prove the write landed before printing the URL.
+  // (Admin SDK: DocumentSnapshot.exists is a PROPERTY, not a method.)
   const snap = await ref.get();
-  if (!snap.exists()) {
+  if (!snap.exists) {
     console.error(`[issue-test-preview] FAILED — previews/${slug} does not exist after write.`);
     process.exit(1);
   }

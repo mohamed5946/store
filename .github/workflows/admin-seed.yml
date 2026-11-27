@@ -33,6 +33,7 @@ on:
           - governorates-live
           - discounts-live
           - issue-test-preview
+          - list-previews
 
 permissions:
   id-token: write
@@ -78,5 +79,8 @@ jobs:
               ;;
             issue-test-preview)
               node scripts/issue-test-preview.js
+              ;;
+            list-previews)
+              node scripts/issue-test-preview.js --list
               ;;
           esac
