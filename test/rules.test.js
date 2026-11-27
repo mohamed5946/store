@@ -238,7 +238,7 @@ before(async () => {
       history: [{
         templateId: 'classic', bundleVersion: '1.0.0',
         bundleHash: 'c'.repeat(64),
-        at: serverTimestamp(), by: ADMIN_UID,
+        at: Timestamp.now(), by: ADMIN_UID,
       }],
     });
     await setDoc(doc(db, 'templates', 'tpl-live'), { name: 'Live', status: 'active' });
@@ -2008,7 +2008,7 @@ async function writeTemplate(db, id, data) {
 function historyEntry(templateId, bundleHash) {
   return {
     templateId, bundleVersion: '1.0.0', bundleHash,
-    at: serverTimestamp(), by: ADMIN_UID,
+    at: Timestamp.now(), by: ADMIN_UID,
   };
 }
 
