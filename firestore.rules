@@ -464,7 +464,7 @@ service cloud.firestore {
         && d.customerPhone is string && d.customerPhone.size() >= 10
         && d.customerAddress is string && d.customerAddress.size() > 0
         && d.items is list && d.items.size() >= 1 && d.items.size() <= 10
-        && true /* PROBE C2: orderLinesValid disabled */
+        && orderLinesValid()
         && d.subtotal is number && d.subtotal >= 0
         && d.discountAmount is number && d.discountAmount >= 0
         && d.total is number && d.total >= 0
