@@ -1560,6 +1560,23 @@ test('Pricing A: a 7-line manual order WITHOUT a code passes', async () => {
   assert.equal(order.amountDue, 730);
 });
 
+/* TEMPORARY PROBE (Step 3, remove after the gate answers): an
+ * isolated rawOrderBatch 1-line sale+fee order on prod-5 (untouched
+ * by the matrix tests) — if this passes, rawOrderBatch itself is
+ * fine and test 60's failure was the audit-2 reserved accumulation
+ * (fixed above); if it fails, audit-1's batch shape itself is
+ * broken and the diagnosis is elsewhere. */
+test('PROBE: isolated rawOrderBatch 1-line sale+fee on prod-5 succeeds', async () => {
+  const db = anonDb();
+  await assertSucceeds(rawOrderBatch(db, {
+    orderId: 'order-probe-1', productId: 'prod-5', productName: 'سماعة سلكية',
+    price: 300, qty: 1, stock: 10, reserved: 0, basePrice: 500,
+    overrides: { saleSavings: 200, deliveryFee: 30, amountDue: 330 },
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-probe-1'))).exists(), true);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, 1);
+});
+
 /* Audit-split (M1 2026-11-27, approved): the order rule no longer
  * verifies the audit entry, so a deficient audit entry NO LONGER
  * denies the order — this test's old denial verdict is gone by
@@ -1578,11 +1595,15 @@ test('Pricing A: an order audit that does NOT cover the money fields no longer d
   await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-pricing-audit-1', auditOmit: ['deliveryFee'] }));
   // Audit lists the money fields but not 'items' — the line carries
   // a base price, so the audit must cover 'items' too (old rule).
-  await assertSucceeds(rawOrderBatch(db, { ...base, orderId: 'order-pricing-audit-2', auditOmit: ['items'] }));
+  // Step 3 probe fix: audit-2 must use reserved 7, not the shared
+  // base 6 — after audit-1 the stored reserved IS 7, so a second
+  // write of 6+1 = 7 fails `reserved strictly increases` (7 > 7
+  // is false) and the batch is denied. Final reserved is 8.
+  await assertSucceeds(rawOrderBatch(db, { ...base, reserved: 7, orderId: 'order-pricing-audit-2', auditOmit: ['items'] }));
   for (const id of ['order-pricing-audit-1', 'order-pricing-audit-2']) {
     assert.equal((await getDoc(doc(adminDb(), 'orders', id))).exists(), true);
   }
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 7);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-4'))).data().reserved, 8);
 });
 
 /* ---------- Pricing Phase A: attempt-doc shape check (§11 / M21) ---------- */
