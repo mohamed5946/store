@@ -1579,6 +1579,32 @@ test('PROBE B: order-only batch (1-line sale+fee, prod-7) succeeds', async () =>
   assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-probe-B'))).exists(), true);
 });
 
+/* PROBES D/E (Step 3): B proved the order create itself is denied
+ * in a writeBatch while the same shape passes in a transaction
+ * (test 47). The two remaining differences are attemptId (47 has
+ * it, B does not) and batch-vs-transaction. D is B + attemptId;
+ * E is the same order via transaction WITHOUT attemptId. */
+test('PROBE D: order-only batch WITH attemptId (prod-7) succeeds', async () => {
+  const db = anonDb();
+  await assertSucceeds(rawOrderBatch(db, {
+    orderId: 'order-probe-D', productId: 'prod-7', productName: 'منتج 7',
+    price: 100, qty: 1, stock: 30, reserved: 0, basePrice: 150,
+    overrides: { saleSavings: 50, deliveryFee: 30, amountDue: 130, attemptId: 'a-probe-D' },
+    skipInventory: true,
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-probe-D'))).exists(), true);
+});
+
+test('PROBE E: transaction WITHOUT attemptId (prod-7) succeeds', async () => {
+  const db = anonDb();
+  await assertSucceeds(placePricingOrderTx(db, {
+    orderId: 'order-probe-E',
+    lines: [{ productId: 'prod-7', qty: 1, basePrice: 150 }],
+    deliveryFee: 30,
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-probe-E'))).exists(), true);
+});
+
 test('PROBE C: reserve-only batch (prod-8, 0 -> 1) succeeds', async () => {
   const db = anonDb();
   const now = serverTimestamp();
