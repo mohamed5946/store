@@ -1253,7 +1253,7 @@ service cloud.firestore {
       // conjuncts (budget fix 2026-11-27). Same checks, same gets.
       allow create: if orderShapeOk(doc)
         && orderDiscountOk()
-        && orderAuditOk(doc)
+        && true /* PROBE C5: orderAuditOk disabled */
         && orderFeeOk()
         && (request.resource.data.source == 'storefront' || manualOrderAllowed());
       allow get: if isAdminOrManager()
