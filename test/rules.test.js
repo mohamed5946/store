@@ -1561,20 +1561,22 @@ test('Pricing A: a 7-line manual order WITHOUT a code passes', async () => {
 });
 
 /* TEMPORARY PROBE (Step 3, remove after the gate answers): an
- * isolated rawOrderBatch 1-line sale+fee order on prod-5 (untouched
- * by the matrix tests) — if this passes, rawOrderBatch itself is
- * fine and test 60's failure was the audit-2 reserved accumulation
- * (fixed above); if it fails, audit-1's batch shape itself is
- * broken and the diagnosis is elsewhere. */
+ * isolated rawOrderBatch 1-line sale+fee order on prod-5 — NOTE
+ * prod-5 is NOT fresh: the manual-order tests already reserved it
+ * to 4, so the probe must use reserved 4 (writing 5), not 0. The
+ * first probe run used 0 and failed on `reserved strictly
+ * increases` (1 > 4 false) — that failure is now understood; this
+ * run tells whether rawOrderBatch itself is fine once the reserve
+ * param matches the stored state. */
 test('PROBE: isolated rawOrderBatch 1-line sale+fee on prod-5 succeeds', async () => {
   const db = anonDb();
   await assertSucceeds(rawOrderBatch(db, {
     orderId: 'order-probe-1', productId: 'prod-5', productName: 'سماعة سلكية',
-    price: 300, qty: 1, stock: 10, reserved: 0, basePrice: 500,
+    price: 300, qty: 1, stock: 10, reserved: 4, basePrice: 500,
     overrides: { saleSavings: 200, deliveryFee: 30, amountDue: 330 },
   }));
   assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-probe-1'))).exists(), true);
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, 1);
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, 5);
 });
 
 /* Audit-split (M1 2026-11-27, approved): the order rule no longer
