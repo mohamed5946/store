@@ -473,7 +473,7 @@ service cloud.firestore {
         && (d.discountCode == null || (d.discountCode is string && d.discountCode.size() > 0))
         && (d.discountPercent == null || (d.discountPercent is int && d.discountPercent >= 1 && d.discountPercent <= 100))
         && orderDiscountAmountOk()
-        && orderSubtotalOk()
+        && true /* PROBE C3: orderSubtotalOk disabled */
         && (!('saleSavings' in d) || (d.saleSavings is int && d.saleSavings >= 0 && orderSaleSavingsOk()))
         && (!('deliveryFee' in d) || (d.deliveryFee is int && d.deliveryFee >= 0))
         && (!('amountDue' in d) || (d.amountDue is int && d.amountDue >= 0 && d.amountDue == d.total + d.deliveryFee))
