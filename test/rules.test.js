@@ -437,6 +437,7 @@ async function placeOrderTx(db, {
  * write, so a denial isolates the order rule and not the audit. */
 async function rawOrderBatch(db, {
   orderId, productId, productName, price, qty, stock, reserved,
+  costPrice = 100,
   basePrice = undefined, omit = [], overrides = {}, auditOmit = [],
   /* Incomplete orders (2026-11-27): skip the inventory reservation
    * + movement writes so a denial isolates the ORDER rule's own
@@ -449,20 +450,36 @@ async function rawOrderBatch(db, {
    * the single-line fields above. Inventory writes are skipped for
    * multi-line batches (the order rule is what is under test). */
   lines = null,
+  /* === PROBE ONLY (2026-11-27 bisect, probe branch — never merge):
+   * separate write switches + manual shape + discount claim, so the
+   * probe tests can add the transaction's writes back one at a time.
+   * skipMovement / skipAudit are independent of skipInventory;
+   * manual 'admin' | 'manager2' switches the order + audit to the
+   * admin_manual shape (test 16/18 mirror); discountCode (+
+   * discountPercent) stamps the code fields on the order and writes
+   * the single-use claim. */
+  skipMovement = false,
+  skipAudit = false,
+  manual = null,
+  discountCode = null,
+  discountPercent = null,
 }) {
   const auditId = `audit-${orderId}`;
   const now = serverTimestamp();
+  const manualUid = manual === 'manager2' ? MANAGER2_UID : ADMIN_UID;
   const items = lines == null
     ? [{ productId, name: productName, price, qty, ...(basePrice !== undefined ? { basePrice } : {}) }]
     : lines.map((l) => ({ productId: l.productId, name: l.productName, price: l.price, qty: l.qty, ...(l.basePrice !== undefined ? { basePrice: l.basePrice } : {}) }));
   const subtotal = items.reduce((sum, it) => sum + it.price * it.qty, 0);
+  const discountAmount = discountCode == null ? 0 : Math.round((subtotal * discountPercent) / 100);
   const order = {
     id: orderId, clientOrderId: orderId,
     customerName: 'اختبار', customerPhone: '01012345678', customerAddress: 'القاهرة',
     items,
-    subtotal, discountCode: null, discountPercent: null, discountAmount: 0, total: subtotal,
-    status: 'new', paymentStatus: 'cod_pending', source: 'storefront',
-    createdBy: null, shippingCompanyId: null, trackingNumber: null, notes: null,
+    subtotal, discountCode, discountPercent, discountAmount, total: subtotal - discountAmount,
+    status: 'new', paymentStatus: 'cod_pending',
+    source: manual == null ? 'storefront' : 'admin_manual',
+    createdBy: manual == null ? null : manualUid, shippingCompanyId: null, trackingNumber: null, notes: null,
     createdAt: now, updatedAt: now,
     acceptedAt: null, deliveredAt: null, cancelledAt: null, cancelReason: null,
     auditId,
@@ -479,24 +496,37 @@ async function rawOrderBatch(db, {
   if (!skipInventory && lines == null) {
     batch.set(doc(db, 'inventory', productId), {
       productId, stock, reserved: reserved + qty,
-      minStock: 5, costPrice: 100, updatedAt: now,
+      minStock: 5, costPrice, updatedAt: now,
     }, { merge: true });
+  }
+  if (!skipMovement && lines == null) {
     batch.set(doc(collection(db, 'movements')), {
       productId, type: 'order_reserve', qty: -qty, orderId,
-      source: 'placeOrder', actorUid: null, createdAt: now,
+      source: manual == null ? 'placeOrder' : 'createManualOrder',
+      actorUid: manual == null ? null : manualUid, createdAt: now,
     });
   }
+  if (discountCode != null) {
+    batch.set(doc(db, 'discounts', discountCode), {
+      usedBy: orderId, usedAt: now,
+    }, { merge: true });
+  }
   batch.set(doc(db, 'orders', orderId), order);
+  if (!skipAudit) {
   batch.set(doc(db, 'audit', auditId), {
-    operationId: auditId, actor: 'anonymous', actorName: 'storefront',
-    timestamp: now, collection: 'orders', docId: orderId, operation: 'create',
+    operationId: auditId,
+    actor: manual == null ? 'anonymous' : manualUid,
+    actorName: manual == null ? 'storefront' : (manual === 'manager2' ? 'Manager 2' : 'Admin'),
+    timestamp: now, collection: 'orders', docId: orderId,
+    operation: manual == null ? 'create' : 'manual_order_create',
     changedFields: auditList, oldValues: {},
     newValues: { status: 'new', total: order.total },
     docIds: { [`orders/${orderId}`]: auditList },
     newValuesByDoc: { [`orders/${orderId}`]: { status: 'new', total: order.total } },
     documents: [{ collection: 'orders', docId: orderId, changedFields: auditList, oldValues: {}, newValues: { status: 'new', total: order.total } }],
-    source: 'placeOrder',
+    source: manual == null ? 'placeOrder' : 'createManualOrder',
   });
+  }
   return batch.commit();
 }
 
@@ -809,6 +839,51 @@ test('No-functions: a manager WITH orders_create_manual may place a manual order
   }));
   assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-nf-manual-2'))).data().source, 'admin_manual');
   assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, 2);
+});
+
+/* === PROBE ONLY — line-validation bisect (2026-11-27), probe branch,
+ * NEVER MERGE. Step 1: order create alone. Mirror of test 16
+ * (admin manual 1-line, old shape, no code) via rawOrderBatch, so
+ * no client reads are evaluated — the batch cost is the writes
+ * only. prod-5: price 300, stock 10, costPrice 150. */
+const PROBE_BASE = {
+  productId: 'prod-5', productName: 'سماعة سلكية', price: 300,
+  qty: 1, stock: 10, costPrice: 150,
+};
+async function probeReserved() {
+  return (await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved;
+}
+
+test('PROBE 1a: order create ALONE (admin manual 1-line, no inventory/movement/audit/claim)', async () => {
+  const db = adminDb();
+  // No audit entry exists, so orderAuditOk is false — expect a CLEAN
+  // denial. A max-expr death here instead would mean the order
+  // shape/discount/audit evaluation alone already exceeds budget.
+  await assertFails(rawOrderBatch(db, {
+    ...PROBE_BASE, orderId: 'probe-1a',
+    reserved: await probeReserved(), manual: 'admin',
+    skipInventory: true, skipMovement: true, skipAudit: true,
+  }));
+});
+
+test('PROBE 1b: order + audit only (admin manual 1-line)', async () => {
+  const db = adminDb();
+  await assertSucceeds(rawOrderBatch(db, {
+    ...PROBE_BASE, orderId: 'probe-1b',
+    reserved: await probeReserved(), manual: 'admin',
+    skipInventory: true, skipMovement: true,
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'probe-1b'))).data().source, 'admin_manual');
+});
+
+test('PROBE 1c: order + audit only (manager2 manual 1-line)', async () => {
+  const db = manager2Db();
+  await assertSucceeds(rawOrderBatch(db, {
+    ...PROBE_BASE, orderId: 'probe-1c',
+    reserved: await probeReserved(), manual: 'manager2',
+    skipInventory: true, skipMovement: true,
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'probe-1c'))).data().source, 'admin_manual');
 });
 
 /* Coordinator fix 2026-11-26: the PC manual order stamps
