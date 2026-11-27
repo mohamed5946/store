@@ -443,10 +443,15 @@ service cloud.firestore {
       let keys = d.keys();
       let hasMoney = 'saleSavings' in d || 'deliveryFee' in d || 'amountDue' in d;
       let hasAllMoney = 'saleSavings' in d && 'deliveryFee' in d && 'amountDue' in d;
+      // operationId is OPTIONAL (PC manual orders stamp it; storefront
+      // + Flutter omit it) — read it with .get(), never dot-access:
+      // d.operationId ERRORS when the field is absent and denies every
+      // storefront order (bug found from firestore-debug.log, 2026-11-27).
+      let opId = d.get('operationId', null);
       return keys.hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerPhone2', 'customerAddress', 'governorate', 'detailedAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId', 'operationId', 'saleSavings', 'deliveryFee', 'amountDue', 'attemptId'])
         && ((!hasMoney && keys.size() >= 25 && keys.size() <= 29 && !('attemptId' in d))
           || (hasAllMoney && keys.size() >= 28 && keys.size() <= 33))
-        && (d.operationId == null || d.operationId is string)
+        && (opId == null || opId is string)
         && (!('customerPhone2' in d) || d.customerPhone2 == null || (d.customerPhone2 is string && d.customerPhone2.matches('^01[0125][0-9]{8}$')))
         && (!('governorate' in d) || d.governorate == null || (d.governorate is string && d.governorate.size() >= 1 && d.governorate.size() <= 50))
         && (!('detailedAddress' in d) || d.detailedAddress == null || (d.detailedAddress is string && d.detailedAddress.size() <= 500))
@@ -516,19 +521,26 @@ service cloud.firestore {
       let d = request.resource.data;
       let hasId = d.auditId is string && d.auditId.size() > 0;
       let entry = hasId ? getAfter(/databases/$(database)/documents/audit/$(d.auditId)) : null;
-      let moneyCovered = entry != null
+      // Budget fix 2026-11-27: the changed-fields list for this order
+      // is fetched ONCE and coverage is plain `in` checks — the old
+      // covers([...].toSet(), ...) built a set per check and re-fetched
+      // docIds three times. Same verdicts: 'x' in list is exactly the
+      // membership covers() was proving. A missing docIds entry yields
+      // null here and denies cleanly (no error) via the null guards.
+      let covered = entry == null ? null : entry.data.docIds['orders/' + doc];
+      let moneyCovered = covered != null
         && (!('saleSavings' in d)
-          || covers(['saleSavings', 'deliveryFee', 'amountDue'].toSet(), entry.data.docIds['orders/' + doc]));
-      let itemsCovered = entry != null
-        && (d.get('saleSavings', 0) == 0
-          || covers(['items'].toSet(), entry.data.docIds['orders/' + doc]));
+          || ('saleSavings' in covered && 'deliveryFee' in covered && 'amountDue' in covered));
+      let itemsCovered = covered != null
+        && (d.get('saleSavings', 0) == 0 || 'items' in covered);
       return entry != null
         && ((d.source == 'storefront' && entry.data.get('actor', null) == 'anonymous' && entry.data.get('operation', null) == 'create')
           || (d.source == 'admin_manual' && request.auth != null && entry.data.get('actor', null) == request.auth.uid && entry.data.get('operation', null) == 'manual_order_create'))
         && entry.data.get('collection', null) == 'orders'
         && entry.data.get('docId', null) == doc
         && entry.data.get('timestamp', null) == request.time
-        && covers(['status', 'total'].toSet(), entry.data.docIds['orders/' + doc])
+        && covered != null
+        && 'status' in covered && 'total' in covered
         && moneyCovered
         && itemsCovered;
     }
