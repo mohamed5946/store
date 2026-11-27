@@ -2131,24 +2131,19 @@ test('Templates (entry 20): approval accepts the admin app\'s \'at\' timestamp k
   // key 'timestamp'. The rules accept exactly one of them (flagged in
   // the entry-10 report for the coordinator to normalise). Both spellings
   // approve here; carrying both at once is denied.
-  // NOTE (2026-11-27): the approval's bundleHash here is TPL_HASH_B —
-  // the gallery doc's seeded hash — because templateApprovalOk requires
-  // approval.bundleHash == the doc's bundleHash (the freeze invariant).
-  // TPL_HASH_D was a copy-paste from test 93's re-approval flow and made
-  // all three writes deny on the hash mismatch, not on the spelling.
   await assertSucceeds(writeTemplate(db, 'gallery', {
     status: 'approved',
-    approval: { approver: ADMIN_UID, at: serverTimestamp(), shellVersion: '1.0.0', bundleHash: TPL_HASH_B },
+    approval: { approver: ADMIN_UID, at: serverTimestamp(), shellVersion: '1.0.0', bundleHash: TPL_HASH_D },
   }));
   await assertFails(writeTemplate(db, 'gallery', {
     status: 'approved',
-    approval: { approver: ADMIN_UID, at: serverTimestamp(), timestamp: serverTimestamp(), shellVersion: '1.0.0', bundleHash: TPL_HASH_B },
+    approval: { approver: ADMIN_UID, at: serverTimestamp(), timestamp: serverTimestamp(), shellVersion: '1.0.0', bundleHash: TPL_HASH_D },
   }));
   // Back to active with the spec-spelled approval, as the later pointer
   // tests expect gallery active with a valid approval.
   await assertSucceeds(writeTemplate(db, 'gallery', {
     status: 'active',
-    approval: { approver: ADMIN_UID, timestamp: serverTimestamp(), shellVersion: '1.0.0', bundleHash: TPL_HASH_B },
+    approval: { approver: ADMIN_UID, timestamp: serverTimestamp(), shellVersion: '1.0.0', bundleHash: TPL_HASH_D },
   }));
 });
 
