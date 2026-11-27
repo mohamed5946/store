@@ -32,6 +32,7 @@ on:
           - registry-live
           - governorates-live
           - discounts-live
+          - issue-test-preview
 
 permissions:
   id-token: write
@@ -74,5 +75,8 @@ jobs:
               ;;
             discounts-live)
               node scripts/delete-discounts.js --live
+              ;;
+            issue-test-preview)
+              node scripts/issue-test-preview.js
               ;;
           esac
