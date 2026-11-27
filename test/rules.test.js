@@ -389,10 +389,8 @@ async function placeOrderTx(db, {
     };
     if (stampOperationId) invWrite.operationId = auditId;
     tx.set(doc(db, 'inventory', productId), invWrite, { merge: true });
-    tx.set(doc(collection(db, 'movements')), {
-      productId, type: 'order_reserve', qty: -qty, orderId,
-      source: movementSource, actorUid: createdBy, createdAt: now,
-    });
+    /* PROBE P-M1: movement write skipped (Option 3 — movements leave
+     * the order transaction). */
     if (discount) {
       const claim = { usedBy: orderId, usedAt: now };
       if (stampOperationId) { claim.operationId = auditId; claim.updatedAt = now; }
@@ -499,13 +497,8 @@ async function rawOrderBatch(db, {
       minStock: 5, costPrice, updatedAt: now,
     }, { merge: true });
   }
-  if (!skipMovement && lines == null) {
-    batch.set(doc(collection(db, 'movements')), {
-      productId, type: 'order_reserve', qty: -qty, orderId,
-      source: manual == null ? 'placeOrder' : 'createManualOrder',
-      actorUid: manual == null ? null : manualUid, createdAt: now,
-    });
-  }
+  /* PROBE P-M1: movement writes skipped (Option 3 — movements leave
+   * the order transaction). */
   if (discountCode != null) {
     batch.set(doc(db, 'discounts', discountCode), {
       usedBy: orderId, usedAt: now,
@@ -582,10 +575,8 @@ async function placePricingOrderTx(db, {
         productId: l.productId, stock: l.inv.stock, reserved: l.inv.reserved + l.qty,
         minStock: l.inv.minStock, costPrice: l.inv.costPrice, updatedAt: now,
       }, { merge: true });
-      tx.set(doc(collection(db, 'movements')), {
-        productId: l.productId, type: 'order_reserve', qty: -l.qty, orderId,
-        source: movementSource, actorUid: createdBy, createdAt: now,
-      });
+      /* PROBE P-M1: movement write skipped (Option 3 — movements
+       * leave the order transaction). */
     }
     if (discount) {
       tx.set(doc(db, 'discounts', discount.code), { usedBy: orderId, usedAt: now }, { merge: true });
