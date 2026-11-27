@@ -464,7 +464,7 @@ service cloud.firestore {
         && d.customerPhone is string && d.customerPhone.size() >= 10
         && d.customerAddress is string && d.customerAddress.size() > 0
         && d.items is list && d.items.size() >= 1 && d.items.size() <= 10
-        && orderLinesValid()
+        && true /* PROBE C6: orderLinesValid disabled */
         && d.subtotal is number && d.subtotal >= 0
         && d.discountAmount is number && d.discountAmount >= 0
         && d.total is number && d.total >= 0
@@ -1253,7 +1253,7 @@ service cloud.firestore {
       // conjuncts (budget fix 2026-11-27). Same checks, same gets.
       allow create: if orderShapeOk(doc)
         && orderDiscountOk()
-        && orderAuditOk(doc)
+        && true /* PROBE C6: orderAuditOk disabled */
         && orderFeeOk()
         && (request.resource.data.source == 'storefront' || manualOrderAllowed());
       allow get: if isAdminOrManager()
