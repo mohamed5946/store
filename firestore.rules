@@ -448,7 +448,7 @@ service cloud.firestore {
       // d.operationId ERRORS when the field is absent and denies every
       // storefront order (bug found from firestore-debug.log, 2026-11-27).
       let opId = d.get('operationId', null);
-      return true /* PROBE C1: 33-key hasOnly disabled */
+      return keys.hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerPhone2', 'customerAddress', 'governorate', 'detailedAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId', 'operationId', 'saleSavings', 'deliveryFee', 'amountDue', 'attemptId'])
         && ((!hasMoney && keys.size() >= 25 && keys.size() <= 29 && !('attemptId' in d))
           || (hasAllMoney && keys.size() >= 28 && keys.size() <= 33))
         && (opId == null || opId is string)
