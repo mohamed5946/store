@@ -36,8 +36,9 @@ class _SettingsTabState extends State<_SettingsTab> {
   // one fixed fee for all orders + the admin-set free-delivery
   // threshold, both on storeSettings/settings. Same draft pattern
   // as brand/WhatsApp: nothing writes until Save; Cancel restores
-  // the last-saved values. Missing fee ≠ 0 — the tab shows a
-  // persistent banner until the fee is set.
+  // the last-saved values. Fee-default-free (decision 2026-11-27):
+  // an unset fee means delivery is free — the tab says so, with
+  // no blocking language.
   bool _feeLoaded = false;
   final _fee = TextEditingController();
   final _feeThreshold = TextEditingController();
@@ -528,8 +529,8 @@ class _SettingsTabState extends State<_SettingsTab> {
   // Plan §2/§9 + decision D3) on storeSettings/settings. Draft
   // pattern like WhatsApp: typing only changes state, Save writes
   // via Backend.setDeliveryFee, Cancel restores the last-saved
-  // values. The banner stays until the fee is set (missing ≠ 0 —
-  // checkout is blocked while it is unset).
+  // values. Fee-default-free (decision 2026-11-27): while no fee
+  // is set the tab shows delivery as free, never as blocked.
   Widget _deliveryFeeSection() {
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: Backend.instance.brandStream(),
@@ -559,11 +560,13 @@ class _SettingsTabState extends State<_SettingsTab> {
                   margin: const EdgeInsets.only(top: 8),
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: StoreGlass.of(context).danger.withValues(alpha: 0.12),
+                    color: StoreGlass.of(context)
+                        .success
+                        .withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: const Text(
-                    'رسوم التوصيل غير محددة بعد — حدّدها من الإعدادات. الطلبات من الموقع متوقفة لحد ما تتحدد.',
+                    'رسوم التوصيل غير محددة — التوصيل مجاني حالياً.',
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ),
@@ -574,7 +577,7 @@ class _SettingsTabState extends State<_SettingsTab> {
                 onChanged: (_) => setState(() {}),
                 decoration: const InputDecoration(
                   labelText: 'رسوم التوصيل (ج.م)',
-                  hintText: 'مثال: 30 — صفر يعني التوصيل مجاني',
+                  hintText: 'مثال: 30 — فاضي أو صفر يعني التوصيل مجاني',
                   border: OutlineInputBorder(),
                 ),
               ),
