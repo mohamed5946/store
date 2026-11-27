@@ -612,21 +612,15 @@ service cloud.firestore {
      * is no rules mechanism for it, so it is not fixed here.
      * Releases (reserved down) and stock changes still need the
      * audited admin branch. Costs 0 access calls. */
-    /* Reserve slimming (M1 2026-11-27, Step 3 — measured: after
-     * Option 1 + audit-split + Option 3, the 1-line sale+fee order
-     * fits but 2/7/8-line orders still die max-expr, and the debug
-     * log shows the deaths inside the per-line validity traversal
-     * that runs after the reserves — so the reserves themselves
-     * must get cheaper). Four conjuncts are dropped: the redundant
-     * `stock >= 0` (stock is pinned to the stored value, which was
-     * validated when written), and the `productId` / `minStock` /
-     * `costPrice` pins (fields the reserve write only echoes back
-     * unchanged — nothing in the order flow reads them from the
-     * request, and a wrong echo can no longer deny a legitimate
-     * reserve). Kept: doc exists, reserved is a non-negative int,
-     * stock equals the stored stock, reserved strictly increases
-     * within stock, updatedAt == request.time. The stock itself is
-     * still protected: reserved can only move up, never past stock. */
+    /* Reserve slimming REVERTED (fix round 2026-11-27): the Step 3
+     * slimming dropped four conjuncts (`stock >= 0`, `productId` /
+     * `minStock` / `costPrice` pins) and measured ZERO effect on
+     * the 1000-expression budget — the deaths sit in the per-line
+     * validity traversal after the reserves, not in the reserves.
+     * The pins are restored exactly as before the slimming: a
+     * reserve write must echo the stored productId / minStock /
+     * costPrice, so a wrong echo denies the reserve instead of
+     * silently rewriting those fields. */
     function inventoryReserveOk(doc) {
       let old = resource == null ? null : resource.data;
       let d = request.resource.data;
@@ -634,26 +628,27 @@ service cloud.firestore {
       return resource != null
         && newReserved is int && newReserved >= 0
         && d.get('stock', 0) == old.get('stock', 0)
+        && d.get('stock', 0) >= 0
         && newReserved > old.get('reserved', 0)
         && newReserved <= d.get('stock', 0)
+        && d.get('productId', doc) == old.get('productId', doc)
+        && d.get('minStock', 5) == old.get('minStock', 5)
+        && d.get('costPrice', 0) == old.get('costPrice', 0)
         && d.get('updatedAt', null) == request.time;
     }
     /* Budget fix 2026-11-27: the changedUpdate().hasOnly([...])
-     * conjunct is gone. The fields it guarded that still matter
-     * (stock / reserved equal the stored values, updatedAt ==
-     * request.time, reserved strictly increases within stock) are
-     * pinned by a value check above, so the hasOnly only blocked
-     * inert extra fields — at the price of a full diff() per
-     * reserve, which blew the 1000-expression budget on multi-line
-     * orders. The productId / minStock / costPrice pins are gone
-     * too (reserve slimming, Step 3 — see the comment above the
-     * function): those fields are only echoed back by the reserve
-     * write. 'operationId' stays tolerated (the Flutter + PC manual
-     * orders stamp it; it is a harmless correlation id, and without
-     * it those apps fall back to the audited admin branch
-     * (2 reads/line) and a 6-line manual order breaks the
-     * per-request budget). The value checks above still protect
-     * the stock. */
+     * conjunct is gone. Every field it guarded is already pinned
+     * by a value check above (stock / reserved / productId /
+     * minStock / costPrice equal the stored values, updatedAt ==
+     * request.time, reserved strictly increases within stock), so
+     * the hasOnly only blocked inert extra fields — at the price of
+     * a full diff() per reserve, which blew the 1000-expression
+     * budget on multi-line orders. 'operationId' stays tolerated
+     * (the Flutter + PC manual orders stamp it; it is a harmless
+     * correlation id, and without it those apps fall back to the
+     * audited admin branch (2 reads/line) and a 6-line manual order
+     * breaks the per-request budget). The value checks above still
+     * protect the stock. */
 
     /* §13 inStock refresh (correction 2026-11-26): a batched merge
      * setting ONLY inStock, verified against the inventory doc
