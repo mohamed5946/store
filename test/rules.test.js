@@ -472,9 +472,13 @@ async function rawOrderBatch(db, {
   // costPrice pin, and the assertSucceeds cases (audit-split test,
   // OOS old-shape test) failed on the reserve — while the
   // assertFails cases passed for the wrong reason (denied on the
-  // pin, not on the order conjunct under test). Read the doc first
-  // (admin read, like the assertions below); fall back to the old
-  // constants only if the doc does not exist.
+  // pin, not on the order conjunct under test). The pins were
+  // restored by the fix-round revert of the Step 3 reserve
+  // slimming (2026-11-27), so the echo is required again — a
+  // reserve write that echoes a wrong minStock / costPrice /
+  // productId is denied. Read the doc first (admin read, like the
+  // assertions below); fall back to the old constants only if the
+  // doc does not exist.
   let invMinStock = 5, invCostPrice = 100;
   if (!skipInventory && lines == null) {
     const invSnap = await getDoc(doc(adminDb(), 'inventory', productId));
@@ -1472,9 +1476,17 @@ test('Pricing A: an order carrying one new key without the other two is denied',
   assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-partial'))).exists(), false);
 });
 
-test('Pricing A: a missing fee field denies a storefront create but allows a manual create', async () => {
-  // Clear the fee field from the settings doc (rules-disabled), so
-  // the storefront fee check has nothing to verify against.
+test('Pricing A: a missing fee field means FREE on a storefront create (fee 0 passes, fee > 0 denied); manual create still passes', async () => {
+  // Fee-default-free (fix round 2026-11-27, Mohamed's decision):
+  // the settings doc carries NO deliveryFee field, so the expected
+  // fee is 0 — a storefront order with deliveryFee 0 succeeds and
+  // one with deliveryFee > 0 is denied as a forged fee. This test's
+  // OLD verdict (a storefront create denied with any fee while the
+  // field was missing) is REPLACED by the new rule, not weakened:
+  // the rule itself changed. The storefront success uses prod-5
+  // (not prod-4) so the prod-4 reserved chain the later
+  // audit-split test pins is untouched.
+  // Clear the fee field from the settings doc (rules-disabled).
   await testEnv.withSecurityRulesDisabled(async (context) => {
     const db = context.firestore();
     await setDoc(doc(db, 'storeSettings', 'settings'), {});
@@ -1490,12 +1502,21 @@ test('Pricing A: a missing fee field denies a storefront create but allows a man
   // (2-line budget failure).
   try {
     const anon = anonDb();
-    await assertFails(placePricingOrderTx(anon, {
+    await assertSucceeds(placePricingOrderTx(anon, {
       orderId: 'order-pricing-nofee-sf',
-      lines: [{ productId: 'prod-4', qty: 1, basePrice: 500 }],
+      lines: [{ productId: 'prod-5', qty: 1, basePrice: null }],
+      deliveryFee: 0,
+    }));
+    const sfOrder = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-sf'))).data();
+    assert.equal(sfOrder.deliveryFee, 0);
+    assert.equal(sfOrder.amountDue, 300);
+    // A fee above the expected 0 is still a forged fee.
+    await assertFails(placePricingOrderTx(anon, {
+      orderId: 'order-pricing-nofee-sf-bad',
+      lines: [{ productId: 'prod-5', qty: 1, basePrice: null }],
       deliveryFee: 30,
     }));
-    assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-sf'))).exists(), false);
+    assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-nofee-sf-bad'))).exists(), false);
     // The manual path is client-asserted (fee split, decision D2):
     // no fee get, so the same order shape passes without a fee field.
     const admin = adminDb();
@@ -1518,6 +1539,81 @@ test('Pricing A: a missing fee field denies a storefront create but allows a man
       await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 30 });
     });
   }
+});
+
+/* D1 (fix round 2026-11-27): the free-delivery-threshold waiver is
+ * enforced in the rules — orderFeeOk reads freeDeliveryThreshold
+ * from the same settings doc as the fee (no new get) and requires
+ * fee 0 when total >= threshold. Settings are seeded with fee 30
+ * + threshold 500 and restored to fee 30 (no threshold) in a
+ * finally, so the later matrix tests (totals 700/800 with fee 30)
+ * are unaffected — a leftover threshold would deny them. prod-5
+ * (price 300) is used so the prod-4 reserved chain the later
+ * audit-split test pins is untouched. */
+test('Pricing A (D1): a threshold-waived order succeeds (fee 30, threshold 500, total >= 500, deliveryFee 0)', async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 30, freeDeliveryThreshold: 500 });
+  });
+  try {
+    const db = anonDb();
+    await assertSucceeds(placePricingOrderTx(db, {
+      orderId: 'order-pricing-d1-waived',
+      lines: [{ productId: 'prod-5', qty: 2, basePrice: null }],
+      deliveryFee: 0,
+    }));
+    const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-d1-waived'))).data();
+    assert.equal(order.total, 600);
+    assert.equal(order.deliveryFee, 0);
+    assert.equal(order.amountDue, 600);
+  } finally {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 30 });
+    });
+  }
+});
+
+test('Pricing A (D1): a threshold-not-met order with fee 0 is DENIED (fee 30, threshold 500, total < 500, deliveryFee 0)', async () => {
+  await testEnv.withSecurityRulesDisabled(async (context) => {
+    const db = context.firestore();
+    await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 30, freeDeliveryThreshold: 500 });
+  });
+  try {
+    const db = anonDb();
+    await assertFails(placePricingOrderTx(db, {
+      orderId: 'order-pricing-d1-notmet',
+      lines: [{ productId: 'prod-5', qty: 1, basePrice: null }],
+      deliveryFee: 0,
+    }));
+    assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-d1-notmet'))).exists(), false);
+  } finally {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await setDoc(doc(db, 'storeSettings', 'settings'), { deliveryFee: 30 });
+    });
+  }
+});
+
+test('Pricing A (D1): with no threshold set, the fee rule behaves as before (fee 30 passes, fee 0 denied)', async () => {
+  // No settings change needed: the seed is { deliveryFee: 30 } with
+  // no freeDeliveryThreshold — the D1 tests above restore exactly
+  // that in their finally blocks.
+  const db = anonDb();
+  await assertSucceeds(placePricingOrderTx(db, {
+    orderId: 'order-pricing-d1-nothreshold-ok',
+    lines: [{ productId: 'prod-5', qty: 1, basePrice: null }],
+    deliveryFee: 30,
+  }));
+  const order = (await getDoc(doc(adminDb(), 'orders', 'order-pricing-d1-nothreshold-ok'))).data();
+  assert.equal(order.deliveryFee, 30);
+  assert.equal(order.amountDue, 330);
+  await assertFails(placePricingOrderTx(db, {
+    orderId: 'order-pricing-d1-nothreshold-bad',
+    lines: [{ productId: 'prod-5', qty: 1, basePrice: null }],
+    deliveryFee: 0,
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'order-pricing-d1-nothreshold-bad'))).exists(), false);
 });
 
 test('Pricing A: an 8-line storefront order WITHOUT a code passes (8 product gets + 1 fee get)', async () => {
@@ -2109,12 +2205,14 @@ test('Templates (entry 20): approval freezes the hash — changed hash with kept
   await assertSucceeds(writeTemplate(db, 'gallery', { status: 'active' }));
 });
 
-test('Templates (entry 20): approval accepts the admin app\'s \'at\' timestamp key as well as \'timestamp\'', async () => {
+test('Templates (entry 20): approval accepts the spec\'s \'timestamp\' key; carrying both \'timestamp\' and \'at\' is denied', async () => {
   const db = adminDb();
-  // Entry 12's approveTemplate writes approval.at; the spec names the
-  // key 'timestamp'. The rules accept exactly one of them (flagged in
-  // the entry-10 report for the coordinator to normalise). Both spellings
-  // approve here; carrying both at once is denied.
+  // What this test actually asserts: a 'timestamp'-only approval
+  // succeeds, and carrying BOTH keys at once is denied. The
+  // 'at'-only approval acceptance is NOT asserted here — it is
+  // untested, and per the P1 probe it cannot pass in the emulator.
+  // Do NOT add an 'at'-only acceptance case to this test. (The old
+  // name over-claimed 'at' acceptance; renamed 2026-11-27.)
   await assertSucceeds(writeTemplate(db, 'gallery', {
     status: 'approved',
     approval: { approver: ADMIN_UID, timestamp: Timestamp.now(), shellVersion: '1.0.0', bundleHash: TPL_HASH_D },
@@ -2129,6 +2227,27 @@ test('Templates (entry 20): approval accepts the admin app\'s \'at\' timestamp k
     status: 'active',
     approval: { approver: ADMIN_UID, timestamp: serverTimestamp(), shellVersion: '1.0.0', bundleHash: TPL_HASH_D },
   }));
+});
+
+/* D3 (fix round 2026-11-27): templateShapeOk used to exclude the
+ * `validation` report key, so the admin apps' runValidation writes
+ * were denied (silently swallowed in try/catch). The report is now
+ * allowed with a shape pin: keys exactly {passed, checks, at},
+ * passed a bool, checks a list. This mirrors runValidation on a
+ * FAILED gateway (report only, no status change), so `scroll`
+ * stays a draft for the later pointer tests. The `at` value here
+ * is a Timestamp (the Flutter spelling); the PC app writes an ISO
+ * string for `at` and the rules deliberately do not pin its type
+ * — see firestore.rules validationOk. */
+test('Templates (D3): a template update writing the validation report succeeds', async () => {
+  const db = adminDb();
+  await assertSucceeds(writeTemplate(db, 'scroll', {
+    validation: { passed: false, checks: ['bundle.fetch'], at: serverTimestamp() },
+  }));
+  const after = (await getDoc(doc(adminDb(), 'templates', 'scroll'))).data();
+  assert.equal(after.status, 'draft');
+  assert.equal(after.validation.passed, false);
+  assert.deepEqual(after.validation.checks, ['bundle.fetch']);
 });
 
 test('Templates (entry 20): active → approved passes — the previous live template returns to standby with its approval kept', async () => {
