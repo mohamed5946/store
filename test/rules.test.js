@@ -918,11 +918,14 @@ test('PROBE 2b: order + inventory + movement (admin manual 1-line, no audit)', a
 
 test('PROBE 2c: order + inventory + movement + audit, full no-code (admin manual 1-line)', async () => {
   const db = adminDb();
+  const before = await probeReserved();
   await assertSucceeds(rawOrderBatch(db, {
     ...PROBE_BASE, orderId: 'probe-2c',
-    reserved: await probeReserved(), manual: 'admin',
+    reserved: before, manual: 'admin',
   }));
-  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, 3);
+  // NOTE (probe planning correction): test 18 FAILS at baseline, so
+  // prod-5 reserved is 1 here, not 2 — assert +1 from the live value.
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, before + 1);
 });
 
 test('PROBE 2d: full + discount claim (admin manual 1-line + code)', async () => {
@@ -967,6 +970,36 @@ test('PROBE 2g: full sale + code (admin manual 1-line, basePrice 400, new-money 
     overrides: { saleSavings: 100, deliveryFee: 30, amountDue: 300 },
   }));
   assert.equal((await getDoc(doc(adminDb(), 'orders', 'probe-2g'))).data().saleSavings, 100);
+});
+
+/* === PROBE ONLY — step 2b (decisive Option-3 test): the same
+ * failing admin+code case (2d) WITHOUT the movement write (2i) and
+ * without inventory+movement (2h). If 2i passes while 2d fails, the
+ * movement write's evaluation consumes shared budget and Option 3
+ * has real value; if 2i fails too, Option 3 is worth ~0 on the
+ * order's verdict. */
+test('PROBE 2h: admin + code, order + audit + claim only (no inventory/movement)', async () => {
+  await probeMakeCode('PROBE10D');
+  const db = adminDb();
+  await assertSucceeds(rawOrderBatch(db, {
+    ...PROBE_BASE, orderId: 'probe-2h',
+    reserved: await probeReserved(), manual: 'admin',
+    discountCode: 'PROBE10D', discountPercent: 10,
+    skipInventory: true, skipMovement: true,
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'PROBE10D'))).data().usedBy, 'probe-2h');
+});
+
+test('PROBE 2i: admin + code, full minus movement only (Option-3 simulation)', async () => {
+  await probeMakeCode('PROBE10E');
+  const db = adminDb();
+  await assertSucceeds(rawOrderBatch(db, {
+    ...PROBE_BASE, orderId: 'probe-2i',
+    reserved: await probeReserved(), manual: 'admin',
+    discountCode: 'PROBE10E', discountPercent: 10,
+    skipMovement: true,
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'PROBE10E'))).data().usedBy, 'probe-2i');
 });
 
 /* Coordinator fix 2026-11-26: the PC manual order stamps
