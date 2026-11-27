@@ -48,3 +48,11 @@ jobs:
 
       - name: Run rules tests against the emulator
         run: npx firebase emulators:exec --only firestore "node --test test/rules.test.js"
+
+      - name: Upload emulator debug log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firestore-debug-log
+          path: firestore-debug.log
+          if-no-files-found: warn

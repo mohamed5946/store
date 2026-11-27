@@ -201,12 +201,13 @@ service cloud.firestore {
      * same field when one operation touches several documents. */
     function hasAudit(opId, collection, docId, changed) {
       let entry = auditAfter(opId);
+      let docIds = entry == null ? null : entry.data.get('docIds', null);
       return opId != null
         && entry != null
-        && entry.data.actor == request.auth.uid
-        && entry.data.timestamp == request.time
-        && entry.data.docIds != null
-        && covers(changed, entry.data.docIds[collection + '/' + docId])
+        && entry.data.get('actor', null) == request.auth.uid
+        && entry.data.get('timestamp', null) == request.time
+        && docIds != null
+        && covers(changed, docIds[collection + '/' + docId])
         && sensitiveValuesOk(changed, entry, collection, docId);
     }
 
@@ -220,17 +221,17 @@ service cloud.firestore {
       let recorded = entry.data.newValuesByDoc != null
         ? entry.data.newValuesByDoc[collection + '/' + docId]
         : null;
-      return (!changed.hasAny(['price']) || (recorded != null && recorded.price == request.resource.data.price))
-        && (!changed.hasAny(['stock']) || (recorded != null && recorded.stock == request.resource.data.stock))
-        && (!changed.hasAny(['reserved']) || (recorded != null && recorded.reserved == request.resource.data.reserved))
-        && (!changed.hasAny(['status']) || (recorded != null && recorded.status == request.resource.data.status))
-        && (!changed.hasAny(['paymentStatus']) || (recorded != null && recorded.paymentStatus == request.resource.data.paymentStatus))
-        && (!changed.hasAny(['inStock']) || (recorded != null && recorded.inStock == request.resource.data.inStock))
-        && (!changed.hasAny(['percent']) || (recorded != null && recorded.percent == request.resource.data.percent))
-        && (!changed.hasAny(['basePrice']) || (recorded != null && recorded.basePrice == request.resource.data.basePrice))
-        && (!changed.hasAny(['deliveryFee']) || (recorded != null && recorded.deliveryFee == request.resource.data.deliveryFee))
-        && (!changed.hasAny(['saleSavings']) || (recorded != null && recorded.saleSavings == request.resource.data.saleSavings))
-        && (!changed.hasAny(['amountDue']) || (recorded != null && recorded.amountDue == request.resource.data.amountDue));
+      return (!('price' in changed) || (recorded != null && recorded.price == request.resource.data.price))
+        && (!('stock' in changed) || (recorded != null && recorded.stock == request.resource.data.stock))
+        && (!('reserved' in changed) || (recorded != null && recorded.reserved == request.resource.data.reserved))
+        && (!('status' in changed) || (recorded != null && recorded.status == request.resource.data.status))
+        && (!('paymentStatus' in changed) || (recorded != null && recorded.paymentStatus == request.resource.data.paymentStatus))
+        && (!('inStock' in changed) || (recorded != null && recorded.inStock == request.resource.data.inStock))
+        && (!('percent' in changed) || (recorded != null && recorded.percent == request.resource.data.percent))
+        && (!('basePrice' in changed) || (recorded != null && recorded.basePrice == request.resource.data.basePrice))
+        && (!('deliveryFee' in changed) || (recorded != null && recorded.deliveryFee == request.resource.data.deliveryFee))
+        && (!('saleSavings' in changed) || (recorded != null && recorded.saleSavings == request.resource.data.saleSavings))
+        && (!('amountDue' in changed) || (recorded != null && recorded.amountDue == request.resource.data.amountDue));
     }
 
     /* Changed keys for an update (diff against the stored doc). */
@@ -249,11 +250,11 @@ service cloud.firestore {
     function hasDeleteAudit(collection, docId) {
       let entry = auditAfter(deleteAuditId(collection, docId));
       return entry != null
-        && entry.data.actor == request.auth.uid
-        && entry.data.timestamp == request.time
-        && entry.data.operation == 'delete'
-        && entry.data.collection == collection
-        && entry.data.docId == docId;
+        && entry.data.get('actor', null) == request.auth.uid
+        && entry.data.get('timestamp', null) == request.time
+        && entry.data.get('operation', null) == 'delete'
+        && entry.data.get('collection', null) == collection
+        && entry.data.get('docId', null) == docId;
     }
 
     /* inStock must match the projected inventory (kept for
@@ -291,36 +292,82 @@ service cloud.firestore {
      * basePrice is denied (integer rule, same as the product rule).
      * price stays number, not int (correction 2026-11-26): a stored
      * fractional price must not deny a legitimate order whose line
-     * price matches the DB exactly. */
+     * price matches the DB exactly. Budget fix 2026-11-27: the
+     * 4-or-5-key size check is gone — hasOnly + the field checks
+     * below already deny a short line (a missing field errors or
+     * fails its type check); the productId/name .size() > 0 checks
+     * are gone too — an empty productId fails the DB price get in
+     * linePriceOk, and name is display-only. Same verdicts. */
     function orderLineOk(item) {
       return item is map
         && item.keys().hasOnly(['productId', 'name', 'price', 'qty', 'basePrice'])
-        && (item.keys().size() == 4 || item.keys().size() == 5)
-        && item.productId is string && item.productId.size() > 0
-        && item.name is string && item.name.size() > 0
+        && item.productId is string
+        && item.name is string
         && item.price is number && item.price > 0
         && item.qty is int && item.qty >= 1 && item.qty <= 20
         && (!('basePrice' in item) || item.basePrice == null
           || (item.basePrice is int && item.basePrice >= item.price));
     }
 
-    /* Line i of the order, if present, passes the shape check. */
-    function orderLineOkAt(i) {
+    /* One traversal for shape + DB price + availability (budget fix
+     * 2026-11-27): the old code walked the 10 slots THREE times
+     * (orderLinesOk, orderPricesOk, orderAvailabilityOk), each with
+     * its own size guard and items[i] fetch. Now a single
+     * orderLinesValid does shape + price get + availability get per
+     * present line, with the size guard hoisted to the call site so
+     * an absent slot costs one comparison. Same checks, same gets
+     * (1 product get per line; 1 inventory get per line only when
+     * the order has at most 3 lines — the OOS guard's 10-get budget
+     * note: worst case 3 price + 3 inventory + 1 code + 1 fee + 1
+     * audit = 9; larger orders keep the transaction + reserve-rule
+     * guards, exactly as before). */
+    function orderLineValid(i) {
       let items = request.resource.data.items;
-      return items.size() <= i || orderLineOk(items[i]);
+      return orderLineOk(items[i])
+        && linePriceOk(i)
+        && (items.size() > 3 || lineAvailOk(i));
     }
 
-    function orderLinesOk() {
-      return orderLineOkAt(0) && orderLineOkAt(1) && orderLineOkAt(2)
-        && orderLineOkAt(3) && orderLineOkAt(4) && orderLineOkAt(5)
-        && orderLineOkAt(6) && orderLineOkAt(7) && orderLineOkAt(8)
-        && orderLineOkAt(9);
+    /* Line i's price must equal the products doc price (one get per
+     * line — rules have no loop). Called only for i < items.size(),
+     * after orderLineOk proved productId is a string. */
+    function linePriceOk(i) {
+      let items = request.resource.data.items;
+      let prod = get(/databases/$(database)/documents/products/$(items[i].productId));
+      return prod != null && prod.data.price == items[i].price;
     }
 
-    /* price*qty of line i, or 0 when the order has no such line. */
+    /* Per-line availability guard [OOS]: qty <= stock - reserved on
+     * the matching inventory doc — the backstop against a forged
+     * order write that skips the transaction's stock re-check. Called
+     * only for i < items.size() and only when the order has at most
+     * 3 lines (see orderLineValid). */
+    function lineAvailOk(i) {
+      let items = request.resource.data.items;
+      let inv = get(/databases/$(database)/documents/inventory/$(items[i].productId));
+      return inv != null && items[i].qty <= (inv.data.get('stock', 0) - inv.data.get('reserved', 0));
+    }
+
+    function orderLinesValid() {
+      let n = request.resource.data.items.size();
+      return (n <= 0 || orderLineValid(0))
+        && (n <= 1 || orderLineValid(1))
+        && (n <= 2 || orderLineValid(2))
+        && (n <= 3 || orderLineValid(3))
+        && (n <= 4 || orderLineValid(4))
+        && (n <= 5 || orderLineValid(5))
+        && (n <= 6 || orderLineValid(6))
+        && (n <= 7 || orderLineValid(7))
+        && (n <= 8 || orderLineValid(8))
+        && (n <= 9 || orderLineValid(9));
+    }
+
+    /* price*qty of line i. Unguarded — orderSubtotalOk only calls it
+     * for i < items.size() (budget fix 2026-11-27: the guard moved to
+     * the call site so an absent slot costs one ternary, not a call). */
     function orderLineTotal(i) {
       let items = request.resource.data.items;
-      return items.size() > i ? items[i].price * items[i].qty : 0;
+      return items[i].price * items[i].qty;
     }
 
     /* subtotal must equal the unrolled sum of price*qty (the rules
@@ -329,11 +376,14 @@ service cloud.firestore {
      * sum, and without it a forged low subtotal (with a matching
      * total) would pass. Costs 0 extra reads. */
     function orderSubtotalOk() {
-      return request.resource.data.subtotal
-        == orderLineTotal(0) + orderLineTotal(1) + orderLineTotal(2)
-        + orderLineTotal(3) + orderLineTotal(4) + orderLineTotal(5)
-        + orderLineTotal(6) + orderLineTotal(7) + orderLineTotal(8)
-        + orderLineTotal(9);
+      let d = request.resource.data;
+      let n = d.items.size();
+      return d.subtotal
+        == (n <= 0 ? 0 : orderLineTotal(0)) + (n <= 1 ? 0 : orderLineTotal(1))
+        + (n <= 2 ? 0 : orderLineTotal(2)) + (n <= 3 ? 0 : orderLineTotal(3))
+        + (n <= 4 ? 0 : orderLineTotal(4)) + (n <= 5 ? 0 : orderLineTotal(5))
+        + (n <= 6 ? 0 : orderLineTotal(6)) + (n <= 7 ? 0 : orderLineTotal(7))
+        + (n <= 8 ? 0 : orderLineTotal(8)) + (n <= 9 ? 0 : orderLineTotal(9));
     }
 
     /* Per-line saving of line i (pricing Phase A): (basePrice -
@@ -342,19 +392,21 @@ service cloud.firestore {
      * contributes nothing. Exact integer math, never rounded. */
     function orderLineSaving(i) {
       let items = request.resource.data.items;
-      return items.size() <= i ? 0
-        : ((!('basePrice' in items[i]) || items[i].basePrice == null) ? 0
-          : (items[i].basePrice - items[i].price) * items[i].qty);
+      return (!('basePrice' in items[i]) || items[i].basePrice == null) ? 0
+        : (items[i].basePrice - items[i].price) * items[i].qty;
     }
 
     /* saleSavings must equal the unrolled sum of the per-line
      * savings (the rules cannot loop). */
     function orderSaleSavingsOk() {
-      return request.resource.data.saleSavings
-        == orderLineSaving(0) + orderLineSaving(1) + orderLineSaving(2)
-        + orderLineSaving(3) + orderLineSaving(4) + orderLineSaving(5)
-        + orderLineSaving(6) + orderLineSaving(7) + orderLineSaving(8)
-        + orderLineSaving(9);
+      let d = request.resource.data;
+      let n = d.items.size();
+      return d.saleSavings
+        == (n <= 0 ? 0 : orderLineSaving(0)) + (n <= 1 ? 0 : orderLineSaving(1))
+        + (n <= 2 ? 0 : orderLineSaving(2)) + (n <= 3 ? 0 : orderLineSaving(3))
+        + (n <= 4 ? 0 : orderLineSaving(4)) + (n <= 5 ? 0 : orderLineSaving(5))
+        + (n <= 6 ? 0 : orderLineSaving(6)) + (n <= 7 ? 0 : orderLineSaving(7))
+        + (n <= 8 ? 0 : orderLineSaving(8)) + (n <= 9 ? 0 : orderLineSaving(9));
     }
 
     /* discountAmount must be round(subtotal * percent / 100) —
@@ -368,67 +420,6 @@ service cloud.firestore {
         ? d.discountAmount == 0
         : (d.discountAmount * 100 - 50 <= d.subtotal * d.discountPercent
           && d.subtotal * d.discountPercent < d.discountAmount * 100 + 50);
-    }
-
-    /* Line i's price must equal the products doc price (one get per
-     * line — rules have no loop; short-circuiting means a 1-line
-     * order costs 1 get). */
-    function orderLinePriceOk(i) {
-      let items = request.resource.data.items;
-      let prod = items.size() <= i ? null : get(/databases/$(database)/documents/products/$(items[i].productId));
-      return items.size() <= i || (prod != null && prod.data.price == items[i].price);
-    }
-
-    function orderPricesOk() {
-      return orderLinePriceOk(0) && orderLinePriceOk(1) && orderLinePriceOk(2)
-        && orderLinePriceOk(3) && orderLinePriceOk(4) && orderLinePriceOk(5)
-        && orderLinePriceOk(6) && orderLinePriceOk(7) && orderLinePriceOk(8)
-        && orderLinePriceOk(9);
-    }
-
-    /* ---- Incomplete orders: per-line availability guard [OOS] ----
-     * For each line, get() the matching inventory/{productId} doc and
-     * require qty <= stock - reserved — the backstop against a forged
-     * order write that skips the transaction's stock re-check. The
-     * client transaction stays the primary guard (exact counts); the
-     * inventory-reserve rule (reserved <= stock) is the second.
-     *
-     * BUDGET NOTE (2026-11-27): the order-create evaluation has a
-     * hard 10-get() budget, already spent by the price gets (N) +
-     * discount (0/1) + fee (0/1) + audit getAfter (1) — the suite
-     * pins a 7-line order with a code at exactly 10 gets. A second
-     * get per line would deny legitimate 4+-line orders, so this
-     * guard runs only on orders with at most 3 lines (worst case:
-     * 3 price + 3 inventory + 1 code + 1 fee + 1 audit = 9). Larger
-     * orders keep the transaction + reserve-rule guards, exactly as
-     * before this feature — no regression. The design's "capped at
-     * 10 lines" premise miscounts the price gets; flagged for a
-     * spec correction before deploy. */
-    function orderLineAvailabilityOk(i) {
-      let items = request.resource.data.items;
-      let inv = items.size() <= i ? null : get(/databases/$(database)/documents/inventory/$(items[i].productId));
-      return items.size() <= i || (inv != null && items[i].qty <= (inv.data.get('stock', 0) - inv.data.get('reserved', 0)));
-    }
-
-    function orderAvailabilityOk() {
-      let d = request.resource.data;
-      return d.items.size() > 3
-        || (orderLineAvailabilityOk(0) && orderLineAvailabilityOk(1) && orderLineAvailabilityOk(2));
-    }
-
-    /* True when line i carries a real (non-null) base price — a sale
-     * line whose base must be covered by the audit entry's 'items'. */
-    function orderLineHasBasePrice(i) {
-      let items = request.resource.data.items;
-      return items.size() > i && 'basePrice' in items[i] && items[i].basePrice != null;
-    }
-
-    function orderHasBasePrice() {
-      return orderLineHasBasePrice(0) || orderLineHasBasePrice(1)
-        || orderLineHasBasePrice(2) || orderLineHasBasePrice(3)
-        || orderLineHasBasePrice(4) || orderLineHasBasePrice(5)
-        || orderLineHasBasePrice(6) || orderLineHasBasePrice(7)
-        || orderLineHasBasePrice(8) || orderLineHasBasePrice(9);
     }
 
     /* The full order shape (contract §3 + pricing Phase A dual-shape):
@@ -449,11 +440,12 @@ service cloud.firestore {
      * customerAddress always carries the combined string. */
     function orderShapeOk(doc) {
       let d = request.resource.data;
+      let keys = d.keys();
       let hasMoney = 'saleSavings' in d || 'deliveryFee' in d || 'amountDue' in d;
       let hasAllMoney = 'saleSavings' in d && 'deliveryFee' in d && 'amountDue' in d;
-      return d.keys().hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerPhone2', 'customerAddress', 'governorate', 'detailedAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId', 'operationId', 'saleSavings', 'deliveryFee', 'amountDue', 'attemptId'])
-        && ((!hasMoney && d.keys().size() >= 25 && d.keys().size() <= 29 && !('attemptId' in d))
-          || (hasAllMoney && d.keys().size() >= 28 && d.keys().size() <= 33))
+      return keys.hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerPhone2', 'customerAddress', 'governorate', 'detailedAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId', 'operationId', 'saleSavings', 'deliveryFee', 'amountDue', 'attemptId'])
+        && ((!hasMoney && keys.size() >= 25 && keys.size() <= 29 && !('attemptId' in d))
+          || (hasAllMoney && keys.size() >= 28 && keys.size() <= 33))
         && (d.operationId == null || d.operationId is string)
         && (!('customerPhone2' in d) || d.customerPhone2 == null || (d.customerPhone2 is string && d.customerPhone2.matches('^01[0125][0-9]{8}$')))
         && (!('governorate' in d) || d.governorate == null || (d.governorate is string && d.governorate.size() >= 1 && d.governorate.size() <= 50))
@@ -467,7 +459,7 @@ service cloud.firestore {
         && d.customerPhone is string && d.customerPhone.size() >= 10
         && d.customerAddress is string && d.customerAddress.size() > 0
         && d.items is list && d.items.size() >= 1 && d.items.size() <= 10
-        && orderLinesOk()
+        && orderLinesValid()
         && d.subtotal is number && d.subtotal >= 0
         && d.discountAmount is number && d.discountAmount >= 0
         && d.total is number && d.total >= 0
@@ -513,9 +505,13 @@ service cloud.firestore {
      * request (1 getAfter): actor + operation match the source,
      * collection + docId + timestamp match, and its docIds cover
      * status + total — plus, on a new-shape order, the money fields
-     * (saleSavings, deliveryFee, amountDue) and 'items' when any
-     * line carries a base price, so a price or fee change is
-     * recorded with the admin, the operation, and the new value. */
+     * (saleSavings, deliveryFee, amountDue) and 'items' when
+     * saleSavings > 0 (i.e. some line really discounts — a
+     * basePrice == price line saves 0, so 'items' coverage adds no
+     * money protection for it; this replaces the 10-slot
+     * orderHasBasePrice scan, 2026-11-27 budget fix), so a price
+     * or fee change is recorded with the admin, the operation, and
+     * the new value. */
     function orderAuditOk(doc) {
       let d = request.resource.data;
       let hasId = d.auditId is string && d.auditId.size() > 0;
@@ -524,14 +520,14 @@ service cloud.firestore {
         && (!('saleSavings' in d)
           || covers(['saleSavings', 'deliveryFee', 'amountDue'].toSet(), entry.data.docIds['orders/' + doc]));
       let itemsCovered = entry != null
-        && (!orderHasBasePrice()
+        && (d.get('saleSavings', 0) == 0
           || covers(['items'].toSet(), entry.data.docIds['orders/' + doc]));
       return entry != null
-        && ((d.source == 'storefront' && entry.data.actor == 'anonymous' && entry.data.operation == 'create')
-          || (d.source == 'admin_manual' && request.auth != null && entry.data.actor == request.auth.uid && entry.data.operation == 'manual_order_create'))
-        && entry.data.collection == 'orders'
-        && entry.data.docId == doc
-        && entry.data.timestamp == request.time
+        && ((d.source == 'storefront' && entry.data.get('actor', null) == 'anonymous' && entry.data.get('operation', null) == 'create')
+          || (d.source == 'admin_manual' && request.auth != null && entry.data.get('actor', null) == request.auth.uid && entry.data.get('operation', null) == 'manual_order_create'))
+        && entry.data.get('collection', null) == 'orders'
+        && entry.data.get('docId', null) == doc
+        && entry.data.get('timestamp', null) == request.time
         && covers(['status', 'total'].toSet(), entry.data.docIds['orders/' + doc])
         && moneyCovered
         && itemsCovered;
@@ -602,8 +598,8 @@ service cloud.firestore {
     function attemptShapeOk() {
       let d = request.resource.data;
       return d.keys().hasOnly(['startedAt', 'ordered', 'errorCode', 'seenPrices', 'seenBasePrices', 'seenTotal', 'seenDeliveryFee', 'currentPrices', 'currentBasePrices', 'currentFee', 'clientOrderId', 'contactName', 'contactPhone', 'contactAddress'])
-        && d.startedAt is timestamp
-        && d.ordered is bool
+        && d.get('startedAt', null) is timestamp
+        && d.get('ordered', null) is bool
         && (!('errorCode' in d) || d.errorCode == null || d.errorCode in ['PRICE_CHANGED', 'FEE_CHANGED', 'TOTAL_CHANGED', 'INSUFFICIENT_STOCK', 'DISCOUNT_INVALID', 'DISCOUNT_USED', 'FEE_UNSET', 'permission-denied'])
         && (!('seenPrices' in d) || d.seenPrices == null || d.seenPrices is map)
         && (!('seenBasePrices' in d) || d.seenBasePrices == null || d.seenBasePrices is map)
@@ -657,16 +653,21 @@ service cloud.firestore {
         && d.get('productId', doc) == old.get('productId', doc)
         && d.get('minStock', 5) == old.get('minStock', 5)
         && d.get('costPrice', 0) == old.get('costPrice', 0)
-        && d.get('updatedAt', null) == request.time
-        && changedUpdate().hasOnly(['productId', 'stock', 'reserved', 'minStock', 'costPrice', 'updatedAt', 'operationId']);
+        && d.get('updatedAt', null) == request.time;
     }
-    /* 'operationId' in the list above (coordinator fix 2026-11-26):
-     * the Flutter + PC manual orders stamp their operation id on
-     * the inventory write; it is a harmless correlation id, and
-     * without it those apps fall back to the audited admin branch
-     * (2 reads/line) and a 6-line manual order breaks the
-     * per-request budget. The value checks above still protect
-     * the stock. */
+    /* Budget fix 2026-11-27: the changedUpdate().hasOnly([...])
+     * conjunct is gone. Every field it guarded is already pinned
+     * by a value check above (stock / reserved / productId /
+     * minStock / costPrice equal the stored values, updatedAt ==
+     * request.time, reserved strictly increases within stock), so
+     * the hasOnly only blocked inert extra fields — at the price of
+     * a full diff() per reserve, which blew the 1000-expression
+     * budget on multi-line orders. 'operationId' stays tolerated
+     * (the Flutter + PC manual orders stamp it; it is a harmless
+     * correlation id, and without it those apps fall back to the
+     * audited admin branch (2 reads/line) and a 6-line manual order
+     * breaks the per-request budget). The value checks above still
+     * protect the stock. */
 
     /* §13 inStock refresh (correction 2026-11-26): a batched merge
      * setting ONLY inStock, verified against the inventory doc
@@ -718,9 +719,10 @@ service cloud.firestore {
      * the exact 7-field shape, reserve types only (negative qty). */
     function movementReserveOk() {
       let d = request.resource.data;
+      let keys = d.keys();
       return request.auth == null
-        && d.keys().hasOnly(['productId', 'type', 'qty', 'orderId', 'source', 'actorUid', 'createdAt'])
-        && d.keys().size() == 7
+        && keys.hasOnly(['productId', 'type', 'qty', 'orderId', 'source', 'actorUid', 'createdAt'])
+        && keys.size() == 7
         && d.productId is string && d.productId.size() > 0
         && d.type in ['order_reserve', 'reopen_reserve']
         && d.qty is int && d.qty < 0
@@ -939,14 +941,25 @@ service cloud.firestore {
      * stops being live returns to standby with its approval kept
      * (the activation flow writes it in the same batch as the
      * pointer flip — entry 12). Classic alone may go draft -> active
-     * (its seed path — the live site is its own approval). */
+     * (its seed path — the live site is its own approval). Re-approval
+     * exception (fix 2026-11-27 — this contradicted templateFrozenOk,
+     * which REQUIRES a drop to draft when the hash/version/shell
+     * changes): approved -> draft IS allowed when a frozen field
+     * changed; templateFrozenOk still requires the approval record
+     * to be removed on that path, and approved -> draft with NO
+     * frozen change stays denied. */
     function templateStatusTransitionOk(doc) {
       let from = resource.data.get('status', null);
       let to = request.resource.data.get('status', null);
+      let d = request.resource.data;
+      let frozenChanged = d.get('bundleHash', null) != resource.data.get('bundleHash', null)
+        || d.get('version', null) != resource.data.get('version', null)
+        || d.get('shellMinVersion', null) != resource.data.get('shellMinVersion', null);
       return from == to
         || (from == 'draft' && to in ['preview', 'retired'])
         || (from == 'preview' && to in ['approved', 'draft', 'retired'])
         || (from == 'approved' && to in ['active', 'preview', 'retired'])
+        || (from == 'approved' && to == 'draft' && frozenChanged)
         || (from == 'active' && to in ['approved', 'retired'])
         || (doc == 'classic' && from == 'draft' && to == 'active');
     }
@@ -1065,10 +1078,13 @@ service cloud.firestore {
      * admin editor writes; '' means "no end date") or a Firestore
      * timestamp. The rules cannot loop, so the first 20 banners are
      * unrolled; banners past the 20th are unchecked (documented gap
-     * — the editor holds far fewer). */
-    function bannerEndDateOkAt(i) {
-      let banners = request.resource.data.get('promoBanners', null);
-      let slot = banners is list && banners.size() > i && banners[i] is map ? banners[i] : null;
+     * — the editor holds far fewer). Budget fix 2026-11-27: the
+     * size guard lives at the CALL site (banners.size() <= i), so
+     * an absent slot costs one comparison, not a function call
+     * that re-fetches the list — the old shape blew the
+     * 1000-expression budget on a 1-banner write. */
+    function bannerEndDateOkAt(banners, i) {
+      let slot = banners[i] is map ? banners[i] : null;
       let end = slot == null ? null : slot.get('endDate', null);
       return slot == null
         || end == null || end == ''
@@ -1080,13 +1096,26 @@ service cloud.firestore {
       let d = request.resource.data;
       let banners = d.get('promoBanners', null);
       return banners == null || (banners is list
-        && bannerEndDateOkAt(0) && bannerEndDateOkAt(1) && bannerEndDateOkAt(2)
-        && bannerEndDateOkAt(3) && bannerEndDateOkAt(4) && bannerEndDateOkAt(5)
-        && bannerEndDateOkAt(6) && bannerEndDateOkAt(7) && bannerEndDateOkAt(8)
-        && bannerEndDateOkAt(9) && bannerEndDateOkAt(10) && bannerEndDateOkAt(11)
-        && bannerEndDateOkAt(12) && bannerEndDateOkAt(13) && bannerEndDateOkAt(14)
-        && bannerEndDateOkAt(15) && bannerEndDateOkAt(16) && bannerEndDateOkAt(17)
-        && bannerEndDateOkAt(18) && bannerEndDateOkAt(19));
+        && (banners.size() <= 0 || bannerEndDateOkAt(banners, 0))
+        && (banners.size() <= 1 || bannerEndDateOkAt(banners, 1))
+        && (banners.size() <= 2 || bannerEndDateOkAt(banners, 2))
+        && (banners.size() <= 3 || bannerEndDateOkAt(banners, 3))
+        && (banners.size() <= 4 || bannerEndDateOkAt(banners, 4))
+        && (banners.size() <= 5 || bannerEndDateOkAt(banners, 5))
+        && (banners.size() <= 6 || bannerEndDateOkAt(banners, 6))
+        && (banners.size() <= 7 || bannerEndDateOkAt(banners, 7))
+        && (banners.size() <= 8 || bannerEndDateOkAt(banners, 8))
+        && (banners.size() <= 9 || bannerEndDateOkAt(banners, 9))
+        && (banners.size() <= 10 || bannerEndDateOkAt(banners, 10))
+        && (banners.size() <= 11 || bannerEndDateOkAt(banners, 11))
+        && (banners.size() <= 12 || bannerEndDateOkAt(banners, 12))
+        && (banners.size() <= 13 || bannerEndDateOkAt(banners, 13))
+        && (banners.size() <= 14 || bannerEndDateOkAt(banners, 14))
+        && (banners.size() <= 15 || bannerEndDateOkAt(banners, 15))
+        && (banners.size() <= 16 || bannerEndDateOkAt(banners, 16))
+        && (banners.size() <= 17 || bannerEndDateOkAt(banners, 17))
+        && (banners.size() <= 18 || bannerEndDateOkAt(banners, 18))
+        && (banners.size() <= 19 || bannerEndDateOkAt(banners, 19)));
     }
 
     /* Anonymous audit entry for a storefront order (contract §3):
@@ -1097,16 +1126,16 @@ service cloud.firestore {
     function auditAnonOk(operationId) {
       let d = request.resource.data;
       return request.auth == null
-        && d.actor in ['anonymous', 'storefront']
-        && d.docId is string && d.docId.size() > 0
-        && d.operationId == operationId
-        && d.timestamp == request.time
-        && d.collection == 'orders'
-        && d.operation in ['create', 'manual_order_create']
-        && d.docIds is map && d.docIds.size() == 1
-        && d.docIds.keys().hasOnly(['orders/' + d.docId])
-        && d.newValuesByDoc is map && d.newValuesByDoc.size() == 1
-        && d.newValuesByDoc.keys().hasOnly(['orders/' + d.docId]);
+        && d.get('actor', null) in ['anonymous', 'storefront']
+        && d.get('docId', null) is string && d.get('docId', null).size() > 0
+        && d.get('operationId', null) == operationId
+        && d.get('timestamp', null) == request.time
+        && d.get('collection', null) == 'orders'
+        && d.get('operation', null) in ['create', 'manual_order_create']
+        && d.get('docIds', null) is map && d.get('docIds', null).size() == 1
+        && d.get('docIds', null).keys().hasOnly(['orders/' + d.get('docId', null)])
+        && d.get('newValuesByDoc', null) is map && d.get('newValuesByDoc', null).size() == 1
+        && d.get('newValuesByDoc', null).keys().hasOnly(['orders/' + d.get('docId', null)]);
     }
 
     // ---- Public storefront content ----
@@ -1118,7 +1147,7 @@ service cloud.firestore {
     match /storeSettings/{doc} {
       allow read: if true;
       allow create: if isAdmin()
-        && hasAudit(request.resource.data.operationId, 'storeSettings', doc, changedCreate())
+        && hasAudit(request.resource.data.get('operationId', null), 'storeSettings', doc, changedCreate())
         && (doc != 'governorates' || governoratesShapeOk())
         && (doc != 'deletion' || deletionShapeOk())
         && (doc != 'homepage' || homepagePromoBannersOk())
@@ -1127,7 +1156,7 @@ service cloud.firestore {
           || (!('templateId' in request.resource.data)
             || getAfter(/databases/$(database)/documents/templates/$(request.resource.data.templateId)).data.status == 'active'));
       allow update: if isAdmin()
-        && hasAudit(request.resource.data.operationId, 'storeSettings', doc, changedUpdate())
+        && hasAudit(request.resource.data.get('operationId', null), 'storeSettings', doc, changedUpdate())
         && (doc != 'governorates' || governoratesShapeOk())
         && (doc != 'deletion' || deletionShapeOk())
         && (doc != 'homepage' || homepagePromoBannersOk())
@@ -1172,11 +1201,11 @@ service cloud.firestore {
       allow create: if isAdmin()
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0
-        && hasAudit(request.resource.data.operationId, 'categories', doc, changedCreate());
+        && hasAudit(request.resource.data.get('operationId', null), 'categories', doc, changedCreate());
       allow update: if isAdmin()
         && (!('name' in request.resource.data)
           || (request.resource.data.name is string && request.resource.data.name.size() > 0))
-        && hasAudit(request.resource.data.operationId, 'categories', doc, changedUpdate());
+        && hasAudit(request.resource.data.get('operationId', null), 'categories', doc, changedUpdate());
       allow delete: if isAdmin() && hasDeleteAudit('categories', doc);
     }
 
@@ -1186,7 +1215,7 @@ service cloud.firestore {
         && request.resource.data.price is int
         && request.resource.data.price > 0
         && productBasePriceOk()
-        && hasAudit(request.resource.data.operationId, 'products', doc, changedCreate());
+        && hasAudit(request.resource.data.get('operationId', null), 'products', doc, changedCreate());
       // The products-rule inStock cross-check (productsInStockOk) is
       // DROPPED (contract §3 decision). The second branch is the
       // §13 anonymous/authenticated inStock refresh (verified
@@ -1198,7 +1227,7 @@ service cloud.firestore {
           && (!('price' in request.resource.data)
             || (request.resource.data.price is int && request.resource.data.price > 0))
           && productBasePriceOk()
-          && hasAudit(request.resource.data.operationId, 'products', doc, changedUpdate()));
+          && hasAudit(request.resource.data.get('operationId', null), 'products', doc, changedUpdate()));
       allow delete: if isAdminOrManager() && hasDeleteAudit('products', doc);
     }
 
@@ -1207,12 +1236,13 @@ service cloud.firestore {
     // are the idempotency probe only: get of a doc that does not
     // exist yet — an existing order stays unreadable anonymously. ----
     match /orders/{doc} {
+      // Price + availability per line now live inside orderShapeOk
+      // (orderLinesValid) — one traversal instead of three separate
+      // conjuncts (budget fix 2026-11-27). Same checks, same gets.
       allow create: if orderShapeOk(doc)
-        && orderPricesOk()
         && orderDiscountOk()
         && orderAuditOk(doc)
         && orderFeeOk()
-        && orderAvailabilityOk()
         && (request.resource.data.source == 'storefront' || manualOrderAllowed());
       allow get: if isAdminOrManager()
         || (request.auth == null && resource == null);
@@ -1223,7 +1253,7 @@ service cloud.firestore {
           || request.resource.data.status in ['new', 'accepted', 'preparing', 'ready', 'in_transit', 'delivered', 'cancelled', 'expired'])
         && (!('paymentStatus' in request.resource.data)
           || request.resource.data.paymentStatus in ['cod_pending', 'cod_paid', 'cod_refused', 'cod_failed'])
-        && hasAudit(request.resource.data.operationId, 'orders', doc, changedUpdate());
+        && hasAudit(request.resource.data.get('operationId', null), 'orders', doc, changedUpdate());
       allow delete: if isAdmin() && hasDeleteAudit('orders', doc);
     }
 
@@ -1241,7 +1271,7 @@ service cloud.firestore {
         && request.resource.data.reserved is int && request.resource.data.reserved >= 0
         && request.resource.data.reserved <= request.resource.data.stock
         && inventoryInStockOk(doc)
-        && hasAudit(request.resource.data.operationId, 'inventory', doc, changedCreate());
+        && hasAudit(request.resource.data.get('operationId', null), 'inventory', doc, changedCreate());
       allow update: if inventoryReserveOk(doc)
         || (isAdminOrManager()
           && (!('stock' in request.resource.data)
@@ -1250,7 +1280,7 @@ service cloud.firestore {
             || (request.resource.data.reserved is int && request.resource.data.reserved >= 0))
           && request.resource.data.reserved <= request.resource.data.stock
           && inventoryInStockOk(doc)
-          && hasAudit(request.resource.data.operationId, 'inventory', doc, changedUpdate()));
+          && hasAudit(request.resource.data.get('operationId', null), 'inventory', doc, changedUpdate()));
       allow delete: if isAdminOrManager() && hasDeleteAudit('inventory', doc);
     }
 
@@ -1277,14 +1307,14 @@ service cloud.firestore {
         && request.resource.data.percent is int
         && request.resource.data.percent >= 1
         && request.resource.data.percent <= 100
-        && hasAudit(request.resource.data.operationId, 'discounts', code, changedCreate());
+        && hasAudit(request.resource.data.get('operationId', null), 'discounts', code, changedCreate());
       allow update: if discountClaimOk(code)
         || (isAdmin()
           && (!('percent' in request.resource.data)
             || (request.resource.data.percent is int
               && request.resource.data.percent >= 1
               && request.resource.data.percent <= 100))
-          && hasAudit(request.resource.data.operationId, 'discounts', code, changedUpdate()));
+          && hasAudit(request.resource.data.get('operationId', null), 'discounts', code, changedUpdate()));
       allow delete: if isAdmin() && hasDeleteAudit('discounts', code);
     }
 
@@ -1313,7 +1343,7 @@ service cloud.firestore {
         && (request.resource.data.get('status', null) == 'draft'
           || doc == 'classic'
           || request.resource.data.get('approval', null) != null)
-        && hasAudit(request.resource.data.operationId, 'templates', doc, changedCreate());
+        && hasAudit(request.resource.data.get('operationId', null), 'templates', doc, changedCreate());
       allow update: if isAdmin()
         && templateShapeOk(doc)
         && templateStatusTransitionOk(doc)
@@ -1321,7 +1351,7 @@ service cloud.firestore {
         && !(doc == 'classic' && request.resource.data.get('status', null) != 'active')
         && (request.resource.data.get('status', null) in ['draft', 'preview', 'retired']
           || request.resource.data.get('approval', null) != null)
-        && hasAudit(request.resource.data.operationId, 'templates', doc, changedUpdate());
+        && hasAudit(request.resource.data.get('operationId', null), 'templates', doc, changedUpdate());
       allow delete: if isAdmin() && doc != 'classic' && hasDeleteAudit('templates', doc);
     }
 
@@ -1354,9 +1384,9 @@ service cloud.firestore {
     match /shippingCompanies/{doc} {
       allow read: if isAdminOrManager();
       allow create: if isAdmin()
-        && hasAudit(request.resource.data.operationId, 'shippingCompanies', doc, changedCreate());
+        && hasAudit(request.resource.data.get('operationId', null), 'shippingCompanies', doc, changedCreate());
       allow update: if isAdmin()
-        && hasAudit(request.resource.data.operationId, 'shippingCompanies', doc, changedUpdate());
+        && hasAudit(request.resource.data.get('operationId', null), 'shippingCompanies', doc, changedUpdate());
       allow delete: if isAdmin() && hasDeleteAudit('shippingCompanies', doc);
     }
 
@@ -1368,12 +1398,12 @@ service cloud.firestore {
     match /audit/{operationId} {
       allow read: if isAdminOrManager();
       allow create: if (isAdminOrManager()
-        && request.resource.data.actor == request.auth.uid
-        && request.resource.data.operationId == operationId
-        && request.resource.data.timestamp == request.time
-        && request.resource.data.docIds is map
-        && request.resource.data.docIds.size() > 0
-        && request.resource.data.newValuesByDoc is map)
+        && request.resource.data.get('actor', null) == request.auth.uid
+        && request.resource.data.get('operationId', null) == operationId
+        && request.resource.data.get('timestamp', null) == request.time
+        && request.resource.data.get('docIds', null) is map
+        && request.resource.data.get('docIds', null).size() > 0
+        && request.resource.data.get('newValuesByDoc', null) is map)
         || auditAnonOk(operationId);
       allow update, delete: if false;
     }

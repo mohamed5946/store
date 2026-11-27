@@ -822,8 +822,15 @@ test('No-functions: a manager WITH orders_create_manual may place a manual order
  * so the claim branch is exercised too). */
 test('No-functions: a manual order stamping operationId (PC shape) succeeds, including the discount claim', async () => {
   const db = adminDb();
-  await setDoc(doc(db, 'discounts', 'OPID10'), {
-    percent: 10, active: true, usedBy: null, expiresAt: null,
+  // OPID10 must be created WITH its audit entry: discounts create is
+  // audited, so a bare setDoc (no operationId, no audit) is denied by
+  // the rules (fix 2026-11-27 — the old bare setDoc errored on the
+  // missing operationId and the test failed at setup, before the
+  // order it was meant to set up).
+  await auditedSet(db, ADMIN_UID, {
+    collection: 'discounts', docId: 'OPID10',
+    data: { percent: 10, active: true, usedBy: null, expiresAt: null },
+    operation: 'create', sensitive: { percent: 10 },
   });
   await assertSucceeds(placeOrderTx(db, {
     orderId: 'order-nf-manual-opid', productId: 'prod-5', qty: 1,
