@@ -2133,7 +2133,7 @@ test('Templates (entry 20): approval accepts the admin app\'s \'at\' timestamp k
   // approve here; carrying both at once is denied.
   await assertSucceeds(writeTemplate(db, 'gallery', {
     status: 'approved',
-    approval: { approver: ADMIN_UID, at: Timestamp.now(), shellVersion: '1.0.0', bundleHash: TPL_HASH_D },
+    approval: { approver: ADMIN_UID, timestamp: Timestamp.now(), shellVersion: '1.0.0', bundleHash: TPL_HASH_D },
   }));
   await assertFails(writeTemplate(db, 'gallery', {
     status: 'approved',
