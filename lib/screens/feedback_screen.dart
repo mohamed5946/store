@@ -15,6 +15,21 @@ String _feedbackDate(Timestamp? ts) {
   return '${d.day}/${d.month}/${d.year} $hh:$mm';
 }
 
+/// Source marker for a feedback card (incomplete orders, 2026-11-27).
+/// 'direct' keeps the existing rendering (no marker); the exit
+/// popup and the footer link are marked so the admin sees where the
+/// card came from. Anonymous exit/footer cards carry no name/phone.
+String _feedbackSourceLabel(String? source) {
+  switch (source) {
+    case 'exit-feedback':
+      return 'من رسالة المغادرة';
+    case 'footer-feedback':
+      return 'من رابط التذييل';
+    default:
+      return '';
+  }
+}
+
 class _FeedbackTab extends StatefulWidget {
   const _FeedbackTab();
 
@@ -145,14 +160,17 @@ class _FeedbackTabState extends State<_FeedbackTab> {
                   itemBuilder: (context, i) {
                     final d = docs[i];
                     final data = d.data();
+                    final name = ((data['name'] ?? '') as String).trim();
+                    final sourceLabel =
+                        _feedbackSourceLabel(data['source'] as String?);
                     return StaggeredItem(
                       index: i,
                       child: Padding(
                         padding: const EdgeInsets.only(bottom: 8),
                         child: _FlowRow(
-                          title: Text((data['name'] ?? '') as String),
+                          title: Text(name.isEmpty ? 'بدون اسم' : name),
                           subtitle: Text(
-                              '${(data['email'] ?? '')}\n${(data['message'] ?? '')}'),
+                              '${(data['email'] ?? '')}\n${sourceLabel.isNotEmpty ? '[$sourceLabel] ' : ''}${(data['message'] ?? '')}'),
                           trailing: Text(
                               _feedbackDate(data['createdAt'] as Timestamp?)),
                           onTap: () => _showFeedbackDetail(context, d),
@@ -179,10 +197,13 @@ Future<void> _showFeedbackDetail(
 ) async {
   final data = doc.data();
   final email = (data['email'] ?? '') as String;
+  final name = ((data['name'] ?? '') as String).trim();
+  final phone = ((data['phone'] ?? '') as String).trim();
+  final sourceLabel = _feedbackSourceLabel(data['source'] as String?);
   await showDialog<void>(
     context: context,
     builder: (c) => AlertDialog(
-      title: Text((data['name'] ?? '') as String),
+      title: Text(name.isEmpty ? 'بدون اسم' : name),
       content: SingleChildScrollView(
         child: StaggeredScope(
           child: Column(
@@ -196,14 +217,17 @@ Future<void> _showFeedbackDetail(
               StaggeredItem(
                   index: 1,
                   child: Text(
-                      'رقم الموبايل: ${(data['phone'] ?? data['address'] ?? '')}')),
+                      'رقم الموبايل: ${phone.isNotEmpty ? phone : 'لا رقم'}')),
+              if (sourceLabel.isNotEmpty)
+                StaggeredItem(
+                    index: 2, child: Text('المصدر: $sourceLabel')),
               StaggeredItem(
-                  index: 2,
+                  index: 3,
                   child: Text(
                       'التاريخ: ${_feedbackDate(data['createdAt'] as Timestamp?)}')),
-              const StaggeredItem(index: 3, child: Divider()),
+              const StaggeredItem(index: 4, child: Divider()),
               StaggeredItem(
-                  index: 4, child: Text((data['message'] ?? '') as String)),
+                  index: 5, child: Text((data['message'] ?? '') as String)),
             ],
           ),
         ),

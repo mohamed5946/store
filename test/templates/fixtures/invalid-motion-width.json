@@ -1,0 +1,72 @@
+{
+  "id": "invalid-motion-width",
+  "kind": "invalid",
+  "templateId": "bazaar",
+  "expected": {
+    "verdict": "fail",
+    "reasons": [
+      "motion-width"
+    ]
+  },
+  "manifest": {
+    "id": "bazaar",
+    "nameAr": "بازار",
+    "nameEn": "Deal Bazaar",
+    "version": "1.0.0",
+    "shellMinVersion": "1.0.0",
+    "bundleHash": "826ab0c768cc14799d4b158ed3d96019752ff76808330b40e9b615aa618e061b",
+    "motion": "lively",
+    "dark": "light-only",
+    "behaviours": [
+      "countdown-strip"
+    ],
+    "sections": [
+      "hero",
+      "offers",
+      "products",
+      "delivery",
+      "contact"
+    ],
+    "dataNeeds": [
+      "oldPrice",
+      "deliveryFee"
+    ],
+    "cartLayout": "drawer",
+    "modalLayout": "default",
+    "fonts": [
+      {
+        "family": "Tajawal",
+        "weights": [
+          400,
+          700
+        ],
+        "origin": "self"
+      }
+    ],
+    "previewImageUrl": "https://store-3384c.web.app/templates/bazaar/1.0.0/preview.png"
+  },
+  "sections": {
+    "hero.html": "<section data-section=\"header\"><div data-section=\"brand\"><img data-slot=\"brand-logo\" src=\"/logo.png\" alt=\"\"><span data-slot=\"brand-name\"></span><span data-slot=\"brand-tagline\"></span><span data-slot=\"whatsapp-number\"></span><span data-slot=\"cod-message\"></span></div><button data-action=\"search\">بحث</button><button data-action=\"open-cart\">السلة</button></section>",
+    "offers.html": "<section><div data-slot=\"promo-banner\"></div></section>",
+    "products.html": "<section><div data-slot=\"product-card\"><img data-slot=\"product-image\" src=\"/p.png\" alt=\"\"><h3 data-slot=\"product-name\"></h3><span data-slot=\"product-price\"></span><span data-slot=\"product-old-price\"></span><button data-action=\"add-to-cart\">أضف</button><button data-action=\"open-product\">عرض</button></div></section>",
+    "delivery.html": "<section><span data-slot=\"delivery-fee\"></span><span data-slot=\"cod-message\"></span></section>",
+    "contact.html": "<section><p>تواصل معنا</p><span data-slot=\"whatsapp-number\"></span></section>"
+  },
+  "styles": ".hero { background: #ffffff; color: #111111; transition: transform 0.3s, opacity 0.3s; }\n.card { opacity: 1; transform: translateY(0); }\n.grid { width: 100%; display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }\n.price { color: #111111; font-weight: 700; }\n.wide { transition: width 0.3s; }",
+  "tokens": {
+    "light": {
+      "bg": "#f4f6f8",
+      "bg2": "#eaeff3",
+      "surface": "rgba(255,255,255,0.55)",
+      "surfaceStrong": "rgba(255,255,255,0.82)",
+      "border": "rgba(20,30,45,0.08)",
+      "text": "#1b2430",
+      "textSoft": "#5b6878",
+      "accent": "#3f7f8c",
+      "accent2": "#8fb8b0",
+      "warm": "#c9a57a",
+      "radius": "24px",
+      "font": "Tajawal"
+    }
+  }
+}

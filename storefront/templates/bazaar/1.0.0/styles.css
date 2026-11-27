@@ -1,0 +1,541 @@
+/* Bazaar — "بازار" (The Deal Bazaar). Loud, dense, deal-first.
+   Scoped to browsing surfaces only. Motion is transform/opacity only,
+   max 1500ms. Logical properties only (inline-start / inline-end). */
+
+/* ---- promo bar ---- */
+.bz-promo-bar {
+  background-color: #141414;
+  color: #ffffff;
+  overflow: hidden;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.bz-marquee {
+  display: flex;
+  gap: 32px;
+  white-space: nowrap;
+  width: max-content;
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+/* ---- sticky header + giant search ---- */
+.bz-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background-color: #ffffff;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  padding-inline-start: 12px;
+  padding-inline-end: 12px;
+  box-shadow: 0 2px 12px rgba(20, 20, 20, 0.08);
+}
+.bz-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.bz-brand-mini {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+  color: #141414;
+}
+.bz-cart-btn {
+  background-color: #f68b1e;
+  color: #ffffff;
+  border: 0;
+  border-radius: 12px;
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  padding-inline-start: 16px;
+  padding-inline-end: 16px;
+  cursor: pointer;
+  transition: transform 150ms, opacity 150ms;
+}
+.bz-cart-btn:active { transform: scale(0.95); opacity: 0.9; }
+.bz-search {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin-top: 10px;
+  background-color: #fff7ed;
+  border: 2px solid #f68b1e;
+  border-radius: 12px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  padding-inline-start: 14px;
+  padding-inline-end: 14px;
+  cursor: pointer;
+  text-align: start;
+}
+.bz-search-ph {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 16px;
+  font-weight: 500;
+  color: #6b6b6b;
+}
+.bz-search-cta {
+  background-color: #f68b1e;
+  color: #ffffff;
+  border-radius: 12px;
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  padding-inline-start: 14px;
+  padding-inline-end: 14px;
+}
+
+/* ---- brand slot ---- */
+.bz-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background-color: #ffffff;
+  text-align: center;
+  padding-top: 18px;
+  padding-bottom: 18px;
+  padding-inline-start: 16px;
+  padding-inline-end: 16px;
+}
+.bz-brand-logo {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+}
+.bz-brand-name {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1.1;
+  color: #141414;
+}
+.bz-brand-tagline {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: #6b6b6b;
+  max-width: 340px;
+}
+.bz-brand-wa {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  color: #f68b1e;
+}
+.bz-brand-cod {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: #141414;
+  background-color: #fdf0dc;
+  border-radius: 12px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  padding-inline-start: 12px;
+  padding-inline-end: 12px;
+}
+
+/* ---- section titles: loud, uppercase ---- */
+.bz-flash h2,
+.bz-rails h2,
+.bz-cats h2,
+.bz-grid-sec h2,
+.bz-trust h2,
+.bz-contact h2 {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: 0.5px;
+  color: #141414;
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
+/* ---- flash-sale countdown strip ---- */
+.bz-flash {
+  background-color: #141414;
+  padding-top: 18px;
+  padding-bottom: 18px;
+  padding-inline-start: 16px;
+  padding-inline-end: 16px;
+}
+.bz-flash h2 { color: #ffffff; }
+.bz-flash-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.bz-flash-live {
+  background-color: #d92d20;
+  color: #ffffff;
+  border-radius: 12px;
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  padding-inline-start: 10px;
+  padding-inline-end: 10px;
+  animation: bz-pop 600ms;
+}
+.bz-countdown {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 6px;
+  direction: ltr;
+}
+.bz-cd {
+  background-color: #f68b1e;
+  color: #ffffff;
+  border-radius: 12px;
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  padding-inline-start: 12px;
+  padding-inline-end: 12px;
+}
+.bz-cd-sep {
+  color: #ffffff;
+  font-size: 24px;
+  font-weight: 800;
+}
+.bz-flash-note {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: #ffffff;
+  opacity: 0.8;
+  text-align: center;
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+/* ---- deal rails ---- */
+.bz-rails {
+  background-color: #ffffff;
+  padding-top: 20px;
+  padding-bottom: 8px;
+  padding-inline-start: 16px;
+  padding-inline-end: 0;
+}
+.bz-rail {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  padding-bottom: 12px;
+  padding-inline-end: 16px;
+}
+.bz-rail .bz-card {
+  scroll-snap-align: start;
+  flex-shrink: 0;
+  width: 220px;
+}
+
+/* ---- category circles ---- */
+.bz-cats {
+  background-color: #ffffff;
+  padding-top: 8px;
+  padding-bottom: 20px;
+  padding-inline-start: 16px;
+  padding-inline-end: 16px;
+}
+.bz-cat-row {
+  display: flex;
+  gap: 14px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  padding-bottom: 4px;
+}
+.bz-cat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  background-color: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+}
+.bz-cat img {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+  border-radius: 50%;
+  border: 3px solid #f68b1e;
+  background-color: #fff7ed;
+}
+.bz-cat span {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  color: #141414;
+  max-width: 80px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ---- product grid + card: the price is the biggest text ---- */
+.bz-grid-sec {
+  background-color: #ffffff;
+  padding-top: 8px;
+  padding-bottom: 20px;
+  padding-inline-start: 16px;
+  padding-inline-end: 16px;
+}
+.bz-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.bz-card {
+  display: flex;
+  flex-direction: column;
+  background-color: #ffffff;
+  border: 1px solid #f0e6d8;
+  border-radius: 12px;
+  overflow: hidden;
+  animation: bz-card-in 500ms;
+}
+@keyframes bz-card-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.bz-card-media {
+  position: relative;
+  aspect-ratio: 1;
+  background-color: #fff7ed;
+}
+.bz-card-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.bz-off {
+  position: absolute;
+  top: 8px;
+  inset-inline-start: 8px;
+  background-color: #d92d20;
+  color: #ffffff;
+  border-radius: 12px;
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  padding-inline-start: 8px;
+  padding-inline-end: 8px;
+  animation: bz-pop 600ms;
+}
+@keyframes bz-pop {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+.bz-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  padding-inline-start: 10px;
+  padding-inline-end: 10px;
+}
+.bz-card-title {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #141414;
+  margin-top: 0;
+  margin-bottom: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bz-price-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.bz-price {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+  color: #141414;
+}
+.bz-old {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  color: #6b6b6b;
+  opacity: 0.8;
+}
+.bz-add {
+  background-color: #f68b1e;
+  color: #ffffff;
+  border: 0;
+  border-radius: 12px;
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 14px;
+  font-weight: 800;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  cursor: pointer;
+  transition: transform 150ms, opacity 150ms;
+}
+.bz-add:active { transform: scale(0.96); opacity: 0.9; }
+.bz-open {
+  background-color: transparent;
+  color: #141414;
+  border: 1px solid #f0e6d8;
+  border-radius: 12px;
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  padding-top: 7px;
+  padding-bottom: 7px;
+  cursor: pointer;
+}
+
+/* ---- trust strip (warm sand) ---- */
+.bz-trust {
+  background-color: #fdf0dc;
+  padding-top: 20px;
+  padding-bottom: 20px;
+  padding-inline-start: 16px;
+  padding-inline-end: 16px;
+}
+.bz-trust-row {
+  display: flex;
+  gap: 10px;
+}
+.bz-trust-item {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background-color: #ffffff;
+  border-radius: 12px;
+  text-align: center;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  padding-inline-start: 8px;
+  padding-inline-end: 8px;
+}
+.bz-trust-ic {
+  background-color: #f68b1e;
+  color: #ffffff;
+  border-radius: 12px;
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  padding-inline-start: 10px;
+  padding-inline-end: 10px;
+}
+.bz-trust-item p {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+  color: #141414;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+/* ---- complaint surface ---- */
+.bz-contact {
+  background-color: #ffffff;
+  text-align: center;
+  padding-top: 20px;
+  padding-bottom: 20px;
+  padding-inline-start: 16px;
+  padding-inline-end: 16px;
+}
+.bz-contact p {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.6;
+  color: #6b6b6b;
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+.bz-wa-num {
+  display: inline-block;
+  background-color: #f68b1e;
+  color: #ffffff;
+  border-radius: 12px;
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 18px;
+  font-weight: 800;
+  direction: ltr;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  padding-inline-start: 18px;
+  padding-inline-end: 18px;
+}
+
+/* ---- footer ---- */
+.bz-footer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background-color: #141414;
+  text-align: center;
+  padding-top: 24px;
+  padding-bottom: 24px;
+  padding-inline-start: 16px;
+  padding-inline-end: 16px;
+}
+.bz-foot-brand {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 22px;
+  font-weight: 800;
+  color: #ffffff;
+}
+.bz-foot-tag {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: #ffffff;
+  opacity: 0.75;
+}
+.bz-footer p {
+  font-family: "Tajawal", "Inter", sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: #f68b1e;
+  margin-top: 4px;
+  margin-bottom: 0;
+}

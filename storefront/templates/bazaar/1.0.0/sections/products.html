@@ -1,0 +1,29 @@
+<!-- Product grid. One card per product, filled by the shell through
+     the product-card slot. The old-price element renders ONLY when the
+     product carries a real basePrice; the shell hides the block when
+     basePrice is absent (never an invented old price). The "خصم" badge
+     carries no number: the % is the shell-filled `max-discount-pct`
+     slot — the real max sale % from basePrice across the loaded
+     catalogue (see fillBundleSlots); with no sale product the shell
+     hides the whole discount line instead of showing a number.
+     No stock-count lines anywhere (D5). -->
+<section class="bz-grid-sec">
+  <h2>خصومات تصل لـ <span data-slot="max-discount-pct"></span></h2>
+  <div class="bz-grid">
+    <div class="bz-card" data-slot="product-card">
+      <div class="bz-card-media">
+        <img data-slot="product-image" alt="">
+        <span class="bz-off">خصم</span>
+      </div>
+      <div class="bz-card-body">
+        <h3 class="bz-card-title" data-slot="product-name"></h3>
+        <div class="bz-price-row">
+          <span class="bz-price" data-slot="product-price"></span>
+          <span class="bz-old" data-slot="product-old-price"></span>
+        </div>
+        <button class="bz-add" data-action="add-to-cart">أضف للسلة</button>
+        <button class="bz-open" data-action="open-product">التفاصيل</button>
+      </div>
+    </div>
+  </div>
+</section>

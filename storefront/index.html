@@ -1,20 +1,23 @@
 <!DOCTYPE html>
-<html lang="ar" dir="rtl" data-theme="light">
+<html lang="ar" dir="rtl" data-theme="light" data-shell-version="1.0.0">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>المتجر</title>
   <meta name="description" content="اطلب دلوقتي وادفع عند الاستلام" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://res.cloudinary.com; connect-src 'self' https://firestore.googleapis.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com; frame-src 'none'; object-src 'none'; base-uri 'self'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com https://apis.google.com https://www.googletagmanager.com; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: https://res.cloudinary.com; connect-src 'self' https://firestore.googleapis.com https://securetoken.googleapis.com https://identitytoolkit.googleapis.com https://www.google-analytics.com https://www.googletagmanager.com; frame-src 'none'; object-src 'none'; base-uri 'self'" />
   <meta property="og:title" content="المتجر" />
   <meta property="og:description" content="الدفع عند الاستلام — ادفع لما طلبك يوصلك" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;500;700;800&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="preload" href="fonts/tajawal-arabic-400.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="fonts/tajawal-arabic-700.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="styles.css" />
   <script src="firebase-config.js"></script>
 </head>
 <body>
+  <!-- Preview stamp (templates): shown only on ?preview= renders;
+       filled by the shell. Hidden on the live site. -->
+  <div class="preview-stamp" id="previewStamp" hidden></div>
+
   <div class="ambient" aria-hidden="true">
     <span class="orb orb-1"></span>
     <span class="orb orb-2"></span>
@@ -65,7 +68,7 @@
   </header>
 
   <main id="top">
-    <section class="hero container">
+    <section class="hero container" data-mount="hero">
       <div class="hero-copy reveal">
         <span class="eyebrow">مجموعة جديدة — 2026</span>
         <h1><span id="heroTitleLine">نبض التكنولوجيا</span><br /><span class="accent" id="heroAccentLine">في كل تفصيلة</span></h1>
@@ -94,16 +97,15 @@
             <rect x="106" y="112" width="34" height="56" rx="17" fill="url(#g1)" opacity=".6"/>
           </svg>
           <div class="float-chip chip-a">شحن سريع 65W</div>
-          <div class="float-chip chip-b">عزل ضوضاء ★ 4.9</div>
         </div>
       </div>
     </section>
 
-    <section class="container marquee" id="marqueeSection" aria-hidden="true">
+    <section class="container marquee" id="marqueeSection" data-mount="marquee" aria-hidden="true">
       <div class="marquee-track" id="marqueeTrack"></div>
     </section>
 
-    <section id="categories" class="container section">
+    <section id="categories" class="container section" data-mount="categories">
       <header class="section-head reveal">
         <h2>تسوق حسب القسم</h2>
         <p>كل ما يحتاجه جهازك في مكان واحد</p>
@@ -111,7 +113,7 @@
       <div class="categories-grid" id="categoriesGrid"></div>
     </section>
 
-    <section id="featured" class="container section">
+    <section id="featured" class="container section" data-mount="featured">
       <header class="section-head reveal">
         <h2>الأكثر مبيعاً</h2>
         <div class="filter-pills" id="filterPills" role="tablist"></div>
@@ -126,19 +128,24 @@
         </div>
       </header>
       <div id="featuredSpot"></div>
-      <div class="products-grid" id="productsGrid"></div>
-      <div class="grid-more" id="gridMoreWrap"></div>
+      <!-- Products mount lives inside the featured section in the
+           shell DOM (the grid belongs under the featured header);
+           the loader preserves nested mounts on injection. -->
+      <div data-mount="products">
+        <div class="products-grid" id="productsGrid"></div>
+        <div class="grid-more" id="gridMoreWrap"></div>
+      </div>
     </section>
 
-    <section id="offers" class="container section">
+    <section id="offers" class="container section" data-mount="offers">
       <div id="promoWrap"></div>
     </section>
 
-    <section id="delivery" class="container section">
+    <section id="delivery" class="container section" data-mount="delivery">
       <div id="deliveryWrap"></div>
     </section>
 
-    <section id="contact" class="container section">
+    <section id="contact" class="container section" data-mount="contact">
       <header class="section-head reveal">
         <h2>تواصل معنا</h2>
         <p>عندك شكوى أو اقتراح؟ ابعتهالنا.</p>
@@ -157,7 +164,7 @@
       </div>
     </section>
 
-    <section id="about" class="container section about reveal">
+    <section id="about" class="container section about reveal" data-mount="about">
       <div class="glass about-card">
         <h2 id="aboutTitle">لماذا المتجر؟</h2>
         <div class="features">
@@ -180,6 +187,7 @@
         <a href="#featured">المنتجات</a>
         <a href="#about">عن المتجر</a>
         <a href="#contact">تواصل معنا</a>
+        <a href="#contact" id="footerFeedbackLink">عندك ملاحظة؟ قلّنا رأيك</a>
       </div>
     </div>
     <p class="copy">© <span id="year"></span> <span id="copyBrand">المتجر</span>. جميع الحقوق محفوظة.</p>
@@ -223,6 +231,8 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
+  <!-- Bundle gateway (templates): pure validation, loaded before app.js. -->
+  <script src="bundle-gateway.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

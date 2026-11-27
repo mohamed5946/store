@@ -48,6 +48,8 @@ class ProductData {
     required this.categoryId,
     this.images = const <CloudinaryImage>[],
     this.featured = false,
+    this.basePrice,
+    this.discountSetAt,
   });
   final String id;
   final String name;
@@ -62,6 +64,17 @@ class ProductData {
   /// Gallery: cover = images[0]. A pasted link is an entry with an empty
   /// publicId. Legacy single imageUrl docs are read as one image.
   final List<CloudinaryImage> images;
+
+  /// Pricing (Model P, Technical Plan §1): `price` is the effective
+  /// (charged) price; [basePrice] is the display-only anchor the
+  /// strikethrough / % / savings derive from. Null means no sale.
+  final int? basePrice;
+
+  /// When the current discount was first saved (Technical Plan §1 /
+  /// B5). Set when a discount is first saved, cleared when removed;
+  /// re-saving a different discounted price does NOT reset it. The
+  /// admin product list shows "خصم نشط منذ X يوم" from this stamp.
+  final DateTime? discountSetAt;
 
   factory ProductData.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
     final d = doc.data() ?? {};
@@ -85,8 +98,23 @@ class ProductData {
       categoryId: (d['categoryId'] ?? '') as String,
       images: images,
       featured: (d['featured'] ?? false) == true,
+      basePrice: (d['basePrice'] as num?)?.toInt(),
+      discountSetAt: (d['discountSetAt'] as Timestamp?)?.toDate(),
     );
   }
+}
+
+/// What a product save does to `discountSetAt` (B5) — see
+/// [Backend.resolveDiscountSetAt].
+enum DiscountSetAtAction {
+  /// Keep the stored stamp (a live discount is re-saved).
+  keep,
+
+  /// Stamp now (a discount is saved for the first time).
+  setNow,
+
+  /// Clear the stamp (the discount is removed).
+  clear,
 }
 
 class Backend {
@@ -379,27 +407,304 @@ class Backend {
     return null;
   }
 
-  /// Totals from DATABASE prices (contract §1 step 4):
-  /// subtotal = Σ price*qty; discountAmount =
-  /// round(subtotal * percent / 100); total = subtotal - discountAmount.
-  /// [lines] are {'price': num, 'qty': int} with trusted prices.
-  static ({num subtotal, int? discountPercent, num discountAmount, num total})
-      computeOrderTotals(
+  /// Pricing (Technical Plan §8) — ONE canonical helper per client,
+  /// identical on the storefront, here, and the PC manager. It
+  /// mirrors the storefront `computePricing` exactly (same fields,
+  /// same rounding, same matrix totals). All money is integer EGP.
+  /// All savings are exact integer sums, never rounded: per-line
+  /// saving = `(basePrice − price) × qty`, and the total sale saving
+  /// is the sum of the per-line savings.
+  ///
+  /// [lines] are `{'price': num, 'qty': int, 'basePrice': int?}` with
+  /// trusted (database) prices; a line with no `basePrice`, or with
+  /// `basePrice <= price`, is not on sale. [percent] is the discount
+  /// code's percent (null = no code): it applies to the POST-SALE
+  /// subtotal (sequential stacking, §3).
+  ///
+  /// [deliveryFee] is the snapshot of `storeSettings/settings`
+  /// `.deliveryFee`. Null means the fee is UNSET (missing ≠ 0):
+  /// `deliveryFee` and `amountDue` are then null too, and the
+  /// CALLER must block the order before relying on them — see
+  /// [createManualOrder]. [freeDeliveryThreshold] (decision D3,
+  /// admin setting): when set (> 0), the fee is waived (`deliveryFee`
+  /// 0 stored) once the post-code `total` reaches the threshold;
+  /// absent/null/0 means no waiver.
+  ///
+  /// `round()` is nearest integer, halves up, identically for the
+  /// displayed % and the code discount. It is exact integer math
+  /// when the subtotal is an int: `(subtotal * percent + 50) ~/ 100`
+  /// — the same as the storefront's `Math.floor(x + 0.5)`.
+  static ({
+    List<({num saving, int? pct})> perLine,
+    num baseSubtotal,
+    num subtotal,
+    num saleSavings,
+    int? discountPercent,
+    num discountAmount,
+    num total,
+    int? deliveryFee,
+    bool feeUnset,
+    bool feeWaived,
+    num? amountDue,
+    num savingTotal,
+    num? insteadOf,
+  }) computeOrderTotals(
     List<Map<String, dynamic>> lines,
-    int? percent,
-  ) {
+    int? percent, {
+    int? deliveryFee,
+    int? freeDeliveryThreshold,
+  }) {
+    num baseSubtotal = 0;
     num subtotal = 0;
+    num saleSavings = 0;
+    final perLine = <({num saving, int? pct})>[];
     for (final line in lines) {
-      subtotal += ((line['price'] ?? 0) as num) * ((line['qty'] ?? 0) as num);
+      final price = ((line['price'] ?? 0) as num);
+      final qty = ((line['qty'] ?? 0) as num).toInt();
+      final baseRaw = line['basePrice'];
+      // A base at or below the price is not a sale (invalid stored
+      // data normalizes to no sale, exactly like the storefront).
+      final base = (baseRaw is num && baseRaw.toInt() > price)
+          ? baseRaw.toInt()
+          : null;
+      final lineSaving = base != null ? (base - price) * qty : 0;
+      baseSubtotal += (base ?? price) * qty;
+      subtotal += price * qty;
+      saleSavings += lineSaving;
+      perLine.add((
+        saving: lineSaving,
+        pct: base != null
+            ? salePercent(basePrice: base, price: price is int ? price : price.toInt())
+            : null,
+      ));
     }
     final p = percent ?? 0;
-    final discountAmount = p == 0 ? 0 : (subtotal * p / 100).round();
+    final discountAmount = p == 0
+        ? 0
+        : (subtotal is int
+            ? (subtotal * p + 50) ~/ 100
+            : (subtotal * p / 100).round());
+    final total = subtotal - discountAmount;
+    // Fee: unset when not an int ≥ 0; waived (0 stored) once the
+    // post-code total reaches an admin-set threshold > 0.
+    final feeUnset = deliveryFee == null || deliveryFee < 0;
+    final threshold = (freeDeliveryThreshold != null &&
+            freeDeliveryThreshold > 0)
+        ? freeDeliveryThreshold
+        : null;
+    final feeWaived =
+        !feeUnset && threshold != null && total >= threshold;
+    final effectiveFee =
+        feeUnset ? null : (feeWaived ? 0 : deliveryFee);
     return (
+      perLine: perLine,
+      baseSubtotal: baseSubtotal,
       subtotal: subtotal,
+      saleSavings: saleSavings,
       discountPercent: percent,
       discountAmount: discountAmount,
-      total: subtotal - discountAmount,
+      total: total,
+      deliveryFee: effectiveFee,
+      feeUnset: feeUnset,
+      feeWaived: feeWaived,
+      amountDue: feeUnset ? null : total + (effectiveFee ?? 0),
+      savingTotal: saleSavings + discountAmount,
+      insteadOf: feeUnset ? null : baseSubtotal + (effectiveFee ?? 0),
     );
+  }
+
+  /// Exact per-line sale saving (Technical Plan §8): never rounded.
+  /// Zero when the line is not on sale (`basePrice` null, equal to
+  /// the price, or — invalid stored data — below it).
+  static num lineSaleSaving({
+    required int? basePrice,
+    required num price,
+    required int qty,
+  }) =>
+      (basePrice == null || basePrice <= price)
+          ? 0
+          : (basePrice - price) * qty;
+
+  /// One order line as shown on the invoice and in the share text
+  /// (CUJ 7): `name × qty = price×qty`, plus the before-sale amount
+  /// when the line is on sale (`basePrice > price`). Without a sale
+  /// the text is exactly the old format.
+  static String invoiceItemLine(Map<String, dynamic> item) {
+    final name = item['name'] ?? '';
+    final qty = ((item['qty'] as num?) ?? 0).toInt();
+    final price = (item['price'] as num?) ?? 0;
+    final baseRaw = item['basePrice'];
+    final base = (baseRaw is num) ? baseRaw.toInt() : null;
+    final line = '$name × $qty = ${(price * qty).toStringAsFixed(0)} ج.م';
+    if (base == null || base <= price) return line;
+    return '$line (قبل الخصم: ${(base * qty).toStringAsFixed(0)} ج.م)';
+  }
+
+  /// The money lines of an order invoice (CUJ 7), in display order,
+  /// mirroring the PC invoice: products total, sale savings, code
+  /// discount, delivery fee, amount due. Legacy orders (a code with
+  /// no stored discountAmount) keep the old-style code line.
+  /// `amountDue` falls back to `total` when the order predates it.
+  static List<String> invoiceMoneyLines(Map<String, dynamic> data) {
+    final total = (data['total'] as num?) ?? 0;
+    final saleSavings = (data['saleSavings'] as num?) ?? 0;
+    final discountAmount = (data['discountAmount'] as num?) ?? 0;
+    final code = data['discountCode'] as String?;
+    final percent = data['discountPercent'];
+    final fee = data['deliveryFee'];
+    final due = (data['amountDue'] as num?) ?? total;
+    final lines = <String>[
+      'الإجمالي: ${total.toStringAsFixed(0)} ج.م',
+    ];
+    if (saleSavings > 0) {
+      lines.add('وفّرت من العرض: ${saleSavings.toStringAsFixed(0)} ج.م');
+    }
+    if (discountAmount > 0) {
+      lines.add(
+          'خصم الكود $code (${percent ?? 0}٪): ${discountAmount.toStringAsFixed(0)} ج.م');
+    } else if (code?.isNotEmpty == true) {
+      lines.add('كود الخصم: $code (${percent ?? 0}٪)');
+    }
+    if (fee != null) {
+      final feeNum = fee as num;
+      lines.add(feeNum == 0
+          ? 'رسوم التوصيل: مجاني'
+          : 'رسوم التوصيل: ${feeNum.toStringAsFixed(0)} ج.م');
+    }
+    lines.add('المبلغ المستحق: ${due.toStringAsFixed(0)} ج.م');
+    return lines;
+  }
+
+  /// Rounded display % for one product, or null when there is no
+  /// sale or when the badge must be suppressed (Technical Plan §8 /
+  /// N3, mirroring the storefront `salePercent` exactly). The % is
+  /// nearest whole percent, halves up, display-only, derived at
+  /// render time, never stored, never used in any total. A customer
+  /// multiplying a displayed % by the base must never find a 1 EGP
+  /// discrepancy, so when the rounded % × base ≠ the exact saving
+  /// the badge is suppressed and only "وفّر X" is shown — e.g. base
+  /// 199 → 149: the computed % is 25, but 25% × 199 = 49.75 ≠ 50,
+  /// so this returns null, NOT 25.
+  static int? salePercent({required int basePrice, required int price}) {
+    if (basePrice <= 0 || basePrice <= price) return null;
+    // round((basePrice - price) * 100 / basePrice), halves up,
+    // exact integer math: ((saving * 200) + base) ~/ (base * 2).
+    final pct =
+        ((basePrice - price) * 200 + basePrice) ~/ (basePrice * 2);
+    if (pct * basePrice != (basePrice - price) * 100) return null;
+    return pct;
+  }
+
+  /// Whether a product is live on sale (Model P): a real base price
+  /// strictly above the charged price. Equal means NO sale, never a
+  /// 0% badge.
+  static bool isOnSale({required int? basePrice, required num price}) =>
+      basePrice != null && basePrice > price;
+
+  /// Cross-field product-form validation (Technical Plan §9):
+  /// `basePrice == null || basePrice >= price`, both positive
+  /// integers. Returns an Arabic error message, or null when valid.
+  /// `basePrice == price` is valid input — the caller normalizes it
+  /// to no sale (clears the field).
+  static String? validateProductPrices({
+    required int price,
+    int? basePrice,
+  }) {
+    if (price <= 0) return 'السعر لازم يكون أكبر من صفر';
+    if (basePrice != null && basePrice <= 0) {
+      return 'السعر قبل الخصم لازم يكون أكبر من صفر';
+    }
+    if (basePrice != null && basePrice < price) {
+      return 'السعر قبل الخصم لازم يكون أكبر من أو يساوي السعر';
+    }
+    return null;
+  }
+
+  /// What happens to `discountSetAt` on a product save (B5): set
+  /// when a discount is first saved, cleared when removed;
+  /// re-saving a different discounted price does NOT reset it.
+  static DiscountSetAtAction resolveDiscountSetAt({
+    required DateTime? existing,
+    required bool hasDiscount,
+  }) {
+    if (!hasDiscount) return DiscountSetAtAction.clear;
+    if (existing != null) return DiscountSetAtAction.keep;
+    return DiscountSetAtAction.setNow;
+  }
+
+  /// Whole days since the discount was set (B5 staleness signal
+  /// "خصم نشط منذ X يوم"). Null when there is no stamp.
+  static int? discountAgeDays(DateTime? setAt, {DateTime? now}) {
+    if (setAt == null) return null;
+    final days = (now ?? DateTime.now()).difference(setAt).inDays;
+    return days < 0 ? 0 : days;
+  }
+
+  /// Delivery-fee settings (Technical Plan §2 + decision D3) read
+  /// from `storeSettings/settings`: `deliveryFee` (int ≥ 0; null =
+  /// UNSET, missing ≠ 0) and the admin-set free-delivery threshold
+  /// `freeDeliveryThreshold` (null = no threshold; a stored 0 is
+  /// also no waiver, exactly like the storefront reads it).
+  static ({int? deliveryFee, int? freeDeliveryThreshold})
+      parseDeliveryFeeSettings(Map<String, dynamic>? data) {
+    final d = data ?? {};
+    final feeRaw = d['deliveryFee'];
+    final thresholdRaw = d['freeDeliveryThreshold'];
+    final fee = feeRaw is num ? feeRaw.toInt() : null;
+    final threshold =
+        thresholdRaw is num ? thresholdRaw.toInt() : null;
+    return (
+      deliveryFee: (fee != null && fee >= 0) ? fee : null,
+      freeDeliveryThreshold:
+          (threshold != null && threshold > 0) ? threshold : null,
+    );
+  }
+
+  /// The fixed delivery fee (Technical Plan §9 + decision D3), set
+  /// from either admin app. [deliveryFee] is integer EGP ≥ 0
+  /// (0 = free delivery). [freeDeliveryThreshold] is optional:
+  /// an integer ≥ 0 — 0 means no waiver; null (empty field) clears
+  /// the threshold, storing the field absent. Recorded in the audit
+  /// sensitive map (`deliveryFee`) and in `docIds` like any other
+  /// changed settings field.
+  Future<void> setDeliveryFee({
+    required int deliveryFee,
+    int? freeDeliveryThreshold,
+  }) async {
+    _requireInit();
+    if (deliveryFee < 0) {
+      throw BackendException('رسوم التوصيل لازم تكون صفر أو أكتر');
+    }
+    if (freeDeliveryThreshold != null && freeDeliveryThreshold < 0) {
+      throw BackendException('حد التوصيل المجاني لازم يكون صفر أو أكتر');
+    }
+    await _auditedBatch(
+      writes: {
+        'storeSettings/settings': {
+          'deliveryFee': deliveryFee,
+          // Empty clears the threshold: the field is stored absent,
+          // not null — the storefront reads absent/null/0 as no waiver.
+          'freeDeliveryThreshold': freeDeliveryThreshold ??
+              FieldValue.delete(),
+        },
+      },
+      sensitive: {
+        'storeSettings/settings': {'deliveryFee': deliveryFee},
+      },
+      operation: 'settings_delivery_fee',
+    );
+  }
+
+  /// The recorded cost of a product, from its inventory document
+  /// (decision D4). Null when the product has no recorded cost —
+  /// unknown cost is not below cost, so no below-cost warning.
+  Future<int?> productCostPrice(String productId) async {
+    _requireInit();
+    final snap = await db.collection('inventory').doc(productId).get();
+    final raw = snap.data()?['costPrice'];
+    if (raw is! num) return null;
+    final cost = raw.toInt();
+    return cost > 0 ? cost : null;
   }
 
   /// A whole-number price/total stored as int, not double: the new
@@ -739,7 +1044,23 @@ class Backend {
   Stream<QuerySnapshot<Map<String, dynamic>>> productsStream() =>
       db.collection('products').orderBy('createdAt').snapshots();
 
-  Future<void> saveProduct(ProductData p) async {
+  /// Pricing (Model P, Technical Plan §1/§9): `price` is the
+  /// effective (charged) price; [ProductData.basePrice] is the
+  /// display-only anchor. An empty base price, or one equal to the
+  /// price, means NO sale — the field is written null, never a 0%
+  /// badge. The write is a merge (`_auditedBatch` uses
+  /// `SetOptions(merge: true)`), so fields the form does not own
+  /// stay untouched; `basePrice` itself is always owned by this
+  /// form, so it is always written (value or null).
+  ///
+  /// `discountSetAt` (B5): set on the first discounted save, kept
+  /// on re-saves, cleared when the discount is removed.
+  ///
+  /// [belowCostConfirmed] (decision D4): true only when the admin
+  /// confirmed a below-cost price a second time, on a separate tap;
+  /// it is recorded in the audit entry's top-level new values.
+  Future<void> saveProduct(ProductData p,
+      {bool belowCostConfirmed = false}) async {
     _requireInit();
     // wholeNum: the new rules require `price is int` — a stored
     // double 100.0 fails that check, so whole EGP prices are stored
@@ -751,6 +1072,18 @@ class Backend {
       'categoryId': p.categoryId,
       'images': p.images.map((img) => img.toMap()).toList(),
     };
+    // Model P: basePrice null, or equal to price, means NO sale.
+    final hasDiscount = isOnSale(basePrice: p.basePrice, price: p.price);
+    data['basePrice'] = hasDiscount ? wholeNum(p.basePrice!) : null;
+    switch (resolveDiscountSetAt(
+        existing: p.discountSetAt, hasDiscount: hasDiscount)) {
+      case DiscountSetAtAction.setNow:
+        data['discountSetAt'] = FieldValue.serverTimestamp();
+      case DiscountSetAtAction.clear:
+        data['discountSetAt'] = null;
+      case DiscountSetAtAction.keep:
+        break; // merge write: the stored stamp stays untouched.
+    }
     final id = p.id.isEmpty ? db.collection('products').doc().id : p.id;
     if (p.id.isEmpty) {
       data['createdAt'] = FieldValue.serverTimestamp();
@@ -764,10 +1097,14 @@ class Backend {
       sensitive: {
         'products/$id': {
           'price': p.price,
+          'basePrice': hasDiscount ? wholeNum(p.basePrice!) : null,
           if (p.id.isEmpty) 'inStock': false,
         },
       },
       operation: p.id.isEmpty ? 'create' : 'update',
+      topNewValues: belowCostConfirmed
+          ? const {'belowCostConfirmed': true}
+          : const {},
     );
   }
 
@@ -1380,6 +1717,14 @@ class Backend {
             throw BackendException('سعر المنتج مش صحيح');
           }
           final price = wholeNum(rawPrice);
+          // Pricing (Model P): the per-line base price is snapshotted
+          // onto the order so the record alone reconstructs what the
+          // customer saw. Null, or equal to the price, means no sale;
+          // a stored base below the price is invalid data and is
+          // treated as no sale rather than failing the order.
+          final rawBase = product['basePrice'];
+          var basePrice = rawBase is num ? rawBase.toInt() : null;
+          if (basePrice != null && basePrice <= price) basePrice = null;
           final invSnap = await tx.get(db.collection('inventory').doc(productId));
           final inv = invSnap.data() ?? {};
           final stock = ((inv['stock'] ?? 0) as num).toInt();
@@ -1395,6 +1740,7 @@ class Backend {
             'productId': productId,
             'name': (product['name'] ?? '') as String,
             'price': price,
+            'basePrice': basePrice,
             'qty': qty,
             'stock': stock,
             'reserved': reserved,
@@ -1430,22 +1776,63 @@ class Backend {
           discount = {'code': code, 'percent': percent};
         }
         // Totals from the DATABASE prices, never a client total.
+        // The fixed delivery fee is read from
+        // storeSettings/settings (Technical Plan §2/§5): missing ≠ 0
+        // — a manual order cannot be created while the fee is unset.
+        // The fee is client-asserted on the manual path (decision
+        // D2: the fee split is kept).
+        final settingsSnap =
+            await tx.get(db.collection('storeSettings').doc('settings'));
+        final feeSettings =
+            parseDeliveryFeeSettings(settingsSnap.data());
+        final deliveryFee = feeSettings.deliveryFee;
+        if (deliveryFee == null) {
+          throw BackendException(
+              'رسوم التوصيل غير محددة بعد — حدّدها من الإعدادات');
+        }
         final computed = computeOrderTotals(
           lines
-              .map((l) => {'price': l['price'] as num, 'qty': l['qty'] as int})
+              .map((l) => {
+                    'price': l['price'] as num,
+                    'qty': l['qty'] as int,
+                    'basePrice': l['basePrice'] as int?,
+                  })
               .toList(),
           discount?['percent'] as int?,
+          deliveryFee: deliveryFee,
+          freeDeliveryThreshold: feeSettings.freeDeliveryThreshold,
         );
+        // The stored fee is the EFFECTIVE fee (0 when the D3
+        // threshold waives it); amountDue is the cash due at the door.
+        final effectiveFee = computed.deliveryFee ?? deliveryFee;
         final now = FieldValue.serverTimestamp();
         final auditRef = db.collection('audit').doc();
         final auditId = auditRef.id;
+        // 'items' coverage (rules orderAuditOk / itemsCovered): a
+        // manual order with any on-sale line is rules-denied unless
+        // the audit covers 'items' — same helper convertDraft uses.
+        final hasBasePrice = lines.any((l) => l['basePrice'] != null);
         final docIds = <String, List<String>>{
-          'orders/$clientOrderId': ['status', 'total'],
+          'orders/$clientOrderId':
+              orderAuditFields(hasBasePrice: hasBasePrice),
         };
         final newValuesByDoc = <String, Map<String, dynamic>>{
           'orders/$clientOrderId': {
             'status': 'new',
             'total': wholeNum(computed.total),
+            'saleSavings': wholeNum(computed.saleSavings),
+            'deliveryFee': effectiveFee,
+            'amountDue': wholeNum(computed.amountDue!),
+            if (hasBasePrice)
+              'items': lines
+                  .map((l) => {
+                        'productId': l['productId'],
+                        'name': l['name'],
+                        'price': l['price'],
+                        'basePrice': l['basePrice'],
+                        'qty': l['qty'],
+                      })
+                  .toList(),
           },
         };
         final documents = <Map<String, dynamic>>[];
@@ -1526,6 +1913,7 @@ class Backend {
                     'productId': l['productId'],
                     'name': l['name'],
                     'price': l['price'],
+                    'basePrice': l['basePrice'],
                     'qty': l['qty'],
                   })
               .toList(),
@@ -1534,6 +1922,13 @@ class Backend {
           'discountPercent': computed.discountPercent,
           'discountAmount': wholeNum(computed.discountAmount),
           'total': wholeNum(computed.total),
+          // Pricing snapshot (Technical Plan §2): the order alone
+          // reconstructs what the customer saw. No attemptId —
+          // manual orders have no checkout attempt.
+          'saleSavings': wholeNum(computed.saleSavings),
+          'deliveryFee': effectiveFee,
+          // The fee was verified set above, so amountDue is non-null.
+          'amountDue': wholeNum(computed.amountDue!),
           'status': 'new',
           'paymentStatus': 'cod_pending',
           'source': 'admin_manual',
@@ -1555,9 +1950,15 @@ class Backend {
         documents.insert(0, {
           'collection': 'orders',
           'docId': clientOrderId,
-          'changedFields': ['status', 'total'],
+          'changedFields': docIds['orders/$clientOrderId']!,
           'oldValues': {},
-          'newValues': {'status': 'new', 'total': wholeNum(computed.total)},
+          'newValues': {
+            'status': 'new',
+            'total': wholeNum(computed.total),
+            'saleSavings': wholeNum(computed.saleSavings),
+            'deliveryFee': effectiveFee,
+            'amountDue': wholeNum(computed.amountDue!),
+          },
         });
         tx.set(auditRef, {
           'operationId': auditId,
@@ -1569,7 +1970,13 @@ class Backend {
           'operation': 'manual_order_create',
           'changedFields': docIds.values.expand((e) => e).toSet().toList(),
           'oldValues': {},
-          'newValues': {'status': 'new', 'total': wholeNum(computed.total)},
+          'newValues': {
+            'status': 'new',
+            'total': wholeNum(computed.total),
+            'saleSavings': wholeNum(computed.saleSavings),
+            'deliveryFee': effectiveFee,
+            'amountDue': wholeNum(computed.amountDue!),
+          },
           'docIds': docIds,
           'newValuesByDoc': newValuesByDoc,
           'documents': documents,
@@ -1728,6 +2135,951 @@ class Backend {
       .orderBy('startedAt', descending: true)
       .limit(100)
       .snapshots();
+
+  // ---- Incomplete orders + journey tracking (2026-11-27) ----
+  //
+  // A checkout draft is a LEAD, not an order: the storefront autosaves
+  // it while the visitor types (local first, server after 10s idle),
+  // and an admin converts it only after verbal confirmation — one
+  // transaction: status check + moot check + stock/price re-check +
+  // reserve + create order (doc id = draft id) + mark converted.
+  // Canonical schemas: docs/incomplete-orders-schema.md.
+  // Per-day visits come from GA4 only — no invented Firestore count.
+
+  /// The 27 governorates (stable ids, same list as the storefront
+  /// PURE-HELPERS block and scripts/seed-governorates.js). Used as
+  /// the fallback when the `storeSettings/governorates` doc is
+  /// missing; the admin toggles `active` per entry in settings.
+  static const List<Map<String, String>> governorates27 = [
+    {'id': 'cairo', 'name': 'القاهرة'},
+    {'id': 'giza', 'name': 'الجيزة'},
+    {'id': 'alexandria', 'name': 'الإسكندرية'},
+    {'id': 'dakahlia', 'name': 'الدقهلية'},
+    {'id': 'red-sea', 'name': 'البحر الأحمر'},
+    {'id': 'beheira', 'name': 'البحيرة'},
+    {'id': 'fayoum', 'name': 'الفيوم'},
+    {'id': 'gharbia', 'name': 'الغربية'},
+    {'id': 'ismailia', 'name': 'الإسماعيلية'},
+    {'id': 'menofia', 'name': 'المنوفية'},
+    {'id': 'minya', 'name': 'المنيا'},
+    {'id': 'qalyubia', 'name': 'القليوبية'},
+    {'id': 'new-valley', 'name': 'الوادي الجديد'},
+    {'id': 'suez', 'name': 'السويس'},
+    {'id': 'asyut', 'name': 'أسيوط'},
+    {'id': 'sohag', 'name': 'سوهاج'},
+    {'id': 'qena', 'name': 'قنا'},
+    {'id': 'luxor', 'name': 'الأقصر'},
+    {'id': 'aswan', 'name': 'أسوان'},
+    {'id': 'sharqia', 'name': 'الشرقية'},
+    {'id': 'port-said', 'name': 'بورسعيد'},
+    {'id': 'damietta', 'name': 'دمياط'},
+    {'id': 'kafr-el-sheikh', 'name': 'كفر الشيخ'},
+    {'id': 'beni-suef', 'name': 'بني سويف'},
+    {'id': 'matrouh', 'name': 'مطروح'},
+    {'id': 'north-sinai', 'name': 'شمال سيناء'},
+    {'id': 'south-sinai', 'name': 'جنوب سيناء'},
+  ];
+
+  /// Egyptian mobile validation (same rule as the storefront): an
+  /// 11-digit 01[0125] number; a pasted +20 / 20 country code folds
+  /// back to the local 01… form first.
+  static bool isValidEgyptianMobile(String? phone) {
+    var digits = (phone ?? '').replaceAll(RegExp(r'\D'), '');
+    if (digits.length == 12 && digits.startsWith('20')) {
+      digits = '0${digits.substring(2)}';
+    }
+    return RegExp(r'^01[0125][0-9]{8}$').hasMatch(digits);
+  }
+
+  /// Visible seconds -> stored dwell band token (ASCII). 9s -> '<10s';
+  /// 10s and 60s -> '10-60s'; 61s -> '>60s'. Hidden-tab time is never
+  /// passed in (the storefront excludes it).
+  static String dwellBand(int visibleSeconds) {
+    if (visibleSeconds < 10) return '<10s';
+    if (visibleSeconds <= 60) return '10-60s';
+    return '>60s';
+  }
+
+  /// Journey summaries carry `schemaVersion: 1` on every event.
+  static const int journeySchemaVersion = 1;
+
+  /// Cap a journey product list at 20 entries (oldest kept — the
+  /// first 20 win) and count the overflow — mirrors the storefront
+  /// flushJourney cap and the rules' journeyEntriesOk (≤ 20).
+  static ({List<Map<String, dynamic>> entries, int overflowCount})
+      capJourneyEntries(List<Map<String, dynamic>> entries) {
+    if (entries.length <= 20) {
+      return (entries: entries, overflowCount: 0);
+    }
+    return (
+      entries: entries.sublist(0, 20),
+      overflowCount: entries.length - 20,
+    );
+  }
+
+  /// Human label for a journey action. Unknown action types render
+  /// as plain text (the schema is append-only — new actions must
+  /// never break the admin view).
+  static String journeyActionLabel(String action) {
+    switch (action) {
+      case 'view':
+        return 'شاف المنتج';
+      case 'add':
+        return 'ضاف للسلة';
+      case 'checkout_start':
+        return 'بدأ الطلب';
+      default:
+        return action;
+    }
+  }
+
+  /// One cart line's availability from live inventory: available is
+  /// (stock - reserved). ok: qty fits; out: nothing available; short:
+  /// some available, less than qty.
+  static ({String state, int availableQty}) lineAvailability({
+    required int availableQty,
+    required int qty,
+  }) {
+    final avail = availableQty < 0 ? 0 : availableQty;
+    if (avail <= 0) return (state: 'out', availableQty: 0);
+    if (qty <= avail) return (state: 'ok', availableQty: avail);
+    return (state: 'short', availableQty: avail);
+  }
+
+  /// Draft completeness 0–100: 25 points each for a name, a valid
+  /// phone, a non-empty cart, and an address (governorate + detailed,
+  /// or the combined field).
+  static int draftTriageScore({
+    required bool hasName,
+    required bool hasPhone,
+    required bool hasCart,
+    required bool hasAddress,
+  }) =>
+      (hasName ? 25 : 0) +
+      (hasPhone ? 25 : 0) +
+      (hasCart ? 25 : 0) +
+      (hasAddress ? 25 : 0);
+
+  /// The triage MINIMUM for the Incomplete Orders list (design brief
+  /// entry 17): a draft is callable — and therefore listable — only
+  /// when it has a non-empty cart, a name, and a full valid Egyptian
+  /// mobile. Address is NOT part of the minimum (it scores 25 points
+  /// in draftTriageScore but a draft without it still lists).
+  static bool draftMeetsTriage({
+    required bool hasName,
+    required bool hasPhone,
+    required bool hasCart,
+  }) =>
+      hasName && hasPhone && hasCart;
+
+  /// Map form of [draftMeetsTriage] for a raw draft document (the
+  /// list screen's rows are maps): name non-empty, phone a full
+  /// valid Egyptian mobile, cart non-empty.
+  static bool draftMeetsTriageMap(Map<String, dynamic> d) {
+    final cart = (d['cart'] as List<dynamic>? ?? []);
+    return draftMeetsTriage(
+      hasName: ((d['name'] ?? '') as String).trim().isNotEmpty,
+      hasPhone: isValidEgyptianMobile((d['phone'] ?? '') as String),
+      hasCart: cart.isNotEmpty,
+    );
+  }
+
+  /// The visible drafts for the Incomplete Orders list: triage
+  /// first (below-minimum drafts never appear), then dedup by phone
+  /// (newest first wins). Status is deliberately NOT filtered — a
+  /// `dead` or `converted` draft that meets triage stays visible as
+  /// a closed record (CUJ 2). Input is expected newest-first.
+  static List<Map<String, dynamic>> filterVisibleDrafts(
+      List<Map<String, dynamic>> drafts) {
+    final triaged = drafts.where(draftMeetsTriageMap).toList();
+    return dedupDraftsByPhone(triaged);
+  }
+
+  /// The order id the moot badge links to: the draft's own
+  /// `mootOrderId` field (written by convertDraft when the phone
+  /// already ordered) when present, else the newest order for the
+  /// draft's phone from the list-time phone lookup. Null when the
+  /// draft is not moot by either source.
+  static String? mootOrderIdFor(
+    Map<String, dynamic> draft,
+    Map<String, Map<String, dynamic>> ordersByPhone,
+  ) {
+    final stored = ((draft['mootOrderId'] ?? '') as String).trim();
+    if (stored.isNotEmpty) return stored;
+    final phone = ((draft['phone'] ?? '') as String).trim();
+    if (phone.isEmpty) return null;
+    final order = ordersByPhone[phone];
+    if (order == null) return null;
+    final id = (order['id'] ?? '') as String;
+    return id.isEmpty ? null : id;
+  }
+
+  /// The audit docIds list for a new order document: the money
+  /// fields always, plus 'items' whenever any line carries a base
+  /// price — the rules' orderAuditOk itemsCovered check
+  /// (firestore.rules orderHasBasePrice) denies the order otherwise.
+  /// Shared by createManualOrder and convertDraft so the two paths
+  /// can never drift apart.
+  static List<String> orderAuditFields({required bool hasBasePrice}) => [
+        'status',
+        'total',
+        'saleSavings',
+        'deliveryFee',
+        'amountDue',
+        if (hasBasePrice) 'items',
+      ];
+
+  /// The draft state machine (schema doc §2). Terminal states
+  /// (converted, dead) have no outgoing transition.
+  static const Map<String, List<String>> draftTransitions = {
+    'new': ['contacted', 'no-answer', 'converted', 'dead'],
+    'contacted': ['no-answer', 'converted', 'dead'],
+    'no-answer': ['contacted', 'converted', 'dead'],
+    'converted': [],
+    'dead': [],
+  };
+
+  static bool draftCanTransition(String from, String to) =>
+      (draftTransitions[from] ?? []).contains(to);
+
+  /// Governorate list resolution: a missing/unreadable document falls
+  /// back to the full hardcoded 27 so checkout never breaks; a
+  /// document with zero active entries is the "not set up" state.
+  static ({List<Map<String, String>> entries, bool fromFallback, bool notSetUp})
+      governorateFallback(List<dynamic>? entries) {
+    if (entries == null) {
+      return (
+        entries: governorates27
+            .map((g) => {'id': g['id']!, 'name': g['name']!})
+            .toList(),
+        fromFallback: true,
+        notSetUp: false,
+      );
+    }
+    final active = entries
+        .whereType<Map<String, dynamic>>()
+        .where((e) =>
+            e['active'] == true &&
+            (e['id'] as String?)?.isNotEmpty == true &&
+            (e['name'] as String?)?.isNotEmpty == true)
+        .map((e) => {'id': e['id'] as String, 'name': e['name'] as String})
+        .toList();
+    if (active.isEmpty) {
+      return (entries: <Map<String, String>>[], fromFallback: false, notSetUp: true);
+    }
+    return (entries: active, fromFallback: false, notSetUp: false);
+  }
+
+  /// Dedupe drafts by phone (newest first wins): a visitor on two
+  /// devices is two drafts, but the admin list shows one row per
+  /// phone. Drafts with no phone are kept as-is. Input is expected
+  /// newest-first (the list query order); output keeps that order.
+  static List<Map<String, dynamic>> dedupDraftsByPhone(
+      List<Map<String, dynamic>> drafts) {
+    final seenPhones = <String>{};
+    final out = <Map<String, dynamic>>[];
+    for (final d in drafts) {
+      final phone = (d['phone'] ?? '') as String;
+      final key = normalizeEgyptPhone(phone) ??
+          phone.replaceAll(RegExp(r'\D'), '');
+      if (key.isEmpty) {
+        out.add(d);
+        continue;
+      }
+      if (seenPhones.add(key)) out.add(d);
+    }
+    return out;
+  }
+
+  /// Live drafts stream (newest sync first, limit 100). The
+  /// Incomplete Orders tab paginates instead — see fetchDraftsPage().
+  Stream<QuerySnapshot<Map<String, dynamic>>> draftsStream() => db
+      .collection('checkoutDrafts')
+      .orderBy('lastSyncAt', descending: true)
+      .limit(100)
+      .snapshots();
+
+  /// One page of drafts, newest sync first. Returns the docs + the
+  /// cursor for the next page (null when there is no next page).
+  Future<({List<QueryDocumentSnapshot<Map<String, dynamic>>> docs, QueryDocumentSnapshot<Map<String, dynamic>>? lastDoc})> fetchDraftsPage({
+    QueryDocumentSnapshot<Map<String, dynamic>>? startAfter,
+    int pageSize = 20,
+  }) async {
+    _requireInit();
+    var query = db
+        .collection('checkoutDrafts')
+        .orderBy('lastSyncAt', descending: true)
+        .limit(pageSize);
+    if (startAfter != null) query = query.startAfterDocument(startAfter);
+    final snap = await query.get();
+    return (
+      docs: snap.docs,
+      lastDoc: snap.docs.length < pageSize ? null : snap.docs.last,
+    );
+  }
+
+  /// Count of drafts still in `new` (for the nav label). One-shot
+  /// aggregate count, not a live listener.
+  Future<int> newDraftsCount() async {
+    _requireInit();
+    final snap = await db
+        .collection('checkoutDrafts')
+        .where('status', isEqualTo: 'new')
+        .count()
+        .get();
+    return snap.count ?? 0;
+  }
+
+  /// One draft, live (detail view).
+  Stream<DocumentSnapshot<Map<String, dynamic>>> draftStream(String id) =>
+      db.collection('checkoutDrafts').doc(id).snapshots();
+
+  /// One draft, one-shot (conversion reads it inside the tx instead).
+  Future<Map<String, dynamic>?> fetchDraft(String id) async {
+    _requireInit();
+    final snap = await db.collection('checkoutDrafts').doc(id).get();
+    return snap.data();
+  }
+
+  /// One order by id, one-shot (the moot badge opens its detail).
+  Future<DocumentSnapshot<Map<String, dynamic>>> fetchOrder(String id) async {
+    _requireInit();
+    return db.collection('orders').doc(id).get();
+  }
+
+  /// Drafts created today that carry a valid phone (dashboard funnel
+  /// card). One-shot get (limit 200) + client-side phone filter —
+  /// no composite index needed.
+  Future<int> draftsWithPhoneTodayCount() async {
+    _requireInit();
+    final now = DateTime.now();
+    final start = Timestamp.fromDate(DateTime(now.year, now.month, now.day));
+    final snap = await db
+        .collection('checkoutDrafts')
+        .where('createdAt', isGreaterThanOrEqualTo: start)
+        .limit(200)
+        .get();
+    return snap.docs
+        .where((d) =>
+            isValidEgyptianMobile((d.data()['phone'] ?? '') as String))
+        .length;
+  }
+
+  /// Non-cancelled orders created today (dashboard funnel card).
+  Future<int> ordersTodayCount() async {
+    _requireInit();
+    final now = DateTime.now();
+    final start = Timestamp.fromDate(DateTime(now.year, now.month, now.day));
+    final snap = await db
+        .collection('orders')
+        .where('createdAt', isGreaterThanOrEqualTo: start)
+        .limit(200)
+        .get();
+    return snap.docs
+        .where((d) => (d.data()['status'] ?? '') != 'cancelled')
+        .length;
+  }
+
+  /// Change a draft's status (merge-only, audited). The transition
+  /// itself is validated here; the rules let any admin/manager write
+  /// a draft, so this is the guard that stops e.g. resurrecting a
+  /// converted draft.
+  Future<void> updateDraftStatus(String id, String status) async {
+    _requireInit();
+    final current = await fetchDraft(id);
+    if (current == null) throw BackendException('المسودة مش موجودة');
+    final from = (current['status'] ?? 'new') as String;
+    if (from != status && !draftCanTransition(from, status)) {
+      throw BackendException('مينفعش تغير الحالة من $from لـ $status');
+    }
+    await _auditedBatch(
+      writes: {
+        'checkoutDrafts/$id': {'status': status},
+      },
+      sensitive: {
+        'checkoutDrafts/$id': {'status': status},
+      },
+      operation: 'update',
+    );
+    Diagnostics.instance.log('Draft $id status -> $status');
+  }
+
+  /// Delete a draft manually (audited delete — the rules require the
+  /// deterministic delete-audit entry).
+  Future<void> deleteDraft(String id) async {
+    _requireInit();
+    await _auditedDelete(
+      collection: 'checkoutDrafts',
+      docId: id,
+      changedFields: const [
+        'sessionId',
+        'sessionToken',
+        'name',
+        'phone',
+        'cart',
+        'status',
+      ],
+    );
+    Diagnostics.instance.log('Draft deleted: $id');
+  }
+
+  /// The journey summary for one session (doc id == session id).
+  /// Returns null when the visitor has no recorded journey.
+  Future<Map<String, dynamic>?> journeySummaryFor(String sessionId) async {
+    _requireInit();
+    final snap =
+        await db.collection('journeySummaries').doc(sessionId).get();
+    return snap.data();
+  }
+
+  /// True when this phone placed a real order at or after [since].
+  /// Single-field query (limit 10) + client-side date filter — no
+  /// composite index needed. A null [since] (draft without a
+  /// createdAt) can never be established as moot.
+  Future<bool> isPhoneOrdered(String phone, DateTime? since) async {
+    _requireInit();
+    if (since == null) return false;
+    final snap = await db
+        .collection('orders')
+        .where('customerPhone', isEqualTo: phone)
+        .limit(10)
+        .get();
+    for (final doc in snap.docs) {
+      final createdAt = (doc.data()['createdAt'] as Timestamp?)?.toDate();
+      if (createdAt != null && !createdAt.isBefore(since)) return true;
+    }
+    return false;
+  }
+
+  /// The newest real order per phone (for the list-time "already
+  /// ordered" badge). One `whereIn` query per chunk of 10 phones —
+  /// the visible page is 20 drafts, so at most two queries.
+  Future<Map<String, Map<String, dynamic>>> fetchOrdersByPhones(
+      List<String> phones) async {
+    _requireInit();
+    final out = <String, Map<String, dynamic>>{};
+    final unique = phones.where((p) => p.trim().isNotEmpty).toSet().toList();
+    for (var start = 0; start < unique.length; start += 10) {
+      final chunk = unique.sublist(
+          start, (start + 10).clamp(0, unique.length));
+      final snap = await db
+          .collection('orders')
+          .where('customerPhone', whereIn: chunk)
+          .limit(50)
+          .get();
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        final phone = (data['customerPhone'] ?? '') as String;
+        final createdAt = (data['createdAt'] as Timestamp?)?.toDate();
+        final prev = out[phone];
+        final prevAt = prev == null
+            ? null
+            : (prev['createdAt'] as Timestamp?)?.toDate();
+        if (prev == null ||
+            (createdAt != null &&
+                (prevAt == null || createdAt.isAfter(prevAt)))) {
+          out[phone] = {'id': doc.id, ...data};
+        }
+      }
+    }
+    return out;
+  }
+
+  /// Convert a draft into a real order — ONE transaction:
+  /// (1) read the draft; converted returns the existing order,
+  /// dead refuses; (2) moot check (same phone ordered at/after the
+  /// draft was created — the draft is then marked moot, no order);
+  /// (3) re-read products + inventory; a price change or a stock
+  /// shortage returns a result, never an order; (4) reserve + create
+  /// the order (doc id = draft id, source admin_manual) + mark the
+  /// draft converted. Double-tap returns the existing order.
+  ///
+  /// Returns a result map: `result` is `ok` | `PRICE_CHANGED` |
+  /// `INSUFFICIENT_STOCK` | `MOOT` | `ALREADY_CONVERTED`, plus
+  /// `order` (the order map, when there is one), `mootOrderId`
+  /// (when moot), `created` and `newInStock`. Hard errors (missing
+  /// draft, dead draft, unset fee, no permission) throw
+  /// BackendException.
+  Future<Map<String, dynamic>> convertDraft({
+    required String draftId,
+    required String customerName,
+    required String customerPhone,
+    String? customerPhone2,
+    String? governorate,
+    String? detailedAddress,
+    required String customerAddress,
+    String? shippingCompanyId,
+    String? notes,
+  }) async {
+    _requireInit();
+    if (!await hasPermission('orders_create_manual')) {
+      throw BackendException('ماعندكش صلاحية إنشاء طلبات يدوية');
+    }
+    if (customerName.trim().isEmpty) throw BackendException('اكتب اسم العميل');
+    if (!isValidEgyptianMobile(customerPhone)) {
+      throw BackendException('اكتب رقم موبايل صحيح');
+    }
+    if (customerPhone2 != null &&
+        customerPhone2.trim().isNotEmpty &&
+        !isValidEgyptianMobile(customerPhone2)) {
+      throw BackendException('رقم الموبايل الاحتياطي مش صحيح');
+    }
+    if (customerAddress.trim().isEmpty) {
+      throw BackendException('اكتب العنوان');
+    }
+    final uid = auth.currentUser?.uid;
+    if (uid == null) throw BackendException('سجّل الدخول الأول');
+    final email = auth.currentUser?.email ?? '';
+    // (2) Moot check, BEFORE the transaction: this cloud_firestore
+    // version's Transaction.get takes only a DocumentReference, not
+    // a query, so the phone lookup runs here (single-field query,
+    // limit 10, client-side date filter — no composite index). The
+    // transaction below still re-checks the draft status, so a draft
+    // converted by another admin in between returns the existing
+    // order instead of a duplicate.
+    final preDraft = await fetchDraft(draftId);
+    if (preDraft == null) throw BackendException('المسودة مش موجودة');
+    if ((preDraft['status'] ?? 'new') == 'dead') {
+      throw BackendException('المسودة دي اتقفلت ومينفعش تتحول لطلب');
+    }
+    final preCreatedAt = (preDraft['createdAt'] as Timestamp?)?.toDate();
+    if (preCreatedAt != null) {
+      final priorSnap = await db
+          .collection('orders')
+          .where('customerPhone', isEqualTo: customerPhone.trim())
+          .limit(10)
+          .get();
+      for (final doc in priorSnap.docs) {
+        final createdAt =
+            (doc.data()['createdAt'] as Timestamp?)?.toDate();
+        if (createdAt != null && !createdAt.isBefore(preCreatedAt)) {
+          await _auditedBatch(
+            writes: {
+              'checkoutDrafts/$draftId': {'mootOrderId': doc.id},
+            },
+            sensitive: const {},
+            operation: 'update',
+          );
+          return {
+            'result': 'MOOT',
+            'mootOrderId': doc.id,
+            'order': {'id': doc.id, ...doc.data()},
+            'created': false,
+            'newInStock': <String, bool>{},
+          };
+        }
+      }
+    }
+    Map<String, dynamic> result;
+    try {
+      result = await db.runTransaction<Map<String, dynamic>>((tx) async {
+        final draftRef = db.collection('checkoutDrafts').doc(draftId);
+        final draftSnap = await tx.get(draftRef);
+        if (!draftSnap.exists) {
+          throw BackendException('المسودة مش موجودة');
+        }
+        final draft = draftSnap.data() ?? {};
+        final status = (draft['status'] ?? 'new') as String;
+        final orderRef = db.collection('orders').doc(draftId);
+        if (status == 'converted') {
+          final existing = await tx.get(orderRef);
+          if (existing.exists) {
+            return {
+              'result': 'ALREADY_CONVERTED',
+              'order': {'id': existing.id, ...(existing.data() ?? {})},
+              'created': false,
+              'newInStock': <String, bool>{},
+            };
+          }
+          throw BackendException('المسودة دي اتحولت قبل كده بس الطلب مش موجود');
+        }
+        if (status == 'dead') {
+          throw BackendException('المسودة دي اتقفلت ومينفعش تتحول لطلب');
+        }
+        final cart = (draft['cart'] as List<dynamic>? ?? [])
+            .whereType<Map<String, dynamic>>()
+            .toList();
+        if (cart.isEmpty) {
+          throw BackendException('المسودة دي مفيهاش منتجات');
+        }
+        final merged = dedupeManualItems(cart
+            .map((l) => {
+                  'productId': (l['productId'] ?? '') as String,
+                  'qty': ((l['qty'] ?? 0) as num).toInt(),
+                })
+            .toList());
+        if (merged.length > maxProductsPerOrder) {
+          throw BackendException('الطلب فيه منتجات أكتر من الحد المسموح (7)');
+        }
+        // (3) Re-read products + inventory; stock/price re-check
+        // against the DATABASE prices and the price the customer saw.
+        final lines = <Map<String, dynamic>>[];
+        for (final line in merged) {
+          final productId = (line['productId'] ?? '') as String;
+          final qty = ((line['qty'] ?? 0) as num).toInt();
+          if (qty < 1 || qty > maxQtyPerLine) {
+            throw BackendException('الكمية لازم تكون بين 1 و 20');
+          }
+          final productSnap =
+              await tx.get(db.collection('products').doc(productId));
+          if (!productSnap.exists) {
+            throw BackendException('منتج مش موجود في المتجر');
+          }
+          final product = productSnap.data() ?? {};
+          final rawPrice = (product['price'] ?? 0) as num;
+          if (!rawPrice.isFinite || rawPrice <= 0) {
+            throw BackendException('سعر المنتج مش صحيح');
+          }
+          final price = wholeNum(rawPrice);
+          final rawBase = product['basePrice'];
+          var basePrice = rawBase is num ? rawBase.toInt() : null;
+          if (basePrice != null && basePrice <= price) basePrice = null;
+          final invSnap =
+              await tx.get(db.collection('inventory').doc(productId));
+          final inv = invSnap.data() ?? {};
+          final stock = ((inv['stock'] ?? 0) as num).toInt();
+          final reserved = ((inv['reserved'] ?? 0) as num).toInt();
+          final available = stock - reserved;
+          if (qty > available) {
+            return {
+              'result': 'INSUFFICIENT_STOCK',
+              'productId': productId,
+              'productName': (product['name'] ?? productId) as String,
+              'availableQty': available < 0 ? 0 : available,
+              'created': false,
+              'newInStock': <String, bool>{},
+            };
+          }
+          final priceAtDraft = (cart
+                  .firstWhere((l) => (l['productId'] ?? '') == productId,
+                      orElse: () => <String, dynamic>{})['priceAtDraft'] as num?)
+              ?.toInt();
+          if (priceAtDraft != null && wholeNum(price) != priceAtDraft) {
+            return {
+              'result': 'PRICE_CHANGED',
+              'productId': productId,
+              'productName': (product['name'] ?? productId) as String,
+              'oldPrice': priceAtDraft,
+              'newPrice': wholeNum(price),
+              'created': false,
+              'newInStock': <String, bool>{},
+            };
+          }
+          lines.add({
+            'productId': productId,
+            'name': (product['name'] ?? '') as String,
+            'price': price,
+            'basePrice': basePrice,
+            'qty': qty,
+            'stock': stock,
+            'reserved': reserved,
+            'minStock': ((inv['minStock'] ?? 5) as num).toInt(),
+            'costPrice': ((inv['costPrice'] ?? 0) as num).toInt(),
+          });
+        }
+        // Delivery fee from settings (missing != 0 — a conversion
+        // cannot happen while the fee is unset).
+        final settingsSnap =
+            await tx.get(db.collection('storeSettings').doc('settings'));
+        final feeSettings =
+            parseDeliveryFeeSettings(settingsSnap.data());
+        final deliveryFee = feeSettings.deliveryFee;
+        if (deliveryFee == null) {
+          throw BackendException(
+              'رسوم التوصيل غير محددة بعد — حدّدها من الإعدادات');
+        }
+        final computed = computeOrderTotals(
+          lines
+              .map((l) => {
+                    'price': l['price'] as num,
+                    'qty': l['qty'] as int,
+                    'basePrice': l['basePrice'] as int?,
+                  })
+              .toList(),
+          null,
+          deliveryFee: deliveryFee,
+          freeDeliveryThreshold: feeSettings.freeDeliveryThreshold,
+        );
+        final effectiveFee = computed.deliveryFee ?? deliveryFee;
+        final now = FieldValue.serverTimestamp();
+        final auditRef = db.collection('audit').doc();
+        final auditId = auditRef.id;
+        final hasBasePrice = lines.any((l) => l['basePrice'] != null);
+        final orderDocIds = <String, List<String>>{
+          'orders/$draftId': orderAuditFields(hasBasePrice: hasBasePrice),
+        };
+        final orderNewValues = <String, dynamic>{
+          'status': 'new',
+          'total': wholeNum(computed.total),
+          'saleSavings': wholeNum(computed.saleSavings),
+          'deliveryFee': effectiveFee,
+          'amountDue': wholeNum(computed.amountDue!),
+        };
+        final newValuesByDoc = <String, Map<String, dynamic>>{
+          'orders/$draftId': {
+            ...orderNewValues,
+            if (hasBasePrice)
+              'items': lines
+                  .map((l) => {
+                        'productId': l['productId'],
+                        'name': l['name'],
+                        'price': l['price'],
+                        'basePrice': l['basePrice'],
+                        'qty': l['qty'],
+                      })
+                  .toList(),
+          },
+        };
+        final documents = <Map<String, dynamic>>[];
+        final newInStock = <String, bool>{};
+        // (4) Reserve stock (absolute set, merge). The rules enforce
+        // reserved <= stock, so an over-reservation is denied.
+        for (final line in lines) {
+          final productId = (line['productId'] ?? '') as String;
+          final qty = (line['qty'] ?? 0) as int;
+          final stock = (line['stock'] ?? 0) as int;
+          final reserved = (line['reserved'] ?? 0) as int;
+          final newReserved = reserved + qty;
+          newInStock[productId] = (stock - newReserved) > 0;
+          final invRef = db.collection('inventory').doc(productId);
+          tx.set(invRef, {
+            'productId': productId,
+            'stock': stock,
+            'reserved': newReserved,
+            'minStock': ((line['minStock'] ?? 5) as num).toInt(),
+            'costPrice': ((line['costPrice'] ?? 0) as num).toInt(),
+            'operationId': auditId,
+            'updatedAt': now,
+          }, SetOptions(merge: true));
+          tx.set(db.collection('movements').doc(), {
+            'productId': productId,
+            'type': 'order_reserve',
+            'qty': -qty,
+            'orderId': draftId,
+            'source': 'convertDraft',
+            'actorUid': uid,
+            'createdAt': now,
+          });
+          orderDocIds['inventory/$productId'] = [
+            'productId',
+            'stock',
+            'reserved',
+            'minStock',
+            'costPrice',
+            'operationId',
+            'updatedAt',
+          ];
+          newValuesByDoc['inventory/$productId'] = {
+            'stock': stock,
+            'reserved': newReserved,
+          };
+          documents.add({
+            'collection': 'inventory',
+            'docId': productId,
+            'changedFields': ['reserved', 'stock'],
+            'oldValues': {'stock': stock, 'reserved': reserved},
+            'newValues': {'stock': stock, 'reserved': newReserved},
+          });
+        }
+        // Create the order (doc id = draft id), same field list as
+        // createManualOrder, PLUS the draft's contact fields
+        // (backup phone, governorate, detailed address).
+        final order = <String, dynamic>{
+          'id': draftId,
+          'clientOrderId': draftId,
+          'customerName': customerName.trim(),
+          'customerPhone': customerPhone.trim(),
+          'customerPhone2': (customerPhone2 ?? '').trim().isEmpty
+              ? null
+              : customerPhone2!.trim(),
+          'governorate': (governorate ?? '').trim().isEmpty
+              ? null
+              : governorate!.trim(),
+          'detailedAddress': (detailedAddress ?? '').trim().isEmpty
+              ? null
+              : detailedAddress!.trim(),
+          'customerAddress': customerAddress.trim(),
+          'items': lines
+              .map((l) => {
+                    'productId': l['productId'],
+                    'name': l['name'],
+                    'price': l['price'],
+                    'basePrice': l['basePrice'],
+                    'qty': l['qty'],
+                  })
+              .toList(),
+          'subtotal': wholeNum(computed.subtotal),
+          'discountCode': null,
+          'discountPercent': null,
+          'discountAmount': wholeNum(computed.discountAmount),
+          'total': wholeNum(computed.total),
+          'saleSavings': wholeNum(computed.saleSavings),
+          'deliveryFee': effectiveFee,
+          'amountDue': wholeNum(computed.amountDue!),
+          'status': 'new',
+          'paymentStatus': 'cod_pending',
+          'source': 'admin_manual',
+          'createdBy': uid,
+          'shippingCompanyId': (shippingCompanyId ?? '').trim().isEmpty
+              ? null
+              : shippingCompanyId!.trim(),
+          'trackingNumber': null,
+          'notes': (notes ?? '').trim().isEmpty ? null : notes!.trim(),
+          'createdAt': now,
+          'updatedAt': now,
+          'acceptedAt': null,
+          'deliveredAt': null,
+          'cancelledAt': null,
+          'cancelReason': null,
+          'auditId': auditId,
+        };
+        tx.set(orderRef, order);
+        documents.insert(0, {
+          'collection': 'orders',
+          'docId': draftId,
+          'changedFields': orderDocIds['orders/$draftId']!,
+          'oldValues': {},
+          'newValues': orderNewValues,
+        });
+        tx.set(auditRef, {
+          'operationId': auditId,
+          'actor': uid,
+          'actorName': email,
+          'timestamp': now,
+          'collection': 'orders',
+          'docId': draftId,
+          'operation': 'manual_order_create',
+          'changedFields': orderDocIds.values.expand((e) => e).toSet().toList(),
+          'oldValues': {},
+          'newValues': orderNewValues,
+          'docIds': orderDocIds,
+          'newValuesByDoc': newValuesByDoc,
+          'documents': documents,
+          'source': 'convertDraft',
+        });
+        // Mark the draft converted (orderId = the new order id).
+        tx.set(draftRef, {
+          'status': 'converted',
+          'orderId': draftId,
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true));
+        return {
+          'result': 'ok',
+          'order': order,
+          'created': true,
+          'newInStock': newInStock,
+        };
+      });
+    } on BackendException {
+      rethrow;
+    } on FirebaseException catch (e) {
+      Diagnostics.instance.log('Draft conversion failed: ${e.code} ${e.message}');
+      if (e.code == 'permission-denied') {
+        throw BackendException(
+            'تعذر تحويل المسودة — الكمية أكبر من المتاح أو البيانات مرفوضة، راجع الكميات وحاول تاني');
+      }
+      throw BackendException('تعذر تحويل المسودة: ${e.message ?? e.code}');
+    }
+    if (result['created'] == true) {
+      Diagnostics.instance.log('Draft converted to order: $draftId');
+      await _refreshInStock(
+          (result['newInStock'] as Map<String, bool>?) ?? {});
+    }
+    return result;
+  }
+
+  // ---- Governorates + deletion config + quota (settings) ----
+
+  /// Live governorate list (one doc, all 27, stable ids + active
+  /// flags). The screen falls back to [governorateFallback] when the
+  /// doc is missing.
+  Stream<DocumentSnapshot<Map<String, dynamic>>> governoratesStream() =>
+      db.collection('storeSettings').doc('governorates').snapshots();
+
+  /// Save the governorate activation list (merge-only, audited).
+  Future<void> saveGovernorates(List<Map<String, dynamic>> entries) async {
+    _requireInit();
+    if (entries.length > 27) {
+      throw BackendException('المحافظات 27 بس');
+    }
+    await _auditedBatch(
+      writes: {
+        'storeSettings/governorates': {'entries': entries},
+      },
+      sensitive: const {},
+      operation: 'update',
+    );
+    Diagnostics.instance.log('Governorates saved (${entries.length} entries)');
+  }
+
+  /// Live deletion config (autoDeleteDays, 0 = manual only).
+  Stream<DocumentSnapshot<Map<String, dynamic>>> deletionConfigStream() =>
+      db.collection('storeSettings').doc('deletion').snapshots();
+
+  /// Save the scheduled auto-delete (X days, 0 = manual only).
+  Future<void> saveDeletionConfig(int autoDeleteDays) async {
+    _requireInit();
+    if (autoDeleteDays < 0 || autoDeleteDays > 365) {
+      throw BackendException('عدد الأيام لازم يكون بين 0 و 365');
+    }
+    await _auditedBatch(
+      writes: {
+        'storeSettings/deletion': {'autoDeleteDays': autoDeleteDays},
+      },
+      sensitive: const {},
+      operation: 'update',
+    );
+    Diagnostics.instance.log('Deletion config saved: $autoDeleteDays days');
+  }
+
+  /// Live quota doc (cutoffLevel + dailyEstimate).
+  Stream<DocumentSnapshot<Map<String, dynamic>>> quotaStream() =>
+      db.collection('storeSettings').doc('quota').snapshots();
+
+  /// Manual quota cut-off flip: 'none' | 'journeys' | 'drafts'.
+  /// Order writes are never cut.
+  Future<void> setQuotaCutoff(String level) async {
+    _requireInit();
+    if (!['none', 'journeys', 'drafts'].contains(level)) {
+      throw BackendException('مستوى الإيقاف مش صحيح');
+    }
+    await _auditedBatch(
+      writes: {
+        'storeSettings/quota': {'cutoffLevel': level},
+      },
+      sensitive: const {},
+      operation: 'update',
+    );
+    Diagnostics.instance.log('Quota cutoff -> $level');
+  }
+
+  /// Rough daily write estimate (drafts + journey summaries created
+  /// today, ~2 writes each: create + one update). Count queries only,
+  /// no invented visits — visits come from GA4, not Firestore.
+  Future<({int draftsToday, int journeysToday, int estimatedWrites})>
+      dailyWriteEstimate() async {
+    _requireInit();
+    final now = DateTime.now();
+    final startOfDay = DateTime(now.year, now.month, now.day);
+    final start = Timestamp.fromDate(startOfDay);
+    final draftsSnap = await db
+        .collection('checkoutDrafts')
+        .where('createdAt', isGreaterThanOrEqualTo: start)
+        .count()
+        .get();
+    final journeysSnap = await db
+        .collection('journeySummaries')
+        .where('startedAt', isGreaterThanOrEqualTo: start)
+        .count()
+        .get();
+    final draftsToday = draftsSnap.count ?? 0;
+    final journeysToday = journeysSnap.count ?? 0;
+    return (
+      draftsToday: draftsToday,
+      journeysToday: journeysToday,
+      estimatedWrites: draftsToday * 2 + journeysToday * 2,
+    );
+  }
 
   /// Exports products + orders + derived customers + store settings as
   /// plain JSON-ready data — the v1 backup path. This runs entirely in

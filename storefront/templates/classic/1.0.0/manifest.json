@@ -1,0 +1,50 @@
+{
+  "id": "classic",
+  "nameAr": "الكلاسيكي",
+  "nameEn": "Classic",
+  "version": "1.0.0",
+  "shellMinVersion": "1.0.0",
+  "bundleHash": "cfafbac1d0d584ca388073c18ac8bf8094367f3d1e128b4855df8caaa44137af",
+  "motion": "calm",
+  "dark": "variant",
+  "behaviours": [],
+  "sections": [
+    "hero",
+    "marquee",
+    "categories",
+    "featured",
+    "offers",
+    "products",
+    "delivery",
+    "contact",
+    "about"
+  ],
+  "dataNeeds": [],
+  "cartLayout": "drawer",
+  "modalLayout": "default",
+  "fonts": [
+    {
+      "family": "Tajawal",
+      "weights": [
+        300,
+        400,
+        500,
+        700,
+        800
+      ],
+      "origin": "self"
+    },
+    {
+      "family": "Inter",
+      "weights": [
+        300,
+        400,
+        500,
+        600,
+        700
+      ],
+      "origin": "self"
+    }
+  ],
+  "previewImageUrl": "https://store-3384c.web.app/templates/classic/1.0.0/preview.png"
+}

@@ -1,0 +1,21 @@
+<!-- speclab hero: search-first header. First element carries data-section="header".
+     The search bar is a button (bundles carry no text inputs): data-action="search" opens
+     the shell search. Brand block carries data-section="brand" (gateway brand slot). -->
+<section class="sl-page sl-header sl-reveal" data-section="header">
+  <div class="sl-brand" data-section="brand">
+    <img class="sl-brand-logo" data-slot="brand-logo" src="" alt="" />
+    <div>
+      <div class="sl-brand-name" data-slot="brand-name"></div>
+      <div class="sl-brand-tag" data-slot="brand-tagline"></div>
+      <div class="sl-brand-meta"><span data-slot="whatsapp-number"></span></div>
+      <div class="sl-brand-cod" data-slot="cod-message"></div>
+    </div>
+  </div>
+  <div class="sl-search-row">
+    <button class="sl-search" data-action="search">
+      <span class="sl-search-icon">⌕</span>
+      <span class="sl-search-text">ابحث عن منتج… وقارن المواصفات</span>
+    </button>
+    <button class="sl-cart-btn" data-action="open-cart">السلة</button>
+  </div>
+</section>

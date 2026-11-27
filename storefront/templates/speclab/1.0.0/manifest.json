@@ -1,0 +1,50 @@
+{
+  "behaviours": [
+    "grid-list-toggle",
+    "filter-chips",
+    "comparison-strip"
+  ],
+  "bundleHash": "795a4b826d5a0def0dae957c2c7184e08844b73775497a5df4e1ff7b277db9fa",
+  "cartLayout": "drawer",
+  "dark": "light-only",
+  "dataNeeds": [
+    "specs"
+  ],
+  "fonts": [
+    {
+      "family": "Tajawal",
+      "origin": "self",
+      "weights": [
+        400,
+        500
+      ]
+    },
+    {
+      "family": "Inter",
+      "origin": "self",
+      "weights": [
+        400,
+        500
+      ]
+    }
+  ],
+  "id": "speclab",
+  "modalLayout": "default",
+  "motion": "lively",
+  "nameAr": "قارن",
+  "nameEn": "Spec Lab",
+  "previewImageUrl": "https://store-3384c.web.app/templates/speclab/1.0.0/preview.png",
+  "sections": [
+    "hero",
+    "marquee",
+    "categories",
+    "featured",
+    "offers",
+    "products",
+    "delivery",
+    "contact",
+    "about"
+  ],
+  "shellMinVersion": "1.0.0",
+  "version": "1.0.0"
+}

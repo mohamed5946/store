@@ -10,7 +10,11 @@
 //     promoBanners: [
 //       { imageUrl, title, subtitle,
 //         linkType: 'category' | 'product' | 'none',
-//         linkId: string }
+//         linkId: string,
+//         endDate: string (ISO 8601 date-time, Africa/Cairo,
+//           optional — D2: the real sale window a countdown counts
+//           from; no end date → no countdown, never a tick toward
+//           nothing) }
 //     ],
 //     featuredProductId: string,
 //     deliveryBanner: { title, subtitle, imageUrl },
@@ -41,6 +45,7 @@ Map<String, dynamic> promoBannerMap({
   required String subtitle,
   required String linkType,
   required String linkId,
+  String? endDate,
 }) {
   final safeLinkType = linkType == 'category' || linkType == 'product'
       ? linkType
@@ -52,7 +57,33 @@ Map<String, dynamic> promoBannerMap({
     'linkType': safeLinkType,
     // A 'none' banner carries no target, even if the editor held one.
     'linkId': safeLinkType == 'none' ? '' : linkId,
+    // D2: the real promo end date. Empty string = no end date = no
+    // countdown. The key is always emitted so the stored shape is
+    // fixed; the storefront treats "" exactly like missing.
+    'endDate': (endDate ?? '').trim(),
   };
+}
+
+/// Validates a promo end date (D2): empty means "no countdown" and
+/// is always valid; otherwise it must be an ISO 8601 date-time
+/// (Africa/Cairo — a naive value is read as Cairo time by the
+/// storefront). Returns an Arabic error message, or null when valid.
+String? validatePromoEndDate(String? value) {
+  final v = (value ?? '').trim();
+  if (v.isEmpty) return null;
+  if (!v.contains('T')) {
+    return 'تاريخ الانتهاء لازم يكون تاريخ ووقت (مثال: 2026-12-01T23:59:00+02:00)';
+  }
+  // DateTime.tryParse normalizes out-of-range fields (month 13
+  // becomes next January) instead of rejecting them, so the shape
+  // is checked first: real month/day/hour/minute ranges, optional
+  // seconds + fractional part, optional Z or ±HH:MM offset.
+  final shape = RegExp(
+      r'^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d(:[0-5]\d(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$');
+  if (!shape.hasMatch(v) || DateTime.tryParse(v) == null) {
+    return 'تاريخ الانتهاء مش بصيغة ISO 8601 صحيحة';
+  }
+  return null;
 }
 
 /// Builds the full homepage doc. Hero ids are truncated to the first
@@ -80,6 +111,7 @@ Map<String, dynamic> buildHomepageDoc({
               subtitle: (b['subtitle'] ?? '') as String,
               linkType: (b['linkType'] ?? 'none') as String,
               linkId: (b['linkId'] ?? '') as String,
+              endDate: (b['endDate'] ?? '') as String,
             ))
         .toList(),
     'featuredProductId': featuredProductId,
@@ -111,6 +143,7 @@ Map<String, dynamic> parseHomepageDoc(Map<String, dynamic>? doc) {
             'subtitle': (b['subtitle'] ?? '') as String,
             'linkType': (b['linkType'] ?? 'none') as String,
             'linkId': (b['linkId'] ?? '') as String,
+            'endDate': (b['endDate'] ?? '') as String,
           })
       .toList();
   final delivery = (d['deliveryBanner'] as Map<String, dynamic>?) ?? {};

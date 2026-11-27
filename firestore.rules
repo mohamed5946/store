@@ -93,23 +93,64 @@
 // operation inside a multi-doc request, not just to the request
 // total (Firebase docs, "Access call limits"). That binds the order
 // create, and the contract's budget math (13 <= 20) only counted the
-// request total — it does NOT hold per operation:
-//   order rule = N price gets + 1 discount get + 1 audit getAfter
-//     (+ 1 admins get for manual orders)
-//   + discount-claim rule 1 getAfter. Per REQUEST the worst case is
-//     14 (manual, 10 lines, code) <= 20 — fine. Per OPERATION the
-//     order create alone costs N + 2 (storefront) / N + 3 (manual),
-//     so the 10-limit caps real orders at 9 lines without a code,
-//     8 with one (storefront); 8 / 7 for manual orders. A 10-line
-//     order is denied by the platform limit. No check was weakened
-//     to fit — this is reported, not silently worked around: the
-//     client caps lines at 10, so a 9th/10th line fails with
-//     permission-denied.
+// request total — it does NOT hold per operation. Pricing (Phase A,
+// 2026-11-27) accounting per order create (platform limit 10 gets
+// per operation):
+//   storefront (anonymous): N product gets + 1 audit getAfter
+//     + 1 fee get (+ 1 discount-code get when a code is present)
+//     → caps 8 lines without a code (8 + 1 + 1 = 10), 7 with one
+//     (7 + 1 + 1 + 1 = 10). The client cap is 7 lines, so no real
+//     storefront order is affected.
+//   manual (authenticated admin/manager): N product gets + 1 audit
+//     getAfter + 1 admins get (+ 1 code get), NO fee get — the fee
+//     is client-asserted on the manual path (decision D2 keeps the
+//     split) → caps 8 without a code, 7 with one, so a 7-line manual
+//     order with a code passes at exactly 10 gets.
+//   An 8-line storefront order with a code costs 11 gets
+//   (8 + 1 + 1 + 1) and is denied by the platform limit — the
+//   documented cap, not a bug. Old-shape orders (no
+//   saleSavings/deliveryFee/amountDue) pay no fee get on either
+//   path. The discount-claim rule costs 1 getAfter. No check was
+//   weakened to fit — this is reported, not silently worked around.
 //   Every other operation in the transaction costs 0-1 calls:
 //     inventory reservation 0, movements 0, audit (anonymous) 0,
 //     audit (admin) 1 cached admins get, discount claim 1.
 //   The §13 inStock refresh is a separate batch: 1 inventory get
 //     per product, 10 max for 10 lines — inside 20.
+//
+// PRICING (Phase A, 2026-11-27 — per-product sale prices + fixed
+// delivery fee, Model P: price = effective/charged price, optional
+// display-only basePrice):
+//   - Dual-shape window: an order may omit ALL THREE new order keys
+//     (saleSavings, deliveryFee, amountDue) — that is an old-shape
+//     order and it is valid. An order carrying ANY ONE of the three
+//     must carry ALL THREE with all new invariants enforced; an
+//     order carrying one without the other two is denied. Per line,
+//     basePrice may be absent (old-shape line) or present (null = no
+//     sale, or int >= price). Rollback returns the rules to exactly
+//     this dual-shape version — a full revert to the pre-feature
+//     exact-key rules is NOT the rollback path (it would reject
+//     updates to orders created during the feature window).
+//   - New invariants (when present): total == subtotal -
+//     discountAmount (unchanged); saleSavings == sum over lines of
+//     (basePrice - price) * qty; amountDue == total + deliveryFee;
+//     deliveryFee == storeSettings/settings.deliveryFee on ANONYMOUS
+//     storefront creates only (decision D2 keeps the fee split —
+//     manual orders are client-asserted, no fee get); basePrice ==
+//     null || basePrice >= price per line; the code discount keeps
+//     the interval form (no round() builtin in the rules language).
+//   - Product rule: basePrice == null || (basePrice is int &&
+//     basePrice >= price); a fractional basePrice is denied.
+//   - attemptId (string, optional) is present on storefront orders,
+//     omitted on manual orders. Exact order keys: old shape 25/26,
+//     new shape 28/29/30 (25 core + 3 money keys + optional
+//     operationId + optional attemptId); per-line keys 4 or 5.
+//   - Attempt docs (analytics/attempts/items) are shape-checked on
+//     write (errorCode from the allowed set, seen values,
+//     clientOrderId, plus the contact fields the live storefront
+//     writes) — a fabricated doc that fails the shape check is
+//     denied. The rejection-rate signal stays indicative-only (see
+//     spec §11).
 //
 // inStock CROSS-CHECKS (contract §3 decision): the products-rule
 // cross-check (productsInStockOk) is DROPPED — with both checks a
@@ -171,8 +212,10 @@ service cloud.firestore {
 
     /* Sensitive fields whose new value the audit entry must record
      * correctly (price, stock, reserved, status, paymentStatus,
-     * inStock, percent). A changed sensitive field with a missing or
-     * wrong recorded value denies the write. */
+     * inStock, percent — plus the pricing fields basePrice,
+     * deliveryFee, saleSavings, amountDue, Phase A 2026-11-27). A
+     * changed sensitive field with a missing or wrong recorded value
+     * denies the write. */
     function sensitiveValuesOk(changed, entry, collection, docId) {
       let recorded = entry.data.newValuesByDoc != null
         ? entry.data.newValuesByDoc[collection + '/' + docId]
@@ -183,7 +226,11 @@ service cloud.firestore {
         && (!changed.hasAny(['status']) || (recorded != null && recorded.status == request.resource.data.status))
         && (!changed.hasAny(['paymentStatus']) || (recorded != null && recorded.paymentStatus == request.resource.data.paymentStatus))
         && (!changed.hasAny(['inStock']) || (recorded != null && recorded.inStock == request.resource.data.inStock))
-        && (!changed.hasAny(['percent']) || (recorded != null && recorded.percent == request.resource.data.percent));
+        && (!changed.hasAny(['percent']) || (recorded != null && recorded.percent == request.resource.data.percent))
+        && (!changed.hasAny(['basePrice']) || (recorded != null && recorded.basePrice == request.resource.data.basePrice))
+        && (!changed.hasAny(['deliveryFee']) || (recorded != null && recorded.deliveryFee == request.resource.data.deliveryFee))
+        && (!changed.hasAny(['saleSavings']) || (recorded != null && recorded.saleSavings == request.resource.data.saleSavings))
+        && (!changed.hasAny(['amountDue']) || (recorded != null && recorded.amountDue == request.resource.data.amountDue));
     }
 
     /* Changed keys for an update (diff against the stored doc). */
@@ -236,18 +283,25 @@ service cloud.firestore {
 
     /* ---- No-functions order helpers (contract §3) ---- */
 
-    /* One order line: exactly productId/name/price/qty. price is
-     * number, not int (correction 2026-11-26): a stored fractional
-     * price must not deny a legitimate order whose line price
-     * matches the DB exactly. */
+    /* One order line: productId/name/price/qty, plus the optional
+     * pricing basePrice (Phase A): an old-shape line has exactly the
+     * 4 original keys; a new-shape line adds basePrice (5 keys) —
+     * null when no sale, or an int >= price. A basePrice below the
+     * charged price is a fake discount and is denied; a fractional
+     * basePrice is denied (integer rule, same as the product rule).
+     * price stays number, not int (correction 2026-11-26): a stored
+     * fractional price must not deny a legitimate order whose line
+     * price matches the DB exactly. */
     function orderLineOk(item) {
       return item is map
-        && item.keys().hasOnly(['productId', 'name', 'price', 'qty'])
-        && item.keys().size() == 4
+        && item.keys().hasOnly(['productId', 'name', 'price', 'qty', 'basePrice'])
+        && (item.keys().size() == 4 || item.keys().size() == 5)
         && item.productId is string && item.productId.size() > 0
         && item.name is string && item.name.size() > 0
         && item.price is number && item.price > 0
-        && item.qty is int && item.qty >= 1 && item.qty <= 20;
+        && item.qty is int && item.qty >= 1 && item.qty <= 20
+        && (!('basePrice' in item) || item.basePrice == null
+          || (item.basePrice is int && item.basePrice >= item.price));
     }
 
     /* Line i of the order, if present, passes the shape check. */
@@ -282,6 +336,27 @@ service cloud.firestore {
         + orderLineTotal(9);
     }
 
+    /* Per-line saving of line i (pricing Phase A): (basePrice -
+     * price) * qty when the line carries a base price, else 0 — an
+     * absent or null basePrice means no sale on that line and
+     * contributes nothing. Exact integer math, never rounded. */
+    function orderLineSaving(i) {
+      let items = request.resource.data.items;
+      return items.size() <= i ? 0
+        : ((!('basePrice' in items[i]) || items[i].basePrice == null) ? 0
+          : (items[i].basePrice - items[i].price) * items[i].qty);
+    }
+
+    /* saleSavings must equal the unrolled sum of the per-line
+     * savings (the rules cannot loop). */
+    function orderSaleSavingsOk() {
+      return request.resource.data.saleSavings
+        == orderLineSaving(0) + orderLineSaving(1) + orderLineSaving(2)
+        + orderLineSaving(3) + orderLineSaving(4) + orderLineSaving(5)
+        + orderLineSaving(6) + orderLineSaving(7) + orderLineSaving(8)
+        + orderLineSaving(9);
+    }
+
     /* discountAmount must be round(subtotal * percent / 100) —
      * checked without division or a round() builtin (the rules
      * language has neither for this): d = round(sp/100) iff
@@ -311,15 +386,78 @@ service cloud.firestore {
         && orderLinePriceOk(9);
     }
 
-    /* The full order shape (contract §3): exact keys, field types
-     * and ranges, totals consistent, lifecycle fields null,
-     * timestamps == request.time, ids == the doc id, createdBy
-     * matching the source. */
+    /* ---- Incomplete orders: per-line availability guard [OOS] ----
+     * For each line, get() the matching inventory/{productId} doc and
+     * require qty <= stock - reserved — the backstop against a forged
+     * order write that skips the transaction's stock re-check. The
+     * client transaction stays the primary guard (exact counts); the
+     * inventory-reserve rule (reserved <= stock) is the second.
+     *
+     * BUDGET NOTE (2026-11-27): the order-create evaluation has a
+     * hard 10-get() budget, already spent by the price gets (N) +
+     * discount (0/1) + fee (0/1) + audit getAfter (1) — the suite
+     * pins a 7-line order with a code at exactly 10 gets. A second
+     * get per line would deny legitimate 4+-line orders, so this
+     * guard runs only on orders with at most 3 lines (worst case:
+     * 3 price + 3 inventory + 1 code + 1 fee + 1 audit = 9). Larger
+     * orders keep the transaction + reserve-rule guards, exactly as
+     * before this feature — no regression. The design's "capped at
+     * 10 lines" premise miscounts the price gets; flagged for a
+     * spec correction before deploy. */
+    function orderLineAvailabilityOk(i) {
+      let items = request.resource.data.items;
+      let inv = items.size() <= i ? null : get(/databases/$(database)/documents/inventory/$(items[i].productId));
+      return items.size() <= i || (inv != null && items[i].qty <= (inv.data.get('stock', 0) - inv.data.get('reserved', 0)));
+    }
+
+    function orderAvailabilityOk() {
+      let d = request.resource.data;
+      return d.items.size() > 3
+        || (orderLineAvailabilityOk(0) && orderLineAvailabilityOk(1) && orderLineAvailabilityOk(2));
+    }
+
+    /* True when line i carries a real (non-null) base price — a sale
+     * line whose base must be covered by the audit entry's 'items'. */
+    function orderLineHasBasePrice(i) {
+      let items = request.resource.data.items;
+      return items.size() > i && 'basePrice' in items[i] && items[i].basePrice != null;
+    }
+
+    function orderHasBasePrice() {
+      return orderLineHasBasePrice(0) || orderLineHasBasePrice(1)
+        || orderLineHasBasePrice(2) || orderLineHasBasePrice(3)
+        || orderLineHasBasePrice(4) || orderLineHasBasePrice(5)
+        || orderLineHasBasePrice(6) || orderLineHasBasePrice(7)
+        || orderLineHasBasePrice(8) || orderLineHasBasePrice(9);
+    }
+
+    /* The full order shape (contract §3 + pricing Phase A dual-shape):
+     * exact keys, field types and ranges, totals consistent,
+     * lifecycle fields null, timestamps == request.time, ids == the
+     * doc id, createdBy matching the source. Dual-shape: an order may
+     * omit ALL THREE new money keys (saleSavings, deliveryFee,
+     * amountDue) — an old-shape order, valid at 25/26 keys. An order
+     * carrying ANY ONE of the three must carry ALL THREE (new shape,
+     * 28/29/30 keys: 25 core + 3 money keys + optional operationId +
+     * optional attemptId) with all new invariants enforced. attemptId
+     * on its own (without the three money keys) is denied. Per-line
+     * basePrice may be absent (old-shape line) or present.
+     * Dual-shape contact (incomplete orders, 2026-11-27): either
+     * money shape may also carry customerPhone2 (optional backup
+     * phone), governorate (stable ID) and detailedAddress — 0 to 3
+     * extra keys (old shape 25–29 keys, new-money shape 28–33).
+     * customerAddress always carries the combined string. */
     function orderShapeOk(doc) {
       let d = request.resource.data;
-      return d.keys().hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId', 'operationId'])
-        && (d.keys().size() == 25 || d.keys().size() == 26)
+      let hasMoney = 'saleSavings' in d || 'deliveryFee' in d || 'amountDue' in d;
+      let hasAllMoney = 'saleSavings' in d && 'deliveryFee' in d && 'amountDue' in d;
+      return d.keys().hasOnly(['id', 'clientOrderId', 'customerName', 'customerPhone', 'customerPhone2', 'customerAddress', 'governorate', 'detailedAddress', 'items', 'subtotal', 'discountCode', 'discountPercent', 'discountAmount', 'total', 'status', 'paymentStatus', 'source', 'createdBy', 'shippingCompanyId', 'trackingNumber', 'notes', 'createdAt', 'updatedAt', 'acceptedAt', 'deliveredAt', 'cancelledAt', 'cancelReason', 'auditId', 'operationId', 'saleSavings', 'deliveryFee', 'amountDue', 'attemptId'])
+        && ((!hasMoney && d.keys().size() >= 25 && d.keys().size() <= 29 && !('attemptId' in d))
+          || (hasAllMoney && d.keys().size() >= 28 && d.keys().size() <= 33))
         && (d.operationId == null || d.operationId is string)
+        && (!('customerPhone2' in d) || d.customerPhone2 == null || (d.customerPhone2 is string && d.customerPhone2.matches('^01[0125][0-9]{8}$')))
+        && (!('governorate' in d) || d.governorate == null || (d.governorate is string && d.governorate.size() >= 1 && d.governorate.size() <= 50))
+        && (!('detailedAddress' in d) || d.detailedAddress == null || (d.detailedAddress is string && d.detailedAddress.size() <= 500))
         /* 'operationId' is optional (coordinator fix 2026-11-26):
          * the PC manual order stamps it on the order doc; the
          * storefront + Flutter orders have exactly the 25 core
@@ -339,6 +477,10 @@ service cloud.firestore {
         && (d.discountPercent == null || (d.discountPercent is int && d.discountPercent >= 1 && d.discountPercent <= 100))
         && orderDiscountAmountOk()
         && orderSubtotalOk()
+        && (!('saleSavings' in d) || (d.saleSavings is int && d.saleSavings >= 0 && orderSaleSavingsOk()))
+        && (!('deliveryFee' in d) || (d.deliveryFee is int && d.deliveryFee >= 0))
+        && (!('amountDue' in d) || (d.amountDue is int && d.amountDue >= 0 && d.amountDue == d.total + d.deliveryFee))
+        && (!('attemptId' in d) || (d.attemptId is string && d.attemptId.size() > 0))
         && d.status == 'new' && d.paymentStatus == 'cod_pending'
         && d.source in ['storefront', 'admin_manual']
         && ((d.source == 'storefront' && d.createdBy == null)
@@ -370,18 +512,45 @@ service cloud.firestore {
     /* The audit entry for this order, as projected after this
      * request (1 getAfter): actor + operation match the source,
      * collection + docId + timestamp match, and its docIds cover
-     * status + total. */
+     * status + total — plus, on a new-shape order, the money fields
+     * (saleSavings, deliveryFee, amountDue) and 'items' when any
+     * line carries a base price, so a price or fee change is
+     * recorded with the admin, the operation, and the new value. */
     function orderAuditOk(doc) {
       let d = request.resource.data;
       let hasId = d.auditId is string && d.auditId.size() > 0;
       let entry = hasId ? getAfter(/databases/$(database)/documents/audit/$(d.auditId)) : null;
+      let moneyCovered = entry != null
+        && (!('saleSavings' in d)
+          || covers(['saleSavings', 'deliveryFee', 'amountDue'].toSet(), entry.data.docIds['orders/' + doc]));
+      let itemsCovered = entry != null
+        && (!orderHasBasePrice()
+          || covers(['items'].toSet(), entry.data.docIds['orders/' + doc]));
       return entry != null
         && ((d.source == 'storefront' && entry.data.actor == 'anonymous' && entry.data.operation == 'create')
           || (d.source == 'admin_manual' && request.auth != null && entry.data.actor == request.auth.uid && entry.data.operation == 'manual_order_create'))
         && entry.data.collection == 'orders'
         && entry.data.docId == doc
         && entry.data.timestamp == request.time
-        && covers(['status', 'total'].toSet(), entry.data.docIds['orders/' + doc]);
+        && covers(['status', 'total'].toSet(), entry.data.docIds['orders/' + doc])
+        && moneyCovered
+        && itemsCovered;
+    }
+
+    /* Delivery-fee verification (pricing §4, decision D2 — the fee
+     * split): ANONYMOUS storefront creates only. The rule reads
+     * storeSettings/settings once (1 get, counted in the header
+     * table) and requires deliveryFee to equal the setting. Manual
+     * orders are client-asserted and pay no fee get; old-shape
+     * orders carry no deliveryFee and pay no fee get either. A
+     * missing settings doc or a missing deliveryFee field denies
+     * the storefront create (missing != 0, §5). */
+    function orderFeeOk() {
+      let d = request.resource.data;
+      let settings = (request.auth == null && d.source == 'storefront' && 'deliveryFee' in d)
+        ? get(/databases/$(database)/documents/storeSettings/settings) : null;
+      return request.auth != null || d.source != 'storefront' || !('deliveryFee' in d)
+        || (settings != null && settings.data.get('deliveryFee', null) == d.deliveryFee);
     }
 
     /* Manual orders: admin, or manager with orders_create_manual.
@@ -394,6 +563,59 @@ service cloud.firestore {
           || (admin.data.get('role', null) == 'manager'
             && perms != null
             && perms.get('orders_create_manual', false) == true));
+    }
+
+    /* Product base price (pricing Phase A, Model P): absent or null
+     * means no sale; when present it must be an int >= price. A
+     * basePrice below the charged price is a fake discount and is
+     * denied; a fractional basePrice is denied. Applies to the
+     * merged document on update, so raising price above a stored
+     * basePrice is denied too — clear the basePrice in the same
+     * write. */
+    function productBasePriceOk() {
+      let d = request.resource.data;
+      return !('basePrice' in d) || d.basePrice == null
+        || (d.basePrice is int && d.basePrice >= d.price);
+    }
+
+    /* Attempt-doc shape (pricing §11 / M21 + Phase C corrections
+     * 2026-11-27): the doc carries exactly the attempt fields with
+     * the right types. startedAt + ordered are always present (the
+     * storefront writes them at checkout open); errorCode is from
+     * the allowed set or absent — the set includes FEE_UNSET (the
+     * storefront throws it when the fee is missing; it was missing
+     * from the spec §11 set); seen values are int maps (seenPrices /
+     * seenBasePrices) or the seen scalar fee (seenDeliveryFee, int)
+     * / seen amount due (seenTotal, number — the amount due the
+     * customer saw); currentPrices / currentBasePrices are the
+     * current database prices the transaction returned (int maps)
+     * and currentFee is the current fee (int) — the "current
+     * database prices" failure field §11 named without a field name,
+     * now named by the live storefront (recordAttemptFailure);
+     * clientOrderId is a string or absent; contactName/Phone/Address
+     * are the contact fields the live storefront writes at the info
+     * step (Decision 19 still open — they stay allowed here, or the
+     * info-step update would be denied). The rules language cannot
+     * iterate map values, so the int-ness of individual seen-map
+     * entries is NOT checkable here — the map-type check is the
+     * enforceable part. */
+    function attemptShapeOk() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['startedAt', 'ordered', 'errorCode', 'seenPrices', 'seenBasePrices', 'seenTotal', 'seenDeliveryFee', 'currentPrices', 'currentBasePrices', 'currentFee', 'clientOrderId', 'contactName', 'contactPhone', 'contactAddress'])
+        && d.startedAt is timestamp
+        && d.ordered is bool
+        && (!('errorCode' in d) || d.errorCode == null || d.errorCode in ['PRICE_CHANGED', 'FEE_CHANGED', 'TOTAL_CHANGED', 'INSUFFICIENT_STOCK', 'DISCOUNT_INVALID', 'DISCOUNT_USED', 'FEE_UNSET', 'permission-denied'])
+        && (!('seenPrices' in d) || d.seenPrices == null || d.seenPrices is map)
+        && (!('seenBasePrices' in d) || d.seenBasePrices == null || d.seenBasePrices is map)
+        && (!('seenTotal' in d) || d.seenTotal == null || d.seenTotal is number)
+        && (!('seenDeliveryFee' in d) || d.seenDeliveryFee == null || d.seenDeliveryFee is int)
+        && (!('currentPrices' in d) || d.currentPrices == null || d.currentPrices is map)
+        && (!('currentBasePrices' in d) || d.currentBasePrices == null || d.currentBasePrices is map)
+        && (!('currentFee' in d) || d.currentFee == null || d.currentFee is int)
+        && (!('clientOrderId' in d) || d.clientOrderId == null || (d.clientOrderId is string && d.clientOrderId.size() > 0))
+        && (!('contactName' in d) || d.contactName == null || d.contactName is string)
+        && (!('contactPhone' in d) || d.contactPhone == null || d.contactPhone is string)
+        && (!('contactAddress' in d) || d.contactAddress == null || d.contactAddress is string);
     }
 
     /* Pure stock reservation (contract §1): the order transaction
@@ -511,16 +733,360 @@ service cloud.firestore {
     /* One-way complaint card (contract §3/§6): the exact 5-field
      * shape. Any requester — the anonymous storefront form and an
      * admin filing on a customer's behalf write the same fields,
-     * with no audit entry. */
+     * with no audit entry. Incomplete orders (2026-11-27) add an
+     * optional sixth field, `source`: 'direct' (the contact form /
+     * admin filing — the old 5-field shape, source absent, means
+     * direct) | 'exit-feedback' (desktop exit popup) |
+     * 'footer-feedback' (footer link). Name and phone stay required
+     * for direct, but may be empty for exit/footer feedback — the
+     * visitor may answer anonymously. The message stays required
+     * (10–2000 chars) in every shape. */
     function feedbackOneWayOk() {
       let d = request.resource.data;
-      return d.keys().hasOnly(['name', 'email', 'phone', 'message', 'createdAt'])
-        && d.keys().size() == 5
-        && d.name is string && d.name.size() > 0 && d.name.size() <= 100
+      let src = d.get('source', 'direct');
+      return d.keys().hasOnly(['name', 'email', 'phone', 'message', 'createdAt', 'source'])
+        && (d.keys().size() == 5 || d.keys().size() == 6)
+        && src in ['direct', 'exit-feedback', 'footer-feedback']
+        && d.name is string && d.name.size() <= 100
+        && (src != 'direct' || d.name.size() > 0)
         && d.email is string && d.email.size() <= 100 && (d.email == '' || d.email.matches('.*@.*'))
-        && d.phone is string && d.phone.matches('[0-9]{10,15}')
+        && d.phone is string
+        && (src != 'direct' || d.phone.matches('[0-9]{10,15}'))
+        && (src == 'direct' || d.phone == '' || d.phone.matches('[0-9]{10,15}'))
         && d.message is string && d.message.size() >= 10 && d.message.size() <= 2000
         && d.createdAt == request.time;
+    }
+
+    /* ---- Incomplete orders: checkout drafts (2026-11-27) ----
+     * One document per browser session (doc id == sessionId). The
+     * storefront owns the document while the visitor types; admins
+     * own it after that (status, conversion, delete). Anonymous
+     * read and list are denied. Anonymous create needs a non-empty
+     * session token; anonymous update needs the incoming token to
+     * equal the stored token, the token itself unchanged, and the
+     * admin-owned fields (status, orderId, mootOrderId) unchanged.
+     * The schema is docs/incomplete-orders-schema.md. */
+    function draftCartLineOkAt(i) {
+      let cart = request.resource.data.get('cart', []);
+      return cart.size() <= i
+        || (cart[i] is map
+          && cart[i].keys().hasOnly(['productId', 'qty', 'priceAtDraft', 'availability', 'availableQty'])
+          && cart[i].productId is string && cart[i].productId.size() > 0
+          && cart[i].qty is int && cart[i].qty >= 1 && cart[i].qty <= 20
+          && cart[i].priceAtDraft is number && cart[i].priceAtDraft >= 0
+          && cart[i].availability in ['ok', 'out', 'short']
+          && cart[i].availableQty is int && cart[i].availableQty >= 0);
+    }
+
+    function draftCartOk() {
+      return draftCartLineOkAt(0) && draftCartLineOkAt(1) && draftCartLineOkAt(2)
+        && draftCartLineOkAt(3) && draftCartLineOkAt(4) && draftCartLineOkAt(5)
+        && draftCartLineOkAt(6) && draftCartLineOkAt(7) && draftCartLineOkAt(8)
+        && draftCartLineOkAt(9) && draftCartLineOkAt(10) && draftCartLineOkAt(11)
+        && draftCartLineOkAt(12) && draftCartLineOkAt(13) && draftCartLineOkAt(14)
+        && draftCartLineOkAt(15) && draftCartLineOkAt(16) && draftCartLineOkAt(17)
+        && draftCartLineOkAt(18) && draftCartLineOkAt(19);
+    }
+
+    function draftShapeOk(doc) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['sessionId', 'sessionToken', 'name', 'phone', 'phone2', 'governorate', 'detailedAddress', 'address', 'cart', 'status', 'completeness', 'orderId', 'mootOrderId', 'lastSyncAt', 'createdAt', 'schemaVersion', 'operationId', 'updatedAt'])
+        && d.sessionId == doc
+        && d.sessionToken is string && d.sessionToken.size() > 0 && d.sessionToken.size() <= 128
+        && d.name is string && d.name.size() <= 100
+        && d.phone is string && (d.phone == '' || d.phone.matches('^01[0125][0-9]{8}$'))
+        && (d.get('phone2', null) == null || (d.get('phone2', null) is string && (d.get('phone2', null) == '' || d.get('phone2', null).matches('^01[0125][0-9]{8}$'))))
+        && (d.get('governorate', null) == null || (d.get('governorate', null) is string && d.get('governorate', null).size() <= 50))
+        && (d.get('detailedAddress', null) == null || (d.get('detailedAddress', null) is string && d.get('detailedAddress', null).size() <= 500))
+        && d.address is string && d.address.size() <= 500
+        && d.cart is list && d.cart.size() <= 20
+        && draftCartOk()
+        && d.status in ['new', 'contacted', 'no-answer', 'converted', 'dead']
+        && d.completeness is int && d.completeness >= 0 && d.completeness <= 100
+        && (d.get('orderId', null) == null || d.get('orderId', null) is string)
+        && (d.get('mootOrderId', null) == null || d.get('mootOrderId', null) is string)
+        && d.lastSyncAt is timestamp && d.createdAt is timestamp
+        && d.schemaVersion == 1;
+    }
+
+    function draftAnonUpdateOk(doc) {
+      let d = request.resource.data;
+      return request.auth == null
+        && resource.data.sessionToken == d.sessionToken
+        && d.sessionId == resource.data.sessionId
+        && d.status == resource.data.status
+        && d.get('orderId', null) == resource.data.get('orderId', null)
+        && d.get('mootOrderId', null) == resource.data.get('mootOrderId', null)
+        && draftShapeOk(doc);
+    }
+
+    /* ---- Incomplete orders: journey summaries (2026-11-27) ----
+     * One capped summary per browser session (doc id == sessionId).
+     * Anonymous create/update only on the own session document
+     * (sessionId == doc id, never changed); anonymous read and list
+     * are denied. Dwell is stored in bands only, never per-second.
+     * The schema is docs/incomplete-orders-schema.md. */
+    function journeyEntryOkAt(i) {
+      let products = request.resource.data.get('products', []);
+      return products.size() <= i
+        || (products[i] is map
+          && products[i].keys().hasOnly(['productId', 'dwellBand', 'actions'])
+          && products[i].productId is string && products[i].productId.size() > 0
+          && products[i].dwellBand in ['<10s', '10-60s', '>60s']
+          && products[i].actions is list && products[i].actions.size() <= 10);
+    }
+
+    function journeyEntriesOk() {
+      return journeyEntryOkAt(0) && journeyEntryOkAt(1) && journeyEntryOkAt(2)
+        && journeyEntryOkAt(3) && journeyEntryOkAt(4) && journeyEntryOkAt(5)
+        && journeyEntryOkAt(6) && journeyEntryOkAt(7) && journeyEntryOkAt(8)
+        && journeyEntryOkAt(9) && journeyEntryOkAt(10) && journeyEntryOkAt(11)
+        && journeyEntryOkAt(12) && journeyEntryOkAt(13) && journeyEntryOkAt(14)
+        && journeyEntryOkAt(15) && journeyEntryOkAt(16) && journeyEntryOkAt(17)
+        && journeyEntryOkAt(18) && journeyEntryOkAt(19);
+    }
+
+    function journeyShapeOk(doc) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['sessionId', 'draftId', 'orderId', 'startedAt', 'totalSecondsBand', 'products', 'overflowCount', 'updatedAt', 'schemaVersion'])
+        && d.sessionId == doc
+        && (d.get('draftId', null) == null || d.get('draftId', null) is string)
+        && (d.get('orderId', null) == null || d.get('orderId', null) is string)
+        && d.startedAt is timestamp && d.updatedAt is timestamp
+        && (d.get('totalSecondsBand', null) == null || d.get('totalSecondsBand', null) in ['<10s', '10-60s', '>60s'])
+        && d.products is list && d.products.size() <= 20
+        && journeyEntriesOk()
+        && d.overflowCount is int && d.overflowCount >= 0
+        && d.schemaVersion == 1;
+    }
+
+    /* ---- Incomplete orders: governorate list + deletion config ----
+     * The generic storeSettings match below allows public read and
+     * audited admin writes; these shape checks ride on top of it
+     * for the two new documents (admin-only writes — the shape is
+     * enforced on top of the audit requirement, not instead of it).
+     * Per-entry shape (stable id + boolean active) is enforced by
+     * the admin clients and the seed script; the rules enforce the
+     * list size (at most 27) and the deletion day range. */
+    function governoratesShapeOk() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['entries', 'updatedAt', 'operationId'])
+        && d.entries is list && d.entries.size() <= 27;
+    }
+
+    function deletionShapeOk() {
+      let d = request.resource.data;
+      return !('autoDeleteDays' in d)
+        || (d.autoDeleteDays is int && d.autoDeleteDays >= 0 && d.autoDeleteDays <= 365);
+    }
+
+    /* ---- Templates: bundle registry + activation pointer (2026-11-27,
+     * spec entries 10/18-22) ----
+     * Registry shape (templates/{id}): the manifest copy {id, nameAr,
+     * nameEn, version, shellMinVersion, bundleHash}, status in the
+     * canonical SIX-state enum (draft | preview | approved | active |
+     * retired — no 'validating', no 'awaiting-approval', no
+     * 'archived'), the approval record, and the Hosting body path.
+     * Activation history lives ONLY in the subcollection
+     * templates/{id}/activations/{operationId} — NEVER a growing list
+     * inside the registry doc (no 'history' key is allowed here).
+     * The classic bundle is pinned: it can never be retired or
+     * deleted while it is the rollback target — its status must stay
+     * 'active' and its delete is denied outright. */
+    function templateApprovalOk() {
+      let d = request.resource.data;
+      let a = d.get('approval', null);
+      // The timestamp key is 'timestamp' per the spec/task; the admin
+      // app's approveTemplate writes 'at' (entry 12). Both are
+      // accepted until the coordinator normalises the name — exactly
+      // one of them must be present, timestamp-typed. Flagged in the
+      // entry-10 report; do NOT add a third spelling.
+      let ts = a == null ? null : (a.get('timestamp', null) != null ? a.get('timestamp', null) : a.get('at', null));
+      return a == null
+        || (a is map
+          && a.keys().hasOnly(['approver', 'timestamp', 'at', 'shellVersion', 'bundleHash'])
+          && a.keys().size() == 4
+          && ((('timestamp' in a) && !('at' in a)) || (('at' in a) && !('timestamp' in a)))
+          && a.approver is string && a.approver.size() > 0
+          && ts is timestamp
+          && a.shellVersion is string && a.shellVersion.size() > 0
+          && a.bundleHash is string && a.bundleHash.matches('^[0-9a-f]{64}$')
+          && a.bundleHash == d.get('bundleHash', null));
+    }
+
+    function templateShapeOk(doc) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['id', 'nameAr', 'nameEn', 'version', 'shellMinVersion', 'bundleHash', 'status', 'approval', 'previewImageUrl', 'bodyPath', 'createdAt', 'updatedAt', 'operationId'])
+        && d.get('id', null) == doc
+        && d.get('id', null) in ['bazaar', 'gallery', 'scroll', 'speclab', 'boutique', 'classic']
+        && d.get('nameAr', null) is string && d.get('nameAr', null).size() > 0
+        && d.get('nameEn', null) is string && d.get('nameEn', null).size() > 0
+        && d.get('version', null) is string && d.get('version', null).size() > 0
+        && d.get('shellMinVersion', null) is string && d.get('shellMinVersion', null).size() > 0
+        && d.get('bundleHash', null) is string && d.get('bundleHash', null).matches('^[0-9a-f]{64}$')
+        && d.get('status', null) in ['draft', 'preview', 'approved', 'active', 'retired']
+        && templateApprovalOk()
+        && (d.get('previewImageUrl', null) == null || d.get('previewImageUrl', null) is string)
+        && (d.get('bodyPath', null) == null || d.get('bodyPath', null) is string);
+    }
+
+    /* The status machine: draft -> preview -> approved -> active, with
+     * retire from any non-retired state and preview as the way back
+     * from approved. Same-status writes are metadata edits. Skipping
+     * a step (draft -> approved/active, preview -> active) and
+     * un-activating to draft/preview are denied; retired is terminal.
+     * active -> approved IS allowed: it is how the template that
+     * stops being live returns to standby with its approval kept
+     * (the activation flow writes it in the same batch as the
+     * pointer flip — entry 12). Classic alone may go draft -> active
+     * (its seed path — the live site is its own approval). */
+    function templateStatusTransitionOk(doc) {
+      let from = resource.data.get('status', null);
+      let to = request.resource.data.get('status', null);
+      return from == to
+        || (from == 'draft' && to in ['preview', 'retired'])
+        || (from == 'preview' && to in ['approved', 'draft', 'retired'])
+        || (from == 'approved' && to in ['active', 'preview', 'retired'])
+        || (from == 'active' && to in ['approved', 'retired'])
+        || (doc == 'classic' && from == 'draft' && to == 'active');
+    }
+
+    /* Approval freezes the bundle: changing the hash, the version, or
+     * the minimum shell version voids the approval — the write must
+     * drop back to draft with the approval record removed, and the
+     * bundle must be approved again. (The hash half is also enforced
+     * by templateApprovalOk: a kept approval whose bundleHash no
+     * longer matches the doc is denied.) */
+    function templateFrozenOk() {
+      let d = request.resource.data;
+      let frozenChanged = d.get('bundleHash', null) != resource.data.get('bundleHash', null)
+        || d.get('version', null) != resource.data.get('version', null)
+        || d.get('shellMinVersion', null) != resource.data.get('shellMinVersion', null);
+      return !frozenChanged
+        || (d.get('status', null) == 'draft' && d.get('approval', null) == null);
+    }
+
+    /* The activation pointer (storeSettings/activeTemplate): templateId
+     * + bundleVersion + bundleHash + previousTemplateId (display only
+     * — NEVER the rollback source) + the append-only history stack.
+     * The admin app also stamps activatedBy/activatedAt on the pointer
+     * (entry 12) — allowed, never required. The last history entry
+     * must be the activation this write records (template + version
+     * + hash + time + admin). */
+    function pointerShapeOk() {
+      let d = request.resource.data;
+      let history = d.get('history', null);
+      let last = history is list && history.size() >= 1 ? history[history.size() - 1] : null;
+      return d.keys().hasOnly(['templateId', 'bundleVersion', 'bundleHash', 'previousTemplateId', 'history', 'activatedBy', 'activatedAt', 'operationId', 'updatedAt'])
+        && d.get('templateId', null) is string && d.get('templateId', null) in ['bazaar', 'gallery', 'scroll', 'speclab', 'boutique', 'classic']
+        && d.get('bundleVersion', null) is string && d.get('bundleVersion', null).size() > 0
+        && d.get('bundleHash', null) is string && d.get('bundleHash', null).matches('^[0-9a-f]{64}$')
+        && d.get('previousTemplateId', null) is string
+        && (d.get('activatedBy', null) == null || d.get('activatedBy', null) is string)
+        && (d.get('activatedAt', null) == null || d.get('activatedAt', null) is timestamp)
+        && history is list && history.size() >= 1
+        && last is map
+        && last.get('templateId', null) == d.get('templateId', null)
+        && last.get('bundleVersion', null) == d.get('bundleVersion', null)
+        && last.get('bundleHash', null) == d.get('bundleHash', null)
+        && last.get('at', null) is timestamp
+        && last.get('by', null) is string && last.get('by', null).size() > 0;
+    }
+
+    /* The referenced template must be 'active' at write time — a
+     * pointer to a draft / preview / approved / retired template is
+     * denied, so a rollback to an archived-or-retired template is
+     * denied too and the client restores classic instead (1 getAfter,
+     * the same cost as the old templateId check it replaces for this
+     * doc). A missing target doc denies (null .data errors). */
+    function pointerTargetActiveOk() {
+      return getAfter(/databases/$(database)/documents/templates/$(request.resource.data.templateId)).data.status == 'active';
+    }
+
+    /* Pointer create: full shape + the target is active. */
+    function pointerCreateOk() {
+      return pointerShapeOk() && pointerTargetActiveOk();
+    }
+
+    /* Pointer update: the history stack grows by exactly one entry
+     * (append-only — no rewrite, no truncation), previousTemplateId
+     * records the template that was live before this write (display
+     * only), and the target is active. */
+    function pointerUpdateOk() {
+      let d = request.resource.data;
+      let history = d.get('history', null);
+      let oldHistory = resource.data.get('history', null);
+      return pointerShapeOk()
+        && history is list && oldHistory is list
+        && history.size() == oldHistory.size() + 1
+        && d.get('previousTemplateId', null) == resource.data.get('templateId', null)
+        && pointerTargetActiveOk();
+    }
+
+    /* One activation-history entry (templates/{id}/activations/{op}):
+     * append-only, admin-written, shaped exactly. The admin app also
+     * stamps its own operation id into the doc ('operationId' == the
+     * document id, entry 12) — allowed, never required. */
+    function activationShapeOk(doc, operationId) {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['templateId', 'bundleVersion', 'bundleHash', 'shellVersion', 'approver', 'at', 'action', 'operationId'])
+        && (d.keys().size() == 7 || d.keys().size() == 8)
+        && d.get('templateId', null) == doc
+        && (d.get('operationId', null) == null || d.get('operationId', null) == operationId)
+        && d.get('bundleVersion', null) is string && d.get('bundleVersion', null).size() > 0
+        && d.get('bundleHash', null) is string && d.get('bundleHash', null).matches('^[0-9a-f]{64}$')
+        && d.get('shellVersion', null) is string && d.get('shellVersion', null).size() > 0
+        && d.get('approver', null) is string && d.get('approver', null).size() > 0
+        && d.get('at', null) == request.time
+        && d.get('action', null) in ['activate', 'rollback', 'retire'];
+    }
+
+    /* A preview slug (previews/{slug}): what ?preview=<slug> resolves
+     * through. Shape is the admin app's slug record (entry 12):
+     * {templateId, version, issuedAt, issuedBy, status}. Anonymous
+     * get only, never list; admin-only writes. The slug issue/revoke
+     * calls are direct Firestore writes (no audit entry — the slug
+     * document itself is the record), so create/update carry no audit
+     * requirement; the admin list is allowed because rotation queries
+     * the open slugs for a template. */
+    function previewShapeOk() {
+      let d = request.resource.data;
+      return d.keys().hasOnly(['templateId', 'version', 'issuedAt', 'issuedBy', 'status'])
+        && d.keys().size() == 5
+        && d.get('templateId', null) is string && d.get('templateId', null) in ['bazaar', 'gallery', 'scroll', 'speclab', 'boutique', 'classic']
+        && d.get('version', null) is string && d.get('version', null).size() > 0
+        && d.get('issuedAt', null) is timestamp
+        && d.get('issuedBy', null) is string && d.get('issuedBy', null).size() > 0
+        && d.get('status', null) in ['open', 'revoked'];
+    }
+
+    /* Homepage promo banners (D2): a banner's endDate, when present,
+     * must be a valid date-time — an ISO 8601 string (the shape the
+     * admin editor writes; '' means "no end date") or a Firestore
+     * timestamp. The rules cannot loop, so the first 20 banners are
+     * unrolled; banners past the 20th are unchecked (documented gap
+     * — the editor holds far fewer). */
+    function bannerEndDateOkAt(i) {
+      let banners = request.resource.data.get('promoBanners', null);
+      let slot = banners is list && banners.size() > i && banners[i] is map ? banners[i] : null;
+      let end = slot == null ? null : slot.get('endDate', null);
+      return slot == null
+        || end == null || end == ''
+        || end is timestamp
+        || (end is string && end.matches('^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?(\\.\\d+)?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$'));
+    }
+
+    function homepagePromoBannersOk() {
+      let d = request.resource.data;
+      let banners = d.get('promoBanners', null);
+      return banners == null || (banners is list
+        && bannerEndDateOkAt(0) && bannerEndDateOkAt(1) && bannerEndDateOkAt(2)
+        && bannerEndDateOkAt(3) && bannerEndDateOkAt(4) && bannerEndDateOkAt(5)
+        && bannerEndDateOkAt(6) && bannerEndDateOkAt(7) && bannerEndDateOkAt(8)
+        && bannerEndDateOkAt(9) && bannerEndDateOkAt(10) && bannerEndDateOkAt(11)
+        && bannerEndDateOkAt(12) && bannerEndDateOkAt(13) && bannerEndDateOkAt(14)
+        && bannerEndDateOkAt(15) && bannerEndDateOkAt(16) && bannerEndDateOkAt(17)
+        && bannerEndDateOkAt(18) && bannerEndDateOkAt(19));
     }
 
     /* Anonymous audit entry for a storefront order (contract §3):
@@ -544,17 +1110,61 @@ service cloud.firestore {
     }
 
     // ---- Public storefront content ----
+    // storeSettings/activeTemplate is the activation pointer (see the
+    // pointer helpers above): full shape + append-only history +
+    // target 'active'. storeSettings/homepage carries the D2 endDate
+    // validation on its promo banners. Every other settings doc keeps
+    // the old behaviour (public read, audited admin write). ----
     match /storeSettings/{doc} {
       allow read: if true;
       allow create: if isAdmin()
         && hasAudit(request.resource.data.operationId, 'storeSettings', doc, changedCreate())
-        && (!('templateId' in request.resource.data)
-          || getAfter(/databases/$(database)/documents/templates/$(request.resource.data.templateId)).data.status == 'active');
+        && (doc != 'governorates' || governoratesShapeOk())
+        && (doc != 'deletion' || deletionShapeOk())
+        && (doc != 'homepage' || homepagePromoBannersOk())
+        && (doc != 'activeTemplate' || pointerCreateOk())
+        && (doc == 'activeTemplate'
+          || (!('templateId' in request.resource.data)
+            || getAfter(/databases/$(database)/documents/templates/$(request.resource.data.templateId)).data.status == 'active'));
       allow update: if isAdmin()
         && hasAudit(request.resource.data.operationId, 'storeSettings', doc, changedUpdate())
-        && (!('templateId' in request.resource.data)
-          || getAfter(/databases/$(database)/documents/templates/$(request.resource.data.templateId)).data.status == 'active');
+        && (doc != 'governorates' || governoratesShapeOk())
+        && (doc != 'deletion' || deletionShapeOk())
+        && (doc != 'homepage' || homepagePromoBannersOk())
+        && (doc != 'activeTemplate' || pointerUpdateOk())
+        && (doc == 'activeTemplate'
+          || (!('templateId' in request.resource.data)
+            || getAfter(/databases/$(database)/documents/templates/$(request.resource.data.templateId)).data.status == 'active'));
       allow delete: if isAdmin() && hasDeleteAudit('storeSettings', doc);
+    }
+
+    // ---- Checkout drafts (incomplete orders, 2026-11-27): deny
+    // anonymous read and list; anonymous create/update only on the
+    // document the session owns (token check); admin read/list/
+    // update, admin-only delete with a delete-audit. ----
+    match /checkoutDrafts/{doc} {
+      allow get, list: if isAdminOrManager();
+      allow create: if request.auth == null
+        && draftShapeOk(doc)
+        && request.resource.data.status == 'new'
+        && request.resource.data.get('orderId', null) == null
+        && request.resource.data.get('mootOrderId', null) == null;
+      allow update: if isAdminOrManager()
+        || (request.auth == null && draftAnonUpdateOk(doc));
+      allow delete: if isAdmin() && hasDeleteAudit('checkoutDrafts', doc);
+    }
+
+    // ---- Journey summaries (incomplete orders, 2026-11-27): deny
+    // anonymous read and list; anonymous create/update only on the
+    // own session document; admin read/list/update, admin delete. ----
+    match /journeySummaries/{doc} {
+      allow get, list: if isAdminOrManager();
+      allow create: if request.auth == null && journeyShapeOk(doc);
+      allow update: if isAdminOrManager()
+        || (request.auth == null
+          && resource.data.sessionId == request.resource.data.sessionId
+          && journeyShapeOk(doc));
+      allow delete: if isAdmin();
     }
 
     match /categories/{doc} {
@@ -575,6 +1185,7 @@ service cloud.firestore {
       allow create: if isAdminOrManager()
         && request.resource.data.price is int
         && request.resource.data.price > 0
+        && productBasePriceOk()
         && hasAudit(request.resource.data.operationId, 'products', doc, changedCreate());
       // The products-rule inStock cross-check (productsInStockOk) is
       // DROPPED (contract §3 decision). The second branch is the
@@ -586,6 +1197,7 @@ service cloud.firestore {
         || (isAdminOrManager()
           && (!('price' in request.resource.data)
             || (request.resource.data.price is int && request.resource.data.price > 0))
+          && productBasePriceOk()
           && hasAudit(request.resource.data.operationId, 'products', doc, changedUpdate()));
       allow delete: if isAdminOrManager() && hasDeleteAudit('products', doc);
     }
@@ -599,6 +1211,8 @@ service cloud.firestore {
         && orderPricesOk()
         && orderDiscountOk()
         && orderAuditOk(doc)
+        && orderFeeOk()
+        && orderAvailabilityOk()
         && (request.resource.data.source == 'storefront' || manualOrderAllowed());
       allow get: if isAdminOrManager()
         || (request.auth == null && resource == null);
@@ -674,17 +1288,67 @@ service cloud.firestore {
       allow delete: if isAdmin() && hasDeleteAudit('discounts', code);
     }
 
-    // ---- Template registry (Phase 3): public reads only the ACTIVE
-    // template's schema, via the pointer — never a list. ----
+    // ---- Template registry (Phase 3 v1 + bundle model, 2026-11-27):
+    // anonymous get of an ACTIVE registry doc is allowed (the live
+    // shell + preview resolution read it); a draft is admin/manager
+    // only, never a list. (Widened from the old pointer-scoped read —
+    // the old rule allowed anonymous get only of the pointed-to doc;
+    // entry 20 requires any active doc to be readable anonymously.)
+    // Create/update are admin-only, audited, shape- + status-machine-
+    // checked (see the helpers above). A new doc is born 'draft', or
+    // 'active' with an approval record — except classic, whose seed
+    // is the frozen live site itself. Classic is pinned: its status
+    // must stay 'active' and it can never be deleted. Activation
+    // history is the subcollection below — append-only, one doc per
+    // activation/rollback/retire. Orders carry no templateId (the
+    // order shape's hasOnly list is unchanged) and feedback keeps its
+    // 5-or-6-field shape (D8) — neither is touched here. ----
     match /templates/{doc} {
       allow get: if isAdminOrManager()
-        || get(/databases/$(database)/documents/storeSettings/activeTemplate).data.templateId == doc;
+        || (resource != null && resource.data.get('status', null) == 'active');
       allow list: if isAdminOrManager();
       allow create: if isAdmin()
+        && templateShapeOk(doc)
+        && request.resource.data.get('status', null) in ['draft', 'active']
+        && (request.resource.data.get('status', null) == 'draft'
+          || doc == 'classic'
+          || request.resource.data.get('approval', null) != null)
         && hasAudit(request.resource.data.operationId, 'templates', doc, changedCreate());
       allow update: if isAdmin()
+        && templateShapeOk(doc)
+        && templateStatusTransitionOk(doc)
+        && templateFrozenOk()
+        && !(doc == 'classic' && request.resource.data.get('status', null) != 'active')
+        && (request.resource.data.get('status', null) in ['draft', 'preview', 'retired']
+          || request.resource.data.get('approval', null) != null)
         && hasAudit(request.resource.data.operationId, 'templates', doc, changedUpdate());
-      allow delete: if isAdmin() && hasDeleteAudit('templates', doc);
+      allow delete: if isAdmin() && doc != 'classic' && hasDeleteAudit('templates', doc);
+    }
+
+    // ---- Activation history (spec §2, B5 fix): one doc per
+    // activation/rollback/retire, in the templates/{id}/activations
+    // subcollection. Append-only — no update, no delete. Admin-only
+    // reads (the pointer history stack is the public-facing record;
+    // the per-template log is admin detail). ----
+    match /templates/{doc}/activations/{operationId} {
+      allow get, list: if isAdminOrManager();
+      allow create: if isAdmin() && activationShapeOk(doc, operationId);
+      allow update, delete: if false;
+    }
+
+    // ---- Preview slugs (Phase 4 B6): ?preview=<slug> resolves
+    // through these docs. Anonymous get ONLY, never anonymous list;
+    // admin-only create/update (direct writes, no audit entry — the
+    // slug document itself is the record); admin list is allowed
+    // because rotation queries the open slugs for a template. Admin
+    // delete with a delete-audit (revocation is a status write, not
+    // a delete). ----
+    match /previews/{slug} {
+      allow get: if true;
+      allow list: if isAdminOrManager();
+      allow create: if isAdmin() && previewShapeOk();
+      allow update: if isAdmin() && previewShapeOk();
+      allow delete: if isAdmin() && hasDeleteAudit('previews', slug);
     }
 
     match /shippingCompanies/{doc} {
@@ -763,11 +1427,15 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
-    // ---- Analytics: public create + update (anonymous funnel);
-    // reads and deletes are admin-only. (Decision 19 — the contact
-    // stored in attempts — is still open; no change here.) ----
+    // ---- Analytics: shape-checked create + update (pricing §11 /
+    // M21 — the attempt-doc shape check); reads and deletes are
+    // admin-only. (Decision 19 — the contact stored in attempts —
+    // is still open; no change here.) A fabricated doc that fails
+    // the shape check is denied. Even so, the rejection-rate signal
+    // is indicative-only: the rollout decision must be corroborated
+    // by the order-creation rate from rules-checked order docs. ----
     match /analytics/{section}/items/{doc} {
-      allow create, update: if true;
+      allow create, update: if attemptShapeOk();
       allow read, delete: if isAdminOrManager();
     }
 

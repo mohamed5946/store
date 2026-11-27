@@ -1,0 +1,541 @@
+/* White Gallery — معرض | calm, airy, flat. Browsing surfaces only. */
+
+.gl-strip,
+.gl-featured,
+.gl-cats,
+.gl-products,
+.gl-offers,
+.gl-delivery,
+.gl-contact,
+.gl-about {
+  background-color: #ffffff;
+  color: #1d1d1f;
+  font-family: Tajawal, Inter, sans-serif;
+  padding-inline-start: 20px;
+  padding-inline-end: 20px;
+  animation: gl-fade-up 800ms ease both;
+}
+
+.gl-hero {
+  background-color: #ffffff;
+  color: #1d1d1f;
+  font-family: Tajawal, Inter, sans-serif;
+  padding-inline-start: 20px;
+  padding-inline-end: 20px;
+}
+
+@keyframes gl-fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes gl-glide {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes gl-crossfade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* ---- minimal translucent header ---- */
+
+.gl-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 14px;
+  padding-bottom: 14px;
+  background-color: rgba(255, 255, 255, 0.88);
+}
+
+.gl-brand {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: #1d1d1f;
+}
+
+.gl-brand-name {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.gl-brand-tag {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: #6e6e73;
+}
+
+.gl-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gl-icon-btn {
+  font-family: Tajawal, Inter, sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  color: #1d1d1f;
+  background-color: #f5f5f7;
+  border: 0;
+  border-radius: 999px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  padding-inline-start: 14px;
+  padding-inline-end: 14px;
+  cursor: pointer;
+  transition: opacity 300ms ease, transform 300ms ease;
+}
+
+.gl-cart-btn {
+  font-family: Tajawal, Inter, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: #ffffff;
+  background-color: #0071e3;
+  border: 0;
+  border-radius: 999px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  padding-inline-start: 16px;
+  padding-inline-end: 16px;
+  cursor: pointer;
+  transition: opacity 300ms ease, transform 300ms ease;
+}
+
+/* ---- hero ---- */
+
+.gl-hero-body {
+  padding-top: 48px;
+  padding-bottom: 32px;
+  text-align: start;
+  animation: gl-fade-up 800ms ease both;
+}
+
+.gl-eyebrow {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  color: #6e6e73;
+  margin-top: 0;
+  margin-bottom: 16px;
+}
+
+.gl-headline {
+  font-size: 44px;
+  font-weight: 300;
+  line-height: 1.25;
+  color: #1d1d1f;
+  margin-top: 0;
+  margin-bottom: 20px;
+}
+
+.gl-headline-line {
+  display: block;
+}
+
+.gl-sub {
+  font-size: 17px;
+  font-weight: 300;
+  line-height: 1.7;
+  color: #6e6e73;
+  margin-top: 0;
+  margin-bottom: 28px;
+  max-width: 420px;
+}
+
+.gl-cta {
+  display: inline-block;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: #ffffff;
+  background-color: #0071e3;
+  border-radius: 999px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  padding-inline-start: 28px;
+  padding-inline-end: 28px;
+  transition: opacity 300ms ease, transform 300ms ease;
+}
+
+.gl-hero-stage {
+  min-height: 280px;
+  background-color: #f5f5f7;
+  border-radius: 24px;
+  overflow: hidden;
+  animation: gl-crossfade 1200ms ease both;
+}
+
+.gl-hero-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 16px;
+  padding-bottom: 8px;
+}
+
+.gl-hero-name {
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: #1d1d1f;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.gl-hero-price {
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: #6e6e73;
+  margin-top: 0;
+  margin-bottom: 0;
+  white-space: nowrap;
+}
+
+/* ---- quiet strip ---- */
+
+.gl-strip {
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.gl-strip-inner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-top: 14px;
+  padding-bottom: 14px;
+  background-color: #f5f5f7;
+  border-radius: 999px;
+}
+
+.gl-strip-item {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: #6e6e73;
+}
+
+.gl-strip-dot {
+  width: 4px;
+  height: 4px;
+  background-color: #6e6e73;
+  border-radius: 50%;
+  opacity: 0.5;
+}
+
+/* ---- section heads ---- */
+
+.gl-section-head {
+  padding-top: 56px;
+  padding-bottom: 24px;
+}
+
+.gl-label {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  color: #6e6e73;
+  margin-top: 0;
+  margin-bottom: 8px;
+}
+
+.gl-title {
+  font-size: 28px;
+  font-weight: 300;
+  line-height: 1.3;
+  color: #1d1d1f;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+/* ---- featured ---- */
+
+.gl-featured-stage {
+  min-height: 240px;
+  background-color: #f5f5f7;
+  border-radius: 24px;
+  overflow: hidden;
+  animation: gl-crossfade 1200ms ease both;
+}
+
+/* ---- photo-menu categories ---- */
+
+.gl-photo-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.gl-photo-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  width: 100%;
+  padding: 0;
+  background-color: #ffffff;
+  border: 0;
+  cursor: pointer;
+  text-align: start;
+  transition: opacity 300ms ease, transform 300ms ease;
+}
+
+.gl-photo-img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  background-color: #f5f5f7;
+  border-radius: 24px;
+}
+
+.gl-photo-name {
+  font-family: Tajawal, Inter, sans-serif;
+  font-size: 20px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: #1d1d1f;
+  padding-top: 12px;
+}
+
+/* ---- airy product grid ---- */
+
+.gl-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+}
+
+.gl-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  background-color: #ffffff;
+  animation: gl-glide 700ms ease both;
+}
+
+.gl-card-media {
+  display: block;
+  width: 100%;
+  padding: 0;
+  background-color: #f5f5f7;
+  border: 0;
+  border-radius: 24px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: opacity 300ms ease, transform 300ms ease;
+}
+
+.gl-card-img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  background-color: #f5f5f7;
+}
+
+.gl-card-name {
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: #1d1d1f;
+  margin-top: 12px;
+  margin-bottom: 4px;
+}
+
+.gl-card-price {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: #6e6e73;
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
+.gl-add {
+  font-family: Tajawal, Inter, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: #ffffff;
+  background-color: #0071e3;
+  border: 0;
+  border-radius: 999px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  padding-inline-start: 18px;
+  padding-inline-end: 18px;
+  cursor: pointer;
+  transition: opacity 300ms ease, transform 300ms ease;
+}
+
+/* ---- offers (quiet, promo slot only — no invented offers) ---- */
+
+.gl-offer-slot {
+  min-height: 120px;
+  background-color: #f5f5f7;
+  border-radius: 24px;
+  overflow: hidden;
+}
+
+/* ---- delivery (COD band) ---- */
+
+.gl-delivery {
+  padding-top: 24px;
+  padding-bottom: 24px;
+}
+
+.gl-delivery-inner {
+  background-color: #f5f5f7;
+  border-radius: 24px;
+  padding-top: 32px;
+  padding-bottom: 32px;
+  padding-inline-start: 24px;
+  padding-inline-end: 24px;
+}
+
+.gl-delivery-text {
+  font-size: 16px;
+  font-weight: 300;
+  line-height: 1.7;
+  color: #1d1d1f;
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+
+.gl-delivery-fee {
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.6;
+  color: #6e6e73;
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+
+/* ---- contact ---- */
+
+.gl-contact-text {
+  font-size: 16px;
+  font-weight: 300;
+  line-height: 1.7;
+  color: #6e6e73;
+  margin-top: 0;
+  margin-bottom: 20px;
+}
+
+.gl-wa {
+  display: inline-block;
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: #ffffff;
+  background-color: #0071e3;
+  border-radius: 999px;
+  text-decoration: none;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  padding-inline-start: 28px;
+  padding-inline-end: 28px;
+  transition: opacity 300ms ease, transform 300ms ease;
+}
+
+.gl-wa-label {
+  font-weight: 500;
+}
+
+.gl-wa-number {
+  font-weight: 400;
+}
+
+/* ---- about / brand + footer ---- */
+
+.gl-about {
+  padding-bottom: 40px;
+}
+
+.gl-brand-block {
+  padding-top: 56px;
+  padding-bottom: 32px;
+  text-align: center;
+}
+
+.gl-brand-logo {
+  display: block;
+  font-size: 15px;
+  font-weight: 400;
+  color: #6e6e73;
+}
+
+.gl-brand-big {
+  font-size: 32px;
+  font-weight: 300;
+  line-height: 1.3;
+  color: #1d1d1f;
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+
+.gl-brand-tagline {
+  font-size: 15px;
+  font-weight: 300;
+  line-height: 1.6;
+  color: #6e6e73;
+  margin-top: 0;
+  margin-bottom: 12px;
+}
+
+.gl-about-text {
+  font-size: 15px;
+  font-weight: 300;
+  line-height: 1.7;
+  color: #6e6e73;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.gl-footer {
+  background-color: #f5f5f7;
+  border-radius: 24px;
+  padding-top: 24px;
+  padding-bottom: 24px;
+  padding-inline-start: 24px;
+  padding-inline-end: 24px;
+  text-align: center;
+}
+
+.gl-footer-line {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.7;
+  color: #6e6e73;
+  margin-top: 0;
+  margin-bottom: 4px;
+}
+
+@media (min-width: 700px) {
+  .gl-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .gl-photo-menu {
+    flex-direction: row;
+  }
+
+  .gl-headline {
+    font-size: 56px;
+  }
+}

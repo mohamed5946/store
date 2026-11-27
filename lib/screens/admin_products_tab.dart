@@ -38,6 +38,18 @@ class _ProductsTabState extends State<_ProductsTab> {
                     itemBuilder: (context, i) {
                       final p = ProductData.fromDoc(docs[i]);
                       final featured = (docs[i].data()['featured'] ?? false) == true;
+                      // Pricing: a live discount shows the saving and
+                      // the staleness signal "خصم نشط منذ X يوم" (B5).
+                      final onSale = Backend.isOnSale(
+                          basePrice: p.basePrice, price: p.price);
+                      final pct = onSale
+                          ? Backend.salePercent(
+                              basePrice: p.basePrice!,
+                              price: p.price.round())
+                          : null;
+                      final ageDays = onSale
+                          ? Backend.discountAgeDays(p.discountSetAt)
+                          : null;
                       if (_deletingId == p.id) {
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 8),
@@ -70,7 +82,10 @@ class _ProductsTabState extends State<_ProductsTab> {
                             leading: _ProductThumb(product: p),
                             title: Text(p.name),
                             subtitle: Text(
-                                '${p.price.toStringAsFixed(0)} ج.م${featured ? ' — مميز' : ''}'),
+                                '${p.price.toStringAsFixed(0)} ج.م${featured ? ' — مميز' : ''}'
+                                '${onSale ? ' — وفّر ${(p.basePrice! - p.price).toStringAsFixed(0)} ج.م' : ''}'
+                                '${onSale && pct != null ? ' (خصم $pct٪)' : ''}'
+                                '${onSale ? (ageDays != null ? ' — خصم نشط منذ $ageDays يوم' : ' — خصم نشط') : ''}'),
                             trailing: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
@@ -131,6 +146,11 @@ class _ProductsTabState extends State<_ProductsTab> {
     final name = TextEditingController(text: existing?.name ?? '');
     final price = TextEditingController(
         text: existing == null ? '' : existing.price.toStringAsFixed(0));
+    // Pricing (Model P): "السعر (ج.م)" writes price (the effective /
+    // charged price); "السعر قبل الخصم" writes basePrice (optional,
+    // display-only anchor). Empty = no sale.
+    final basePrice = TextEditingController(
+        text: existing?.basePrice?.toString() ?? '');
     final desc = TextEditingController(text: existing?.description ?? '');
     final link = TextEditingController();
     var images = List<CloudinaryImage>.from(existing?.images ?? []);
@@ -139,6 +159,9 @@ class _ProductsTabState extends State<_ProductsTab> {
     var uploading = false;
     var uploadProgress = 0.0;
     var errorText = '';
+    // Decision D4: set only after the admin confirms a below-cost
+    // price a second time, on a separate tap.
+    var belowCostConfirmed = false;
     await showDialog<void>(
       context: context,
       builder: (c) => StatefulBuilder(
@@ -158,6 +181,14 @@ class _ProductsTabState extends State<_ProductsTab> {
                     keyboardType: TextInputType.number,
                     onChanged: (_) => setState(() {}),
                     decoration: const InputDecoration(labelText: 'السعر (ج.م)'),
+                  ),
+                  TextField(
+                    controller: basePrice,
+                    keyboardType: TextInputType.number,
+                    onChanged: (_) => setState(() {}),
+                    decoration: const InputDecoration(
+                        labelText: 'السعر قبل الخصم (اختياري)',
+                        hintText: 'فاضي = مفيش خصم'),
                   ),
                   TextField(
                       controller: desc,
@@ -320,6 +351,9 @@ class _ProductsTabState extends State<_ProductsTab> {
                         : (double.tryParse(price.text.trim())
                                 ?.toStringAsFixed(0) ??
                             price.text.trim()),
+                    basePriceText: basePrice.text.trim().isEmpty
+                        ? null
+                        : basePrice.text.trim(),
                     imageUrl: images.isEmpty ? null : images.first.url,
                   ),
                 ],
@@ -332,21 +366,98 @@ class _ProductsTabState extends State<_ProductsTab> {
                     ? null
                     : () async {
                         if (name.text.trim().isEmpty ||
-                            double.tryParse(price.text.trim()) == null ||
                             categoryId.isEmpty) {
                           setState(() => errorText = 'كمّل اسم المنتج والسعر والقسم');
                           return;
                         }
+                        // Pricing (§9): both prices are positive
+                        // integers; basePrice == null || >= price.
+                        final priceInt =
+                            int.tryParse(price.text.trim());
+                        if (priceInt == null) {
+                          setState(() => errorText =
+                              'السعر لازم يكون رقم صحيح أكبر من صفر');
+                          return;
+                        }
+                        int? baseValue;
+                        final baseRaw = basePrice.text.trim();
+                        if (baseRaw.isNotEmpty) {
+                          baseValue = int.tryParse(baseRaw);
+                          if (baseValue == null) {
+                            setState(() => errorText =
+                                'السعر قبل الخصم لازم يكون رقم صحيح');
+                            return;
+                          }
+                        }
+                        final priceError =
+                            Backend.validateProductPrices(
+                                price: priceInt, basePrice: baseValue);
+                        if (priceError != null) {
+                          setState(() => errorText = priceError);
+                          return;
+                        }
+                        // basePrice == price means NO sale (cleared,
+                        // never a 0% badge).
+                        if (baseValue != null && baseValue == priceInt) {
+                          baseValue = null;
+                        }
                         setState(() => busy = true);
                         try {
-                          await Backend.instance.saveProduct(ProductData(
-                            id: existing?.id ?? '',
-                            name: name.text.trim(),
-                            price: double.parse(price.text.trim()),
-                            description: desc.text.trim(),
-                            categoryId: categoryId,
-                            images: images,
-                          ));
+                          // Decision D4: a price below the recorded
+                          // cost needs a warning + an explicit second
+                          // confirmation (separate tap), recorded in
+                          // the audit entry. No recorded cost = no
+                          // warning (unknown cost is not below cost).
+                          if (existing != null && !belowCostConfirmed) {
+                            final cost = await Backend.instance
+                                .productCostPrice(existing.id);
+                            if (cost != null && priceInt < cost) {
+                              if (!c.mounted) {
+                                setState(() => busy = false);
+                                return;
+                              }
+                              final confirmed =
+                                  await showDialog<bool>(
+                                context: c,
+                                builder: (d) => AlertDialog(
+                                  title: const Text(
+                                      'الخصم ده أقل من سعر التكلفة'),
+                                  content: Text(
+                                      'سعر البيع ($priceInt ج.م) أقل من سعر التكلفة ($cost ج.م). لو ده خصم تصفية مقصود، أكّده بخطوة تانية.'),
+                                  actions: [
+                                    TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(d, false),
+                                        child: const Text('رجوع')),
+                                    FilledButton(
+                                        onPressed: () =>
+                                            Navigator.pop(d, true),
+                                        child: const Text(
+                                            'تأكيد السعر أقل من التكلفة')),
+                                  ],
+                                ),
+                              );
+                              if (confirmed != true) {
+                                setState(() => busy = false);
+                                return;
+                              }
+                              setState(
+                                  () => belowCostConfirmed = true);
+                            }
+                          }
+                          await Backend.instance.saveProduct(
+                            ProductData(
+                              id: existing?.id ?? '',
+                              name: name.text.trim(),
+                              price: priceInt.toDouble(),
+                              description: desc.text.trim(),
+                              categoryId: categoryId,
+                              images: images,
+                              basePrice: baseValue,
+                              discountSetAt: existing?.discountSetAt,
+                            ),
+                            belowCostConfirmed: belowCostConfirmed,
+                          );
                           if (c.mounted) Navigator.pop(c);
                         } catch (e) {
                           setState(() {

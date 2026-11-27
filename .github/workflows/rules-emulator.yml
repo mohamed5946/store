@@ -1,0 +1,50 @@
+name: Firestore Rules Emulator Tests
+
+# Runs test/rules.test.js against the Firestore emulator.
+# The rules diff in this batch has never executed anywhere — this job is the
+# gate before any rules deploy. It deploys NOTHING.
+# The emulator needs Java 21+ and a working loopback (it cannot run in the
+# local sandbox, where Java loopback TCP is blocked).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'firestore.rules'
+      - 'test/rules.test.js'
+      - 'test/templates/**'
+      - '.github/workflows/rules-emulator.yml'
+  pull_request:
+    paths:
+      - 'firestore.rules'
+      - 'test/rules.test.js'
+      - 'test/templates/**'
+      - '.github/workflows/rules-emulator.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rules-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install emulator dependencies
+        run: npm install --no-save @firebase/rules-unit-testing firebase-tools
+
+      - name: Run rules tests against the emulator
+        run: npx firebase emulators:exec --only firestore "node --test test/rules.test.js"
