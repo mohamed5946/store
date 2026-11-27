@@ -886,6 +886,89 @@ test('PROBE 1c: order + audit only (manager2 manual 1-line)', async () => {
   assert.equal((await getDoc(doc(adminDb(), 'orders', 'probe-1c'))).data().source, 'admin_manual');
 });
 
+/* === PROBE ONLY — step 2: add writes back one at a time (same
+ * admin manual 1-line shape). Fresh discount codes are created
+ * inside the tests (auditedSet, as test 19 does for OPID10) so no
+ * later test's code is consumed. */
+async function probeMakeCode(code) {
+  await auditedSet(adminDb(), ADMIN_UID, {
+    collection: 'discounts', docId: code,
+    data: { percent: 10, active: true, usedBy: null, expiresAt: null },
+    operation: 'create', sensitive: { percent: 10 },
+  });
+}
+
+test('PROBE 2a: order + inventory (admin manual 1-line, no movement/audit)', async () => {
+  const db = adminDb();
+  await assertFails(rawOrderBatch(db, {
+    ...PROBE_BASE, orderId: 'probe-2a',
+    reserved: await probeReserved(), manual: 'admin',
+    skipMovement: true, skipAudit: true,
+  }));
+});
+
+test('PROBE 2b: order + inventory + movement (admin manual 1-line, no audit)', async () => {
+  const db = adminDb();
+  await assertFails(rawOrderBatch(db, {
+    ...PROBE_BASE, orderId: 'probe-2b',
+    reserved: await probeReserved(), manual: 'admin',
+    skipAudit: true,
+  }));
+});
+
+test('PROBE 2c: order + inventory + movement + audit, full no-code (admin manual 1-line)', async () => {
+  const db = adminDb();
+  await assertSucceeds(rawOrderBatch(db, {
+    ...PROBE_BASE, orderId: 'probe-2c',
+    reserved: await probeReserved(), manual: 'admin',
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'inventory', 'prod-5'))).data().reserved, 3);
+});
+
+test('PROBE 2d: full + discount claim (admin manual 1-line + code)', async () => {
+  await probeMakeCode('PROBE10A');
+  const db = adminDb();
+  await assertSucceeds(rawOrderBatch(db, {
+    ...PROBE_BASE, orderId: 'probe-2d',
+    reserved: await probeReserved(), manual: 'admin',
+    discountCode: 'PROBE10A', discountPercent: 10,
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'PROBE10A'))).data().usedBy, 'probe-2d');
+});
+
+test('PROBE 2e: full no-code (manager2 manual 1-line)', async () => {
+  const db = manager2Db();
+  await assertSucceeds(rawOrderBatch(db, {
+    ...PROBE_BASE, orderId: 'probe-2e',
+    reserved: await probeReserved(), manual: 'manager2',
+  }));
+});
+
+test('PROBE 2f: full + discount claim (manager2 manual 1-line + code)', async () => {
+  await probeMakeCode('PROBE10C');
+  const db = manager2Db();
+  await assertSucceeds(rawOrderBatch(db, {
+    ...PROBE_BASE, orderId: 'probe-2f',
+    reserved: await probeReserved(), manual: 'manager2',
+    discountCode: 'PROBE10C', discountPercent: 10,
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'discounts', 'PROBE10C'))).data().usedBy, 'probe-2f');
+});
+
+test('PROBE 2g: full sale + code (admin manual 1-line, basePrice 400, new-money shape)', async () => {
+  await probeMakeCode('PROBE10B');
+  const db = adminDb();
+  // price 300, basePrice 400 -> saleSavings 100; 10% code -> total
+  // 270, deliveryFee 30 -> amountDue 300.
+  await assertSucceeds(rawOrderBatch(db, {
+    ...PROBE_BASE, orderId: 'probe-2g',
+    reserved: await probeReserved(), manual: 'admin',
+    basePrice: 400, discountCode: 'PROBE10B', discountPercent: 10,
+    overrides: { saleSavings: 100, deliveryFee: 30, amountDue: 300 },
+  }));
+  assert.equal((await getDoc(doc(adminDb(), 'orders', 'probe-2g'))).data().saleSavings, 100);
+});
+
 /* Coordinator fix 2026-11-26: the PC manual order stamps
  * operationId on the inventory write, the discount claim and the
  * order doc. Before the fix the reservation branch denied the
