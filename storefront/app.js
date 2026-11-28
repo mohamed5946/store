@@ -3018,8 +3018,7 @@ async function submitOrder(customer) {
     clientOrderId = null;
     /* The draft is now a real order: drop the local copy and close the
      * journey with this order id. */
-    try { localStorage.removeItem('sp-draft'); } catch (_) {}
-    serverDraftCreated = false;
+    clearLocalDraft();
     journey.orderId = order.id;
     flushJourney().catch(() => {});
     /* Remember the customer for the next checkout + the complaint form. */
