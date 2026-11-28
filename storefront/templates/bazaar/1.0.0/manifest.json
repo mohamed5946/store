@@ -2,7 +2,7 @@
   "behaviours": [
     "countdown-strip"
   ],
-  "bundleHash": "9e6e0694b5f8548f45379cd0accb3ae8c9d1fa65a045fd8e3bd9bc31ae5905b5",
+  "bundleHash": "d0854a7ac8524ba84a6cd89d6af763881653cf14e7ae1a5f7afa71ac707d1b27",
   "cartLayout": "drawer",
   "dark": "light-only",
   "dataNeeds": [

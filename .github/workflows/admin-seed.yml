@@ -30,6 +30,8 @@ on:
         options:
           - dry-run-all
           - registry-live
+          - registry-update-dry
+          - registry-update-live
           - governorates-live
           - discounts-live
           - issue-test-preview
@@ -71,6 +73,12 @@ jobs:
               ;;
             registry-live)
               node scripts/write-template-registry.js --live
+              ;;
+            registry-update-dry)
+              node scripts/write-template-registry.js --update
+              ;;
+            registry-update-live)
+              node scripts/write-template-registry.js --live --update
               ;;
             governorates-live)
               node scripts/seed-governorates.js --live

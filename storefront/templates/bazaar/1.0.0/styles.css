@@ -151,7 +151,6 @@
 }
 
 /* ---- section titles: loud, uppercase ---- */
-.bz-flash h2,
 .bz-rails h2,
 .bz-cats h2,
 .bz-grid-sec h2,
@@ -167,43 +166,23 @@
   margin-bottom: 12px;
 }
 
-/* ---- flash-sale countdown strip ---- */
-.bz-flash {
+/* ---- flash-sale countdown strip (shell-owned) ----
+   The shell creates this strip itself (startCountdownStrip) at the
+   top of the offers mount when the manifest enables countdown-strip:
+   hidden with no real promo endDate, ticked from the real endDate
+   when one exists. The bundle must NOT ship its own countdown
+   markup — 2026-11-27 the hardcoded 00:00:00 flash section was
+   removed from sections/featured.html (D2: fake countdown with no
+   promo). These rules give the shell strip the Bazaar flash look. */
+[data-behaviour="countdown-strip"] {
   background-color: #141414;
   padding-top: 18px;
   padding-bottom: 18px;
   padding-inline-start: 16px;
   padding-inline-end: 16px;
+  text-align: center;
 }
-.bz-flash h2 { color: #ffffff; }
-.bz-flash-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.bz-flash-live {
-  background-color: #d92d20;
-  color: #ffffff;
-  border-radius: 12px;
-  font-family: "Tajawal", "Inter", sans-serif;
-  font-size: 12px;
-  font-weight: 800;
-  padding-top: 4px;
-  padding-bottom: 4px;
-  padding-inline-start: 10px;
-  padding-inline-end: 10px;
-  animation: bz-pop 600ms;
-}
-.bz-countdown {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  margin-top: 6px;
-  direction: ltr;
-}
-.bz-cd {
+[data-behaviour="countdown-strip"] [data-countdown-text] {
   background-color: #f68b1e;
   color: #ffffff;
   border-radius: 12px;
@@ -215,21 +194,8 @@
   padding-bottom: 10px;
   padding-inline-start: 12px;
   padding-inline-end: 12px;
-}
-.bz-cd-sep {
-  color: #ffffff;
-  font-size: 24px;
-  font-weight: 800;
-}
-.bz-flash-note {
-  font-family: "Tajawal", "Inter", sans-serif;
-  font-size: 13px;
-  font-weight: 500;
-  color: #ffffff;
-  opacity: 0.8;
-  text-align: center;
-  margin-top: 10px;
-  margin-bottom: 0;
+  direction: ltr;
+  display: inline-block;
 }
 
 /* ---- deal rails ---- */
